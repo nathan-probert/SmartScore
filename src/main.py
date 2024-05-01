@@ -1,6 +1,7 @@
 import Database
 import Predictor
 import API
+import Tims
 
 if __name__ == "__main__":
     print("Filling in past dates...")
@@ -18,8 +19,11 @@ if __name__ == "__main__":
     print("Sorting players by stat...")
     players.sort(key=lambda x: x.getStat(), reverse=True)
 
-    print("Updating previous scorers in API...")
+    print("Updating previous scorers for API...")
     oldPlayers, oldDate = API.API.getPlayers()
 
+    print("Getting players available on Tim Hortons Hockey Challenge Picker...")
+    ids = Tims.getPlayers()
+
     print("Generating API endpoint data...")
-    API.API.writeToDB(oldPlayers, oldDate, players)
+    API.API.writeToDB(oldPlayers, oldDate, players, ids)

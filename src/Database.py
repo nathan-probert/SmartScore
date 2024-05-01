@@ -94,7 +94,9 @@ def performBackfilling():
         rows = list(reader)
 
     datesToFix = {row[0] for row in rows if row[1].strip() not in {"0", "1"}}
-    datesToFix.remove(datetime.datetime.now().strftime('%Y-%m-%d'))
+    today = datetime.datetime.now().strftime('%Y-%m-%d')
+    if today in datesToFix:
+        datesToFix.remove(today)
 
     for date in list(datesToFix):
         # get games
@@ -174,7 +176,6 @@ def writeCSV(players, date):
     filename = "lib\\data.csv"
     with open(filename, 'a', encoding=getCSVEncoding(filename), newline='') as file:
         for player in players:
-            print(player)
             file.write(f"{date},{player.toCSV()}")
 
 def updateToday():

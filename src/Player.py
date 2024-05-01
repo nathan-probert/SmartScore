@@ -160,10 +160,11 @@ class Player:
         return {
             "Name": self.__name,
             "Team": self.__teamName,
+            "playerID": self.__id,
             "Bet": self.__bet,
             "Stat": self.getStat(),
             "GPG": self.__GPG,
-            "5GPG": self.__5GPG,
+            "Last_5_GPG": self.__5GPG,
             "HGPG": self.__HGPG,
             "PPG": self.__PPG,
             "OTPM": self.__OTPM,

@@ -11,36 +11,40 @@ import Predictor
 class API:
     
     @classmethod
-    def writeToDB(cls, oldPlayers, oldDate, players):
+    def writeToDB(cls, oldPlayers, oldDate, players, ids):
         # check if DB needs to be updated
         date = (datetime.datetime.now()).strftime('%Y-%m-%d')
         data = requests.get("https://x8ki-letl-twmt.n7.xano.io/api:Cmz3Gtkc/export").json()
-        if data[0]['Date'] == date:
+        if data and data[0]['Date'] == date:
             print("\tDatabase already up-to-date.")
             # return
 
-        # NOTE
-        # need to send both old and new data to the API
-        # add a scored column to XANO (always 0 for new data)
-        # old data need to use player.getScored() to get value
-
+        # new players
         dictPlayers = [player.toDict() for player in players]
         date = (datetime.datetime.now()).strftime('%Y-%m-%d')
         for player in dictPlayers:
             player["Date"] = date
-        jsonData = json.dumps({"new": dictPlayers})
-        jsonData: Dict[str, List[Dict[str, any]]] = json.loads(jsonData)
 
+            for sublist in ids:
+                if int(player["playerID"]) in sublist:
+                    player["onTims"] = ids.index(sublist)+1
+                    break
+            else:
+                player["onTims"] = 0
+
+
+        # old players
         oldDictPlayers = [player.toDict() for player in oldPlayers]
         i = 0
         for player in oldDictPlayers:
             player["Date"] = oldDate
             player["Scored"] = oldPlayers[i].getScored()
             i+=1
-        oldJsonData = json.dumps({"old": oldDictPlayers})
-        oldJsonData: Dict[str, List[Dict[str, any]]] = json.loads(oldJsonData)
 
-        combined = json.dumps({"items": [jsonData, oldJsonData]})
+        dictPlayers.extend(oldDictPlayers)
+
+        jsonData = json.dumps({"items": dictPlayers})
+        jsonData: Dict[str, List[Dict[str, any]]] = json.loads(jsonData)
 
         response = requests.patch("https://x8ki-letl-twmt.n7.xano.io/api:Cmz3Gtkc/addBulk", json=jsonData)
         # Check the response
@@ -82,7 +86,9 @@ class API:
             p.fromCSV(row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13])
             players.append(p)
 
-        players = Predictor.Predictor.normalize(players)
+        print(f"\tNormalizing the old players")
+        players = Predictor.Predictor.normalize(players, date)
+        print(f"\tPredicting the old players")
         Predictor.Predictor.predictWeights(players)
 
         scoredIds = [row[3] for row in rows if row[0] == date and row[1] == "1"]

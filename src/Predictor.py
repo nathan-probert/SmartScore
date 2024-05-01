@@ -1,3 +1,4 @@
+import datetime
 import Player
 import ctypes
 
@@ -12,10 +13,12 @@ def linkStats(players, stats):
 class Predictor:
 
     @classmethod
-    def normalize(cls, players):
+    def normalize(cls, players, date=datetime.datetime.now().strftime('%Y-%m-%d')):
         lib = ctypes.CDLL("lib\\libPredictor.so")
+        lib.normalize.argtypes = [ctypes.POINTER(ctypes.c_char)]
         lib.normalize.restype = ctypes.POINTER(ctypes.POINTER(ctypes.c_float))
-        result = lib.normalize()
+
+        result = lib.normalize(ctypes.c_char_p(date.encode('utf-8')))
         stats = []
         for i in range(len(players)):
             stats.append(result[i])

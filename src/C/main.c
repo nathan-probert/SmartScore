@@ -1,6 +1,6 @@
 #include "header.h"
 
-float** normalize() {
+float** normalize(char* date) {
   FILE *file = fopen("./lib/data.csv", "r");
   if (file == NULL) {
     printf("Error opening file\n");
@@ -15,10 +15,9 @@ float** normalize() {
   fgets(line, sizeof(line), file); // Skip the header line
   while (fgets(line, sizeof(line), file) != NULL) {
     char *token = strtok(line, ",");
-    token = strtok(NULL, ","); // Get the 'Scored' column
     if (token != NULL) {
       numRows++;
-      if (token[0] != '0' && token[0] != '1') {
+      if (strcmp(token, date) == 0) {
         numRowsToNorm++;
       }
     }
