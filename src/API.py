@@ -16,8 +16,16 @@ class API:
         date = (datetime.datetime.now()).strftime('%Y-%m-%d')
         data = requests.get("https://x8ki-letl-twmt.n7.xano.io/api:Cmz3Gtkc/export").json()
         if data and data[0]['Date'] == date:
-            print("\tDatabase already up-to-date.")
-            # return
+            print("\tChecking if Tim Hortons data needs to be updated...")
+            teamData = requests.get(f"https://api-web.nhle.com/v1/schedule/{date}").json()
+            teamsNow = {team['name'] for team in Database.getAllTeams(teamData, date)}
+            teamsThen = {team['Team'] for team in data if team['Date'] == date}
+
+            if teamsNow != teamsThen:
+                print("\tTeams do not match, updating database...")
+            else:
+                print("\tTeams match, no need to update database...")
+                return
 
         # new players
         dictPlayers = [player.toDict() for player in players]

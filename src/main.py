@@ -18,7 +18,7 @@ if __name__ == "__main__":
 
     print("Sorting players by stat...")
     players.sort(key=lambda x: x.getStat(), reverse=True)
-
+    
     print("Updating previous scorers for API...")
     oldPlayers, oldDate = API.API.getPlayers()
 

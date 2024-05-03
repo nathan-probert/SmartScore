@@ -112,7 +112,7 @@ def performBackfilling():
         filename = "lib\\data.csv"
         updatePrevGoals(filename, date, players)
 
-def getAllTeams(data, date):
+def getAllTeams(data, date, onlyCurTeams=True):
     teams = []
     for day in data['gameWeek']:
         if day['date'] == date:
@@ -137,6 +137,25 @@ def getAllTeams(data, date):
 
                     teams.append(teamInfoHome)
                     teams.append(teamInfoAway)
+                elif not onlyCurTeams:
+                    if (game['gameState'] == 'FUT'):
+                        teamInfoHome = {
+                            'name': (game["homeTeam"]["placeName"]["default"]),
+                            'abbr': (game["homeTeam"]["abbrev"]),
+                            'id': (game['homeTeam']['id']),
+                            'otherId': (game['awayTeam']['id']),
+                            'home': 1
+                        }
+                        teamInfoAway = {
+                            'name': (game["awayTeam"]["placeName"]["default"]),
+                            'abbr': (game["awayTeam"]["abbrev"]),
+                            'id': (game['awayTeam']['id']),
+                            'otherId': (game['homeTeam']['id']),
+                            'home': 0
+                        }
+
+                        teams.append(teamInfoHome)
+                        teams.append(teamInfoAway)
     
     return teams
 
