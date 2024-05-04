@@ -7,131 +7,43 @@ float** normalize(char* date) {
     exit(1);
   }
 
-  // Count the number of rows in the file, also count number of rows to normalize
-  int numRows = 0;
-  int numRowsToNorm = 0;
-  char line[1028];
-
-  fgets(line, sizeof(line), file); // Skip the header line
-  while (fgets(line, sizeof(line), file) != NULL) {
-    char *token = strtok(line, ",");
-    if (token != NULL) {
-      numRows++;
-      if (strcmp(token, date) == 0) {
-        numRowsToNorm++;
-      }
-    }
-  }
-  rewind(file);
-
-  // Allocate memory for the data array dynamically (8 stats to look at, 1 column for scored)
-  float **stats = (float **)malloc(numRows * sizeof(float *));
-  if (stats == NULL) {
-    printf("Memory allocation failed\n");
-    exit(1);
-  }
-  for (int i = 0; i < numRows; i++) {
-    stats[i] = (float *)malloc(9 * sizeof(float));
-    if (stats[i] == NULL) {
-      printf("Memory allocation failed\n");
-      // Free previously allocated memory before returning
-      for (int j = 0; j < i; j++) {
-        free(stats[j]);
-      }
-      free(stats);
-      exit(1);
-    }
-  }
-
-  // Read the data from the file into the data array
-  fgets(line, sizeof(line), file);
-  int curLine = 0;
-  for (int i = 0; i < numRows; i++) {
-    fgets(line, sizeof(line), file);
-    char *token = strtok(line, ",");
-
-    // skip date
-    token = strtok(NULL, ",");
-    
-    // get scored
-    stats[curLine][0]= atoi(token);
-
-    // skip name id team and bet
-    for (int j=0; j<4; j++) {
-      token = strtok(NULL, ",");
-    }
-
-    // get gpg
-    token = strtok(NULL, ",");
-    stats[curLine][1] = atof(token);
-
-    // get last 5 gpg
-    token = strtok(NULL, ",");
-    stats[curLine][2] = atof(token);
-
-    // get hgpg
-    token = strtok(NULL, ",");
-    stats[curLine][3] = atof(token);
-    
-    // get ppg
-    token = strtok(NULL, ",");
-    stats[curLine][4] = atoi(token);
-
-    // get otpm
-    token = strtok(NULL, ",");
-    stats[curLine][5] = atoi(token);
-
-    // get tgpg
-    token = strtok(NULL, ",");
-    stats[curLine][6] = atof(token);
-
-    // get otga
-    token = strtok(NULL, ",");
-    stats[curLine][7] = atof(token);
-
-    // get home
-    token = strtok(NULL, ",");
-    stats[curLine][8] = atof(token);
-
-    curLine++;
-  }
-  // Close the file
-  fclose(file);
+  Data data = getData(date);
 
   // Normalize the data array
   // Scale the data using Min-Max scaling
   // up to 8 to skip home (already 0 and 1)
 
   for (int j = 1; j < 8; j++) {
-    float min = stats[0][j];
-    float max = stats[0][j];
+    float min = data.stats[0][j];
+    float max = data.stats[0][j];
     
     // Find the minimum and maximum values in the column
-    for (int i = 0; i < numRows; i++) {
-      if (stats[i][j] < min) {
-        min = stats[i][j];
+    for (int i = 0; i < data.numRows; i++) {
+      if (data.stats[i][j] < min) {
+        min = data.stats[i][j];
       }
-      if (stats[i][j] > max) {
-        max = stats[i][j];
+      if (data.stats[i][j] > max) {
+        max = data.stats[i][j];
       }
     }
     
     // Normalize the values in the column
-
     // set the last n elements to the types we want
-    for (int i = (numRows-numRowsToNorm); i < numRows; i++) {
-      stats[i][j] = ((stats[i][j] - min) / (max - min));
+    printf("here\n");
+    for (int i = 0; i < data.numRows; i++) {
+      data.stats[i][j] = ((data.stats[i][j] - min) / (max - min));
     }
   }
 
   // Allocate memory for curStats with numRowsToNorm rows and 7 columns
-  float **curStats = (float **)malloc(numRowsToNorm * sizeof(float *));
+  float **curStats = (float **)malloc(data.numRowsNoScored * sizeof(float *));
   if (curStats == NULL) {
     printf("Memory allocation failed\n");
     exit(1);
   }
 
-  for (int i = 0; i < numRowsToNorm; i++) {
+  int index = 0;
+  for (int i = 0; i < data.numRows; i++) {
     // Allocate memory for each row of curStats
     curStats[i] = (float *)malloc(7 * sizeof(float));
     if (curStats[i] == NULL) {
@@ -145,78 +57,71 @@ float** normalize(char* date) {
     }
 
     // Copy normalized statistics from stats to curStats
-    for (int j = 0; j < 7; j++) {
-      curStats[i][j] = stats[i + (numRows - numRowsToNorm)][j + 1];
+    if (strcmp(data.dates[i], date) == 0) {  
+      for (int j = 0; j < 7; j++) {
+        curStats[index][j] = data.stats[i][j + 1];
+      }
+      index++;
     }
   }
 
-  for (int i = 0; i < numRows; i++) {
-    free(stats[i]);
+  for (int i = 0; i < data.numRows; i++) {
+    free(data.stats[i]);
   }
 
   return curStats;
 }
 
-float calculateStat(Stats* stats, Weights weights) {
-  float probability = 0;
-
-  float ratio = 0.18;
-  float composite = ratio * stats->ppg + (1 - ratio) * stats->otpm;
-
-  probability += stats->gpg * weights.gpg_weight;
-  probability += stats->last_5_gpg * weights.last_5_gpg_weight;
-  probability += stats->hgpg * weights.hgpg_weight;
-  probability += stats->tgpg * weights.tgpg_weight;
-  probability += stats->otga * weights.otga_weight;
-  probability += composite * weights.comp_weight;
-  probability += stats->home * weights.home_weight;
-
-  // Apply the sigmoid function?
-  // probability = 1 / (1 + exp(-probability));
-
-  return probability;
-}
-
-float** getData() {
+Data getData(char* date) {
   FILE *file = fopen("./lib/data.csv", "r");
   if (file == NULL) {
     printf("Error opening file\n");
     exit(1);
   }
 
-  // Count the number of rows in the file, also count number of rows to normalize
-  int numRows = 0;
-  int numRowsToNorm = 0;
+  // Count the number of rows in the file, also count number of rows without 0 or 1 in the 'Scored' column
+  Data data;
+  data.numRows = 0;
+  data.numRowsNoScored = 0;
   char line[1028];
 
   fgets(line, sizeof(line), file); // Skip the header line
   while (fgets(line, sizeof(line), file) != NULL) {
     char *token = strtok(line, ",");
-    token = strtok(NULL, ","); // Get the 'Scored' column
     if (token != NULL) {
-      numRows++;
-      if (token[0] != '0' && token[0] != '1') {
-        numRowsToNorm++;
+      data.numRows++;
+      if (strcmp(token, date) == 0) {
+        data.numRowsNoScored++;
       }
     }
   }
   rewind(file);
+  printf("Number of rows: %d\n", data.numRows);
+  printf("Number of rows without scored: %d\n", data.numRowsNoScored);
 
   // Allocate memory for the data array dynamically (8 stats to look at, 1 column for scored)
-  float **stats = (float **)malloc(numRowsToNorm * sizeof(float *));
-  if (stats == NULL) {
+  data.stats = (float **)malloc(data.numRows * sizeof(float *));
+  data.dates = (char **)malloc(data.numRows * sizeof(char *));
+  if (data.stats == NULL || data.dates == NULL) {
     printf("Memory allocation failed\n");
     exit(1);
   }
-  for (int i = 0; i < numRowsToNorm; i++) {
-    stats[i] = (float *)malloc(9 * sizeof(float));
-    if (stats[i] == NULL) {
+  for (int i = 0; i < data.numRows; i++) {
+    data.stats[i] = (float *)malloc(9 * sizeof(float));
+    data.dates[i] = (char *)malloc(11 * sizeof(char));
+    if (data.stats[i] == NULL || data.dates[i] == NULL) {
       printf("Memory allocation failed\n");
       // Free previously allocated memory before returning
       for (int j = 0; j < i; j++) {
-        free(stats[j]);
+        free(data.stats[j]);
       }
-      free(stats);
+      free(data.stats);
+
+      for (int j = 0; j < i; j++) {
+        free(data.dates[j]);
+      }
+      free(data.dates);
+
       exit(1);
     }
   }
@@ -224,53 +129,28 @@ float** getData() {
   // Read the data from the file into the data array
   fgets(line, sizeof(line), file);
   int curLine = 0;
-  for (int i = 0; i < numRows; i++) {
+  for (int i = 0; i < data.numRows; i++) {
     fgets(line, sizeof(line), file);
-    if (i >= numRows-numRowsToNorm) {
+    if (i >= data.numRows) {
       char *token = strtok(line, ",");
 
-      // skip date
+      // get date
       token = strtok(NULL, ",");
+      data.dates[curLine] = token;
       
       // get scored
-      stats[curLine][0]= atoi(token);
+      data.stats[curLine][0]= atoi(token);
 
       // skip name id team and bet
       for (int j=0; j<4; j++) {
         token = strtok(NULL, ",");
       }
 
-      // get gpg
-      token = strtok(NULL, ",");
-      stats[curLine][1] = atof(token);
-
-      // get last 5 gpg
-      token = strtok(NULL, ",");
-      stats[curLine][2] = atof(token);
-
-      // get hgpg
-      token = strtok(NULL, ",");
-      stats[curLine][3] = atof(token);
-      
-      // get ppg
-      token = strtok(NULL, ",");
-      stats[curLine][4] = atoi(token);
-
-      // get otpm
-      token = strtok(NULL, ",");
-      stats[curLine][5] = atoi(token);
-
-      // get tgpg
-      token = strtok(NULL, ",");
-      stats[curLine][6] = atof(token);
-
-      // get otga
-      token = strtok(NULL, ",");
-      stats[curLine][7] = atof(token);
-
-      // get home
-      token = strtok(NULL, ",");
-      stats[curLine][8] = atof(token);
+      // Loop through the remaining tokens and populate the data.stats array
+      for (int j = 1; j < 9; j++) {
+        token = strtok(NULL, ",");
+        data.stats[curLine][j] = atof(token);
+      }
 
       curLine++;
     }
@@ -278,7 +158,7 @@ float** getData() {
   // Close the file
   fclose(file);
 
-  return stats;
+  return data;
 }
 
 float* predictWeights(float** stats, int numRows) {
@@ -290,4 +170,17 @@ float* predictWeights(float** stats, int numRows) {
   }
 
   return probabilities;
+}
+
+int empTest(float threshold) {
+  // get all data
+  Data data = getData(NULL);
+  for (int i = 0; i < 10; i++) {
+    for (int j = 0; j < 9; j++) {
+      printf("%f ", data.stats[i][j]);
+    }
+    printf("\n");
+  }
+
+  return 0;
 }

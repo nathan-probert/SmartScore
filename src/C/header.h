@@ -25,6 +25,17 @@ typedef struct {
     float home;
 } Stats;
 
+typedef struct {
+    float** stats;
+    char** dates;
+    int numRows;
+    int numRowsNoScored;
+} Data;
+
 float getWeight(Weights*, int);
 float getStat(Stats*, int);
 void setStat(Stats*, int, float);
+
+float calculateStat(Stats*, Weights);
+
+Data getData(char* date);

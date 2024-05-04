@@ -94,11 +94,6 @@ class API:
             p.fromCSV(row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13])
             players.append(p)
 
-        print(f"\tNormalizing the old players")
-        players = Predictor.Predictor.normalize(players, date)
-        print(f"\tPredicting the old players")
-        Predictor.Predictor.predictWeights(players)
-
         scoredIds = [row[3] for row in rows if row[0] == date and row[1] == "1"]
         cls.linkScoredData(players, scoredIds)
 

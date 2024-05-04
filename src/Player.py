@@ -134,7 +134,7 @@ class Player:
             "{:f}".format(self.__OTGA),
             "{:d}".format(self.__isHomeTeam)
         )
-        return csv_format+"\n"
+        return csv_format
 
     def __str__ (self):
         name_padding = 30
@@ -199,7 +199,10 @@ class Player:
         self.__stat = stat
 
     def getStat(self):
-        return self.__stat
+        if hasattr(self, '__stat'):
+            return self.__stat
+        else:
+            return ""
     
     def setTims(self, onTims):
         self.__tims = onTims
@@ -211,4 +214,7 @@ class Player:
         self.__scored = scored
     
     def getScored(self):
-        return self.__scored
+        if hasattr(self, '__scored'):
+            return self.__scored
+        else:
+            return ""

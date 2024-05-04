@@ -195,7 +195,8 @@ def writeCSV(players, date):
     filename = "lib\\data.csv"
     with open(filename, 'a', encoding=getCSVEncoding(filename), newline='') as file:
         for player in players:
-            file.write(f"{date},{player.toCSV()}")
+            file.write(f"{date},{player.toCSV()}\n")
+
 
 def updateToday():
     date = (datetime.datetime.now()).strftime('%Y-%m-%d')

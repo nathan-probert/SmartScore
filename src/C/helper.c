@@ -9,6 +9,7 @@ float getWeight(Weights* weights, int i) {
         case 4: return weights->otga_weight;
         case 5: return weights->comp_weight;
         case 6: return weights->home_weight;
+        default: return 0;
     }
 }
 
@@ -23,6 +24,7 @@ float getStat(Stats* stats, int i) {
     case 6: return stats->tgpg;
     case 7: return stats->otga;
     case 8: return stats->home;
+    default: return 0;
    }
 }
 
@@ -38,4 +40,24 @@ void setStat(Stats* stats, int i, float value) {
      case 7: stats->otga = value; break;
      case 8: stats->home = value; break;
     }
+}
+
+float calculateStat(Stats* stats, Weights weights) {
+  float probability = 0;
+
+  float ratio = 0.18;
+  float composite = ratio * stats->ppg + (1 - ratio) * stats->otpm;
+
+  probability += stats->gpg * weights.gpg_weight;
+  probability += stats->last_5_gpg * weights.last_5_gpg_weight;
+  probability += stats->hgpg * weights.hgpg_weight;
+  probability += stats->tgpg * weights.tgpg_weight;
+  probability += stats->otga * weights.otga_weight;
+  probability += composite * weights.comp_weight;
+  probability += stats->home * weights.home_weight;
+
+  // Apply the sigmoid function?
+  // probability = 1 / (1 + exp(-probability));
+
+  return probability;
 }
