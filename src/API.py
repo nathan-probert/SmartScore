@@ -98,7 +98,7 @@ class API:
         cls.linkScoredData(players, scoredIds)
 
         print(f"\tNormalizing the old players")
-        players = Predictor.Predictor.normalize(players, date)
+        Predictor.Predictor.normalize(players, date)
         print(f"\tPredicting the old players")
         Predictor.Predictor.predictWeights(players)
 

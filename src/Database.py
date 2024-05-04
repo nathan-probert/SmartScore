@@ -119,7 +119,7 @@ def getAllTeams(data, date, onlyCurTeams=True):
             for game in day['games']:
                 
                 # ensure game hasn't started (otherwise could skew data)
-                if (game['gameState'] == 'FUT'):
+                if (game['gameState'] == 'FUT' or game['gameState'] == 'PRE'):
                     teamInfoHome = {
                         'name': (game["homeTeam"]["placeName"]["default"]),
                         'abbr': (game["homeTeam"]["abbrev"]),

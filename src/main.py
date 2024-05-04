@@ -1,11 +1,11 @@
 import datetime
 
-
 def showMenu():
     print("Welcome to SmartScore!")
     print("1. Run the predictor")
     print("2. Run the empirical model")
-    print("3. Exit")
+    print("3. Experiment with ai model")
+    print("4. Exit")
     choice = int(input("Enter your choice: "))
     return choice
 
@@ -16,7 +16,7 @@ def runPredictor():
     import Predictor
     import API
     import Tims
-    
+
     print("Filling in past dates...")
     Database.performBackfilling()
 
@@ -24,14 +24,17 @@ def runPredictor():
     players = Database.updateToday()
 
     print("Normalizing the data...")
-    players = Predictor.Predictor.normalize(players)
+    Predictor.Predictor.normalize(players)
 
     print("Predicting based on weights...")
     Predictor.Predictor.predictWeights(players)
 
+    # print("Predicting based on AI...")
+    # Predictor.Predictor.predictAI(players)
+
     print("Sorting players by stat...")
     players.sort(key=lambda x: x.getStat(), reverse=True)
-    
+
     print("Updating previous scorers for API...")
     oldPlayers, oldDate = API.API.getPlayers()
 
@@ -44,13 +47,24 @@ def runPredictor():
 def runEmpirical():
     import ctypes
 
-    threshold = input("Enter the threshold (-1 for all thresholds): ")
+    threshold = input("Enter the threshold (0 < threshold < 1), (-1 for all thresholds): ")
+    threshold = float(threshold)
+    if ((0 >= threshold or threshold >= 1) and threshold != -1):
+        print("Invalid threshold, using default value 0.5.")
+        threshold = 0.5
+
+    date = datetime.datetime.now().strftime('%Y-%m-%d')
 
     lib = ctypes.CDLL("lib\\libPredictor.so")
-    lib.empTest.argtypes = [ctypes.c_float]
+    lib.empTest.argtypes = [ctypes.c_float, ctypes.POINTER(ctypes.c_char)]
     lib.empTest.restype = ctypes.c_int
 
-    result = lib.empTest(ctypes.c_float(float(threshold)))
+    result = lib.empTest(ctypes.c_float(float(threshold)), ctypes.c_char_p(date.encode('utf-8')))
+
+def experimentAI():
+    import Predictor
+    
+    Predictor.Predictor.predictAITesting()
 
 if __name__ == "__main__":
     choice = showMenu()
@@ -60,5 +74,7 @@ if __name__ == "__main__":
         runPredictor()
     elif choice == 2:
         runEmpirical()
+    elif choice == 3:
+        experimentAI()
     else:
         exit()

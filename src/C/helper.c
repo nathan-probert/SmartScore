@@ -45,16 +45,15 @@ void setStat(Stats* stats, int i, float value) {
 float calculateStat(Stats* stats, Weights weights) {
   float probability = 0;
 
-  float ratio = 0.18;
-  float composite = ratio * stats->ppg + (1 - ratio) * stats->otpm;
+  float composite = (stats->ppg + stats->otpm) / 2;
 
-  probability += stats->gpg * weights.gpg_weight;
-  probability += stats->last_5_gpg * weights.last_5_gpg_weight;
-  probability += stats->hgpg * weights.hgpg_weight;
-  probability += stats->tgpg * weights.tgpg_weight;
-  probability += stats->otga * weights.otga_weight;
-  probability += composite * weights.comp_weight;
-  probability += stats->home * weights.home_weight;
+  probability += (float)stats->gpg * weights.gpg_weight;
+  probability += (float)stats->last_5_gpg * weights.last_5_gpg_weight;
+  probability += (float)stats->hgpg * weights.hgpg_weight;
+  probability += (float)stats->tgpg * weights.tgpg_weight;
+  probability += (float)stats->otga * weights.otga_weight;
+  probability += (float)composite * weights.comp_weight;
+  probability += (float)stats->home * weights.home_weight;
 
   // Apply the sigmoid function?
   // probability = 1 / (1 + exp(-probability));

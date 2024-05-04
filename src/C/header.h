@@ -29,7 +29,7 @@ typedef struct {
     float** stats;
     char** dates;
     int numRows;
-    int numRowsNoScored;
+    int numRowsToNorm;
 } Data;
 
 float getWeight(Weights*, int);
@@ -38,4 +38,6 @@ void setStat(Stats*, int, float);
 
 float calculateStat(Stats*, Weights);
 
-Data getData(char* date);
+Data getData(char*);
+Data normalizeData(Data);
+float** allocateCurStats(Data);

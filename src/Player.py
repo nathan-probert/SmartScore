@@ -136,6 +136,28 @@ class Player:
         )
         return csv_format
 
+    @classmethod
+    def printHeader ( cls ):
+        name_padding = 23
+        team_padding = 15
+        stat_padding = 10
+
+        print("\t{:<{}} {:<{}} {:>{}} {:>{}} {:>{}} {:>{}} {:>{}} {:>{}} {:>{}} {:>{}} {:>{}} {:>{}}".format(
+            "Player Name", name_padding,
+            "Team Name", team_padding,
+            "Bet", stat_padding,
+            "Stat", stat_padding,
+            "GPG", stat_padding,
+            "5GPG", stat_padding,
+            "HGPG", stat_padding,
+            "HPPG", stat_padding,
+            "OTPM", stat_padding,
+            "TGPG", stat_padding,
+            "OTGA", stat_padding,
+            "isHome", stat_padding
+        ))
+        print("")         
+
     def __str__ (self):
         name_padding = 30
         team_padding = 15
@@ -145,7 +167,7 @@ class Player:
             self.__name, name_padding, 
             self.__teamName, team_padding, 
             "{:s}".format(str(self.__bet)), stat_padding, 
-            "{:.10f}".format(float(self.getStat())), stat_padding, 
+            "{:.2f}".format(float(self.getStat())), stat_padding, 
             "{:.2f}".format(self.__GPG), stat_padding, 
             "{:.2f}".format(self.__5GPG), stat_padding, 
             "{:.2f}".format(self.__HGPG), stat_padding, 
