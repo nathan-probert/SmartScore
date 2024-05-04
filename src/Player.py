@@ -199,6 +199,7 @@ class Player:
         self.__stat = stat
 
     def getStat(self):
+        return self.__stat
         if hasattr(self, '__stat'):
             return self.__stat
         else:

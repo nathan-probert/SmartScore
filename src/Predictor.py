@@ -23,9 +23,6 @@ class Predictor:
         for i in range(len(players)):
             stats.append(result[i])
         players = linkStats(players, stats)
-
-        # for p in players:
-        #     print(p.getNormalizedStats())
         
         return players
     

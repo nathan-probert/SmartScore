@@ -3,11 +3,12 @@
 float** normalize(char* date) {
   FILE *file = fopen("./lib/data.csv", "r");
   if (file == NULL) {
-    printf("Error opening file\n");
+    fprintf(stderr, "Error opening file\n");
     exit(1);
   }
 
   Data data = getData(date);
+  printf("Done getting data\n");
 
   // Normalize the data array
   // Scale the data using Min-Max scaling
@@ -29,7 +30,6 @@ float** normalize(char* date) {
     
     // Normalize the values in the column
     // set the last n elements to the types we want
-    printf("here\n");
     for (int i = 0; i < data.numRows; i++) {
       data.stats[i][j] = ((data.stats[i][j] - min) / (max - min));
     }
@@ -38,7 +38,7 @@ float** normalize(char* date) {
   // Allocate memory for curStats with numRowsToNorm rows and 7 columns
   float **curStats = (float **)malloc(data.numRowsNoScored * sizeof(float *));
   if (curStats == NULL) {
-    printf("Memory allocation failed\n");
+    fprintf(stderr, "Memory allocation failed\n");
     exit(1);
   }
 
@@ -47,7 +47,7 @@ float** normalize(char* date) {
     // Allocate memory for each row of curStats
     curStats[i] = (float *)malloc(7 * sizeof(float));
     if (curStats[i] == NULL) {
-      printf("Memory allocation failed\n");
+      fprintf(stderr, "Memory allocation failed\n");
       // Free previously allocated memory before returning
       for (int j = 0; j < i; j++) {
         free(curStats[j]);
@@ -57,7 +57,7 @@ float** normalize(char* date) {
     }
 
     // Copy normalized statistics from stats to curStats
-    if (strcmp(data.dates[i], date) == 0) {  
+    if (strcmp(data.dates[i], date) == 0) {
       for (int j = 0; j < 7; j++) {
         curStats[index][j] = data.stats[i][j + 1];
       }
@@ -75,7 +75,7 @@ float** normalize(char* date) {
 Data getData(char* date) {
   FILE *file = fopen("./lib/data.csv", "r");
   if (file == NULL) {
-    printf("Error opening file\n");
+    fprintf(stderr, "Error opening file\n");
     exit(1);
   }
 
@@ -96,21 +96,19 @@ Data getData(char* date) {
     }
   }
   rewind(file);
-  printf("Number of rows: %d\n", data.numRows);
-  printf("Number of rows without scored: %d\n", data.numRowsNoScored);
 
   // Allocate memory for the data array dynamically (8 stats to look at, 1 column for scored)
   data.stats = (float **)malloc(data.numRows * sizeof(float *));
   data.dates = (char **)malloc(data.numRows * sizeof(char *));
   if (data.stats == NULL || data.dates == NULL) {
-    printf("Memory allocation failed\n");
+    fprintf(stderr, "Memory allocation failed\n");
     exit(1);
   }
   for (int i = 0; i < data.numRows; i++) {
     data.stats[i] = (float *)malloc(9 * sizeof(float));
     data.dates[i] = (char *)malloc(11 * sizeof(char));
     if (data.stats[i] == NULL || data.dates[i] == NULL) {
-      printf("Memory allocation failed\n");
+      fprintf(stderr, "Memory allocation failed\n");
       // Free previously allocated memory before returning
       for (int j = 0; j < i; j++) {
         free(data.stats[j]);
@@ -128,32 +126,28 @@ Data getData(char* date) {
 
   // Read the data from the file into the data array
   fgets(line, sizeof(line), file);
-  int curLine = 0;
-  for (int i = 0; i < data.numRows; i++) {
+  for (int curLine = 0; curLine < data.numRows; curLine++) {
     fgets(line, sizeof(line), file);
-    if (i >= data.numRows) {
-      char *token = strtok(line, ",");
+    
+    char *token = strtok(line, ",");
 
-      // get date
+    // get date
+    strcpy(data.dates[curLine], token);
+    
+    // get scored
+    token = strtok(NULL, ",");
+    data.stats[curLine][0]= atoi(token);
+
+    // skip name id team and bet
+    for (int j=0; j<4; j++) {
       token = strtok(NULL, ",");
-      data.dates[curLine] = token;
-      
-      // get scored
-      data.stats[curLine][0]= atoi(token);
-
-      // skip name id team and bet
-      for (int j=0; j<4; j++) {
-        token = strtok(NULL, ",");
-      }
-
-      // Loop through the remaining tokens and populate the data.stats array
-      for (int j = 1; j < 9; j++) {
-        token = strtok(NULL, ",");
-        data.stats[curLine][j] = atof(token);
-      }
-
-      curLine++;
     }
+
+    // Loop through the remaining tokens and populate the data.stats array
+    for (int j = 1; j < 9; j++) {
+      token = strtok(NULL, ",");
+      data.stats[curLine][j] = atof(token);
+    }    
   }
   // Close the file
   fclose(file);
