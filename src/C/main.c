@@ -8,7 +8,6 @@ float** normalize(char* date) {
   }
 
   Data data = getData(date);
-  printf("Done getting data\n");
 
   // Normalize the data array
   // Scale the data using Min-Max scaling
@@ -42,8 +41,7 @@ float** normalize(char* date) {
     exit(1);
   }
 
-  int index = 0;
-  for (int i = 0; i < data.numRows; i++) {
+  for (int i = 0; i < data.numRowsNoScored; i++) {
     // Allocate memory for each row of curStats
     curStats[i] = (float *)malloc(7 * sizeof(float));
     if (curStats[i] == NULL) {
@@ -55,7 +53,10 @@ float** normalize(char* date) {
       free(curStats);
       exit(1);
     }
+  }
 
+  int index = 0;
+  for (int i = 0; i < data.numRows; i++) {
     // Copy normalized statistics from stats to curStats
     if (strcmp(data.dates[i], date) == 0) {
       for (int j = 0; j < 7; j++) {
@@ -68,6 +69,12 @@ float** normalize(char* date) {
   for (int i = 0; i < data.numRows; i++) {
     free(data.stats[i]);
   }
+  free(data.stats);
+
+  for (int i = 0; i < data.numRows; i++) {
+    free(data.dates[i]);
+  }
+  free(data.dates);
 
   return curStats;
 }

@@ -97,4 +97,9 @@ class API:
         scoredIds = [row[3] for row in rows if row[0] == date and row[1] == "1"]
         cls.linkScoredData(players, scoredIds)
 
+        print(f"\tNormalizing the old players")
+        players = Predictor.Predictor.normalize(players, date)
+        print(f"\tPredicting the old players")
+        Predictor.Predictor.predictWeights(players)
+
         return players, date
