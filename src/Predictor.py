@@ -57,14 +57,15 @@ def createModel():
     optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.001)
     
     # Use a different loss function (e.g., mean squared error)
-    model.compile(loss='mse', optimizer=optimizer)
-    
+    # model.compile(loss='mse', optimizer=optimizer)
+    model.compile(loss='binary_crossentropy', optimizer="adam", metrics=['accuracy'])
+
     # Increase the number of epochs and batch size
     model.fit(xTrain, yTrain, epochs=100, batch_size=128, verbose=0)
     
     return model
 
-def evalModel(model, threshold=0.45):
+def evalModel(model, threshold=0.40):
     class Data(ctypes.Structure):
         _fields_ = [
             ("stats", ctypes.POINTER(ctypes.POINTER(ctypes.c_float))),
