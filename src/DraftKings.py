@@ -19,10 +19,13 @@ def getOdds(subcategoryIds, numTeams):
 
     id = subcategoryIds[0]
 
-    data = requests.get(f"https://sportsbook.draftkings.com//sites/CA-ON/api/v5/eventgroups/{nhlId}/categories/{goalScorerCategory}/subcategories/{id}?format=json").json()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    }
+    data = requests.get(f"https://sportsbook.draftkings.com//sites/CA-ON/api/v5/eventgroups/{nhlId}/categories/{goalScorerCategory}/subcategories/{id}?format=json", headers=headers, timeout=5).json()
 
     for offerCategory in data['eventGroup']['offerCategories']:
-        if (offerCategory['offerCategoryId'] == 1190):
+        if (offerCategory['offerCategoryId'] == goalScorerCategory):
             teamNum = 0
 
             while teamNum < numTeams:
@@ -43,7 +46,11 @@ def getOdds(subcategoryIds, numTeams):
     return playersInfo
 
 def appendOdds(players, numTeams):
-    data = requests.get(f"https://sportsbook.draftkings.com//sites/CA-ON/api/v5/eventgroups/{nhlId}/categories/{goalScorerCategory}?format=json").json()
+    url = (f"https://sportsbook.draftkings.com//sites/CA-ON/api/v5/eventgroups/{nhlId}/categories/{goalScorerCategory}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    }
+    data = requests.get(url, headers=headers, timeout=5).json()
     if "eventGroup" in data:
         for i in data['eventGroup']['offerCategories']:
             if 'offerSubcategoryDescriptors' in i:

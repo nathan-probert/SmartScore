@@ -217,6 +217,7 @@ def updateToday():
             return players
                     
     players, numTeams = getAllPlayers(date)
+    print("\tGathering odds...")
     players = DraftKings.appendOdds(players, numTeams)
 
     # write to csv
