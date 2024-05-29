@@ -62,6 +62,8 @@ def createModel():
 
     # Increase the number of epochs and batch size
     model.fit(xTrain, yTrain, epochs=100, batch_size=128, verbose=0)
+
+    print(f"\t\tModel has a loss of {model.evaluate(xTrain, yTrain, verbose=0)[0]:.2f} and an accuracy of {model.evaluate(xTrain, yTrain, verbose=0)[1]*100:.2f}%")
     
     return model
 
@@ -163,7 +165,7 @@ class Predictor:
         model = createModel()
 
         print("\tEvaluating the model...")
-        evalModel(model, 0.45)
+        evalModel(model, 0.35)
 
     def __init__(self, player):
         self.__player = player

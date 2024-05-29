@@ -5,7 +5,8 @@ def showMenu():
     print("1. Run the predictor")
     print("2. Run the empirical model")
     print("3. Experiment with ai model")
-    print("4. Exit")
+    print("4. Predict today's games")
+    print("5. Exit")
     choice = int(input("Enter your choice: "))
     return choice
 
@@ -62,9 +63,39 @@ def runEmpirical():
     result = lib.empTest(ctypes.c_float(float(threshold)), ctypes.c_char_p(date.encode('utf-8')))
 
 def experimentAI():
+    print("Importing modules...")
     import Predictor
     
     Predictor.Predictor.predictAITesting()
+
+def predictToday():
+    print("Enter 0 for weights, 1 for AI: ", end="")
+    choice = int(input())
+
+    print("Importing modules...")
+    import Database
+    import Predictor
+
+    Database.performBackfilling()
+
+    print("Getting players...")
+    players = Database.updateToday()
+
+    print("Normalizing the data...")
+    Predictor.Predictor.normalize(players)
+
+    if choice == 0:
+        print("Predicting based on weights...")
+        Predictor.Predictor.predictWeights(players)
+    else:
+        print("Predicting based on AI...")
+        Predictor.Predictor.predictAI(players)
+
+    print("Sorting players by stat...")
+    players.sort(key=lambda x: x.getStat(), reverse=True)
+
+    for player in players:
+        print(player)
 
 if __name__ == "__main__":
     choice = showMenu()
@@ -76,5 +107,7 @@ if __name__ == "__main__":
         runEmpirical()
     elif choice == 3:
         experimentAI()
+    elif choice == 4:
+        predictToday()
     else:
         exit()

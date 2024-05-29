@@ -191,7 +191,14 @@ float* predictGivenWeights(float** stats, int numRows, Weights weights, int from
 }
 
 float* predictWeights(float** stats, int numRows) {
+  // old best weights
   Weights weights = {0.300000, 0.300000, 0.000000, 0.000000, 0.200000, 0.200000, 0.000000};
+
+  // most up to date weights
+  // Weights weights = {0.300000, 0.100000, 0.000000, 0.000000, 0.100000, 0.500000, 0.000000};
+
+  // best weights with sigmoid function
+  // Weights weights = {0.000000, 0.100000, 0.300000, 0.000000, 0.100000, 0.500000, 0.000000};
 
   return predictGivenWeights(stats, numRows, weights, 1);
 }
