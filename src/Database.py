@@ -205,20 +205,20 @@ def updateToday(date = (datetime.datetime.now()).strftime('%Y-%m-%d')):
         reader = csv.reader(file)
         header = next(reader)
         rows = list(reader)
-        # if date == rows[-1][0]:
-        players = []
-        for row in rows:
-            if date == row[0]:
-                p = Player.Player(None, None, None, None, None, None, None, None)
-                p.fromCSV(row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13])
-                players.append(p)
-        return players
+        if date == rows[-1][0]:
+            players = []
+            for row in rows:
+                if date == row[0]:
+                    p = Player.Player(None, None, None, None, None, None, None, None)
+                    p.fromCSV(row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13])
+                    players.append(p)
+            return players
                     
     players, numTeams = getAllPlayers(date)
     print("\tGathering odds...")
-    # players = DraftKings.appendOdds(players, numTeams)
+    players = DraftKings.appendOdds(players, numTeams)
 
     # write to csv
-    # writeCSV(players, date)
+    writeCSV(players, date)
 
     return players

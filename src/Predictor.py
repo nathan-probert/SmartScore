@@ -106,6 +106,11 @@ def evalModel(model, threshold=0.40):
 class Predictor:
 
     @classmethod
+    def adjustProbabilities(cls, players):
+        for i in range(len(players)):
+            players[i].setStat(float(players[i].getStat() + 0.14))
+
+    @classmethod
     def normalize(cls, players, date=datetime.datetime.now().strftime('%Y-%m-%d')):
         lib = ctypes.CDLL("lib\\libPredictor.so")
         lib.normalize.argtypes = [ctypes.POINTER(ctypes.c_char)]
