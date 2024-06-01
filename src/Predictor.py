@@ -108,7 +108,8 @@ class Predictor:
     @classmethod
     def adjustProbabilities(cls, players):
         for i in range(len(players)):
-            players[i].setStat(float(players[i].getStat() + 0.14))
+            adjust = (players[i].getStat()/2) - 0.09 
+            players[i].setStat(float(players[i].getStat() + adjust))
 
     @classmethod
     def normalize(cls, players, date=datetime.datetime.now().strftime('%Y-%m-%d')):
@@ -148,6 +149,8 @@ class Predictor:
 
         for i in range(len(players)):
             players[i].setStat(float(probabilities[i]))
+
+        cls.adjustProbabilities(players)
 
     @classmethod
     def predictAI(cls, players):

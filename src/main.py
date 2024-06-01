@@ -5,8 +5,9 @@ def showMenu():
     print("1. Run the predictor")
     print("2. Run the empirical model")
     print("3. Experiment with ai model")
-    print("4. Predict today's games")
-    print("5. Exit")
+    print("4. Predict today's goal scorers")
+    print("5. Predict today's game outcomes")
+    print("6. Exit")
     choice = int(input("Enter your choice: "))
     return choice
 
@@ -97,6 +98,11 @@ def predictToday():
     for player in players:
         print(player)
 
+def predictGame():
+    import GamePredictor
+    
+    GamePredictor.predictGame()
+
 if __name__ == "__main__":
     choice = showMenu()
     print()
@@ -109,5 +115,7 @@ if __name__ == "__main__":
         experimentAI()
     elif choice == 4:
         predictToday()
+    elif choice == 5:
+        predictGame()
     else:
         exit()

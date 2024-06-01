@@ -241,3 +241,9 @@ class Player:
             return self.__scored
         else:
             return ""
+        
+    def isHomeTeam(self):
+        return self.__isHomeTeam
+    
+    def getTeamName(self):
+        return self.__teamName
