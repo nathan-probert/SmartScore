@@ -1,0 +1,8 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation stack for creating the S3 bucket.
+
+Resources:
+  GetAllPlayersBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: get-all-players-lambda-bucket

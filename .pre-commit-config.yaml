@@ -1,0 +1,29 @@
+default_language_version:
+  python: python3.12
+
+repos:
+  - repo: https://github.com/python-poetry/poetry
+    rev: '1.8.3'
+    hooks:
+      - id: poetry-check
+  - repo: local
+    hooks:
+      - id: static-analysis
+        name: ruff-linter
+        entry: poetry run ruff check
+        language: system
+        types:
+          - python
+        args:
+          - '--config=./pyproject.toml'
+          - '--fix'
+        pass_filenames: false
+      - id: format
+        name: ruff-format
+        entry: poetry run ruff format
+        language: system
+        types:
+          - python
+        args:
+          - '--config=./pyproject.toml'
+        pass_filenames: false

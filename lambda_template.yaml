@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation stack for the GetAllPlayers Lambda function.
+
+Resources:
+  GetAllPlayersFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GetAllPlayers
+      Handler: event_handler.handle_get_players_for_date
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: get-all-players-lambda-bucket
+        S3Key: GetAllPlayers.zip
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 128
+
+  GetAllPlayersLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/GetAllPlayers
+      RetentionInDays: 1 #days
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "arn:aws:s3:::get-all-players-lambda-bucket/*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/GetAllPlayers:*"
