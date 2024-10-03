@@ -3,34 +3,45 @@
 # Configuration variables
 STACK_NAME="smartScoreBucket"
 LAMBDA_STACK_NAME="smartScoreFunction"
-S3_BUCKET_NAME="get-all-players-lambda-bucket"
 LAMBDA_FUNCTION_NAME="GetAllPlayers"
-LAMBDA_ZIP="GetAllPlayers.zip"
+LAMBDA_ZIP="Code.zip"
 TEMPLATE_FILE="D:\code\smartScore\bucket_template.yaml"  # Updated to a new template for the bucket
 LAMBDA_TEMPLATE_FILE="D:\code\smartScore\lambda_template.yaml"  # New template for Lambda function
-S3_KEY="GetAllPlayers.zip"
+S3_KEY="Code.zip"
 SOURCE_DIR="smartscore"
 OUTPUT_DIR="output"
 
-# 1. Package the Lambda function and dependencies
-echo "Packaging Lambda function and dependencies..."
-mkdir -p ../$OUTPUT_DIR
-cd $SOURCE_DIR
-poetry install --no-dev
-zip -r ../$OUTPUT_DIR/$LAMBDA_ZIP ./
-# Check the size of the ZIP file
-ZIP_FILE_SIZE=$(stat -c%s "../$OUTPUT_DIR/$LAMBDA_ZIP")  # Get size in bytes
-ZIP_FILE_SIZE_MB=$((ZIP_FILE_SIZE / 1024 / 1024))  # Convert to MB
+# Create a new directory for your deployment package
+mkdir -p output
 
-echo "Size of ZIP file: $ZIP_FILE_SIZE_MB MB"
+## Export dependencies to a requirements file
+#poetry export -f requirements.txt --output requirements.txt
+#
+## Install dependencies in the output directory
+#poetry run pip install --no-deps -r requirements.txt -t output/  # Install into the output directory
 
-# Check if the ZIP file size exceeds 20 MB
-if [ $ZIP_FILE_SIZE_MB -gt 20 ]; then
-    echo "Error: The ZIP file exceeds 20 MB. Aborting deployment."
-    exit 1
-fi
+## Copy your Lambda code into the output directory
+#cp -r smartscore/* output/
+#
+## Change to the output directory and create a zip file
+#cd output
+#zip -r Code.zip .  # Zip everything in the output directory
+#cd ..
 
 
+## Check the size of the ZIP file
+#ZIP_FILE_SIZE=$(stat -c%s "$OUTPUT_DIR/$LAMBDA_ZIP")  # Get size in bytes
+#ZIP_FILE_SIZE_MB=$((ZIP_FILE_SIZE / 1024 / 1024))  # Convert to MB
+#
+#echo "Size of ZIP file: $ZIP_FILE_SIZE_MB MB"
+#
+## Check if the ZIP file size exceeds 20 MB
+#if [ $ZIP_FILE_SIZE_MB -gt 20 ]; then
+#    echo "Error: The ZIP file exceeds 20 MB. Aborting deployment."
+#    exit 1
+#fi
+#
+#
 # 2. Create the S3 bucket stack
 echo "Creating CloudFormation stack for S3 bucket..."
 aws cloudformation create-stack \
@@ -41,6 +52,19 @@ aws cloudformation create-stack \
 echo "Waiting for S3 bucket stack creation to complete..."
 aws cloudformation wait stack-create-complete --stack-name $STACK_NAME
 echo "S3 bucket stack creation completed."
+
+# Retrieve the S3 bucket name from the CloudFormation stack's output
+S3_BUCKET_NAME=$(aws cloudformation describe-stacks \
+  --stack-name $STACK_NAME \
+  --query "Stacks[0].Outputs[?OutputKey=='CodeBucketName'].OutputValue" \
+  --output text)
+
+if [ -z "$S3_BUCKET_NAME" ]; then
+  echo "Error: Unable to retrieve the S3 bucket name."
+  exit 1
+else
+  echo "S3 Bucket Name: $S3_BUCKET_NAME"
+fi
 
 # 3. Upload the Lambda zip to S3 after confirming the bucket stack exists
 echo "Uploading Lambda function to S3..."

@@ -12,8 +12,8 @@ class TeamInfo:
     id: int
     opponent_id: int
 
-    tgpg: float = field(init=False, default=0.0)
-    otga: float = field(init=False, default=0.0)
+    tgpg: float = 0.0
+    otga: float = 0.0
 
     _class_data_summary: dict = field(init=False, default=None, repr=False)
 

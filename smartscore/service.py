@@ -43,21 +43,22 @@ def get_teams(data):
     return teams
 
 
-def get_players_from_team(teams):
+def get_players_from_team(team):
     players = []
 
-    for team in teams:
-        logger.info(f"Getting players for team: {team.name}")
-        URL = f"https://api-web.nhle.com/v1/roster/{team.abbr}/current"
-        data = requests.get(URL, timeout=10).json()
+    logger.info(f"Getting players for team: {team.name}")
+    URL = f"https://api-web.nhle.com/v1/roster/{team.abbr}/current"
+    data = requests.get(URL, timeout=10).json()
 
-        types = ["forwards", "defensemen"]
-        for player_type in types:
-            for player in data[player_type]:
-                player_info = PlayerInfo(
-                    name=player["firstName"]["default"] + " " + player["lastName"]["default"],
-                    id=player["id"],
-                )
-                players.append(player_info)
+    types = ["forwards", "defensemen"]
+    for player_type in types:
+        for player in data[player_type]:
+            player_info = PlayerInfo(
+                name=player["firstName"]["default"] + " " + player["lastName"]["default"],
+                id=player["id"],
+                team_id=team.id,
+            )
+            players.append(player_info)
 
+    logger.info(f"Found [{len(players)}] players for team: {team.name}")
     return players

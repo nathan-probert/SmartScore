@@ -12,10 +12,11 @@ def get_stats(data):
 class PlayerInfo:
     name: str
     id: int
+    team_id: int
 
-    gpg: float = field(init=False, default=0.0)
-    hgpg: float = field(init=False, default=0.0)
-    five_gpg: float = field(init=False, default=0.0)
+    gpg: float = 0.0
+    hgpg: float = 0.0
+    five_gpg: float = 0.0
 
     def __post_init__(self):
         URL = f"https://api-web.nhle.com/v1/player/{self.id}/landing"
@@ -33,9 +34,14 @@ class PlayerInfo:
         # exit()
 
 
+    def __str__(self):
+        return f"{self.name} {self.gpg} {self.hgpg} {self.five_gpg}"
+
+
 class PlayerInfoSchema(Schema):
     name = fields.Str()
     id = fields.Int()
+    team_id = fields.Int()
 
     gpg = fields.Float()
     hgpg = fields.Float()

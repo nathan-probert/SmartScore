@@ -1,26 +1,67 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudFormation stack for the GetAllPlayers Lambda function.
+Description: CloudFormation stack for the GetAllPlayers Step Function and Lambda functions.
 
 Resources:
-  GetAllPlayersFunction:
+  # Lambda Functions
+  GetTeamsFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: GetAllPlayers
-      Handler: event_handler.handle_get_players_for_date
+      FunctionName: GetTeams
+      Handler: event_handler.handle_get_teams
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
-        S3Bucket: get-all-players-lambda-bucket
-        S3Key: GetAllPlayers.zip
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: Code.zip
       Runtime: python3.12
       Timeout: 30
       MemorySize: 128
 
-  GetAllPlayersLogGroup:
+  GetPlayersFromTeamFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GetPlayersFromTeam
+      Handler: event_handler.handle_get_players_from_team
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: Code.zip
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 128
+
+  MakePredictionsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: MakePredictions
+      Handler: event_handler.make_predictions
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: Code.zip
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 128
+
+  # Lambda Log Groups
+  GetTeamsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: /aws/lambda/GetAllPlayers
-      RetentionInDays: 1 #days
+      LogGroupName: /aws/lambda/GetTeams
+      RetentionInDays: 1
 
+  GetPlayersFromTeamLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/GetPlayersFromTeam
+      RetentionInDays: 1
+
+  MakePredictionsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/MakePredictions
+      RetentionInDays: 1
+
+  # IAM Role for Lambda Execution
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -45,4 +86,73 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/GetAllPlayers:*"
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*:*"
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !GetAtt StateMachine.Arn
+
+  # State Machine
+  StateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: GetAllPlayersStateMachine
+      RoleArn: !GetAtt StateMachineExecutionRole.Arn
+      DefinitionString:
+        !Sub |
+          {
+            "Comment": "A state machine to handle getting players and making predictions",
+            "StartAt": "GetTeams",
+            "States": {
+              "GetTeams": {
+                "Type": "Task",
+                "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTeams",
+                "Next": "MapGetPlayersFromTeam"
+              },
+              "MapGetPlayersFromTeam": {
+                "Type": "Map",
+                "ItemsPath": "$.teams",
+                "Iterator": {
+                  "StartAt": "GetPlayersFromTeam",
+                  "States": {
+                    "GetPlayersFromTeam": {
+                      "Type": "Task",
+                      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetPlayersFromTeam",
+                      "ResultPath": "$.players",
+                      "End": true
+                    }
+                  }
+                },
+                "Next": "MakePredictions"
+              },
+              "MakePredictions": {
+                "Type": "Task",
+                "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions",
+                "End": true
+              }
+            }
+          }
+
+  # IAM Role for State Machine Execution
+  StateMachineExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StateMachineExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTeams"
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetPlayersFromTeam"
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions"
