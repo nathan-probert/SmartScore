@@ -3,7 +3,6 @@ local-setup:
 	@echo "Creating virtual environment"
 	@$(MAKE) install
 
-.PHONY: install
 install:
 	@echo "Installing dependencies"
 	@poetry install --sync
@@ -17,3 +16,9 @@ lint:
 test:
 	@echo "Running tests"
 	@poetry run pytest -v
+
+.PHONY: compile
+compile:
+	@echo "Compiling C code"
+	@gcc -Wall -std=c99 -shared -o smartscore/compiled_code.so -fPIC smartscore/C/helper.c smartscore/C/main.c
+

@@ -13,7 +13,7 @@ Resources:
         S3Bucket: !ImportValue CodeBucketNameExport
         S3Key: Code.zip
       Runtime: python3.12
-      Timeout: 30
+      Timeout: 10
       MemorySize: 128
 
   GetPlayersFromTeamFunction:
@@ -26,20 +26,59 @@ Resources:
         S3Bucket: !ImportValue CodeBucketNameExport
         S3Key: Code.zip
       Runtime: python3.12
-      Timeout: 30
+      Timeout: 20
       MemorySize: 128
 
   MakePredictionsFunction:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: MakePredictions
-      Handler: event_handler.make_predictions
+      Handler: event_handler.handle_make_predictions
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         S3Bucket: !ImportValue CodeBucketNameExport
         S3Key: Code.zip
       Runtime: python3.12
-      Timeout: 30
+      Timeout: 10
+      MemorySize: 512
+
+  GetTimsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GetTims
+      Handler: event_handler.handle_get_tims
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: Code.zip
+      Runtime: python3.12
+      Timeout: 5
+      MemorySize: 128
+
+  PerformBackfillingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: PerformBackfilling
+      Handler: event_handler.handle_backfill
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: Code.zip
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 128
+
+  PublishDbFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: PublishDb
+      Handler: event_handler.handle_publish_db
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: Code.zip
+      Runtime: python3.12
+      Timeout: 10
       MemorySize: 128
 
   # Lambda Log Groups
@@ -61,6 +100,24 @@ Resources:
       LogGroupName: /aws/lambda/MakePredictions
       RetentionInDays: 1
 
+  GetTimsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/GetTims
+      RetentionInDays: 1
+
+  PerformBackfillingLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/PerformBackfilling
+      RetentionInDays: 1
+
+  PublishDbLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/PublishDb
+      RetentionInDays: 1
+
   # IAM Role for Lambda Execution
   LambdaExecutionRole:
     Type: AWS::IAM::Role
@@ -80,17 +137,21 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub "arn:aws:s3:::get-all-players-lambda-bucket/*"
+                Resource: !Sub arn:aws:s3:::get-all-players-lambda-bucket/*
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*:*"
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*:*
               - Effect: Allow
                 Action:
                   - states:StartExecution
                 Resource: !GetAtt StateMachine.Arn
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api
 
   # State Machine
   StateMachine:
@@ -98,40 +159,63 @@ Resources:
     Properties:
       StateMachineName: GetAllPlayersStateMachine
       RoleArn: !GetAtt StateMachineExecutionRole.Arn
-      DefinitionString:
-        !Sub |
-          {
-            "Comment": "A state machine to handle getting players and making predictions",
-            "StartAt": "GetTeams",
-            "States": {
-              "GetTeams": {
-                "Type": "Task",
-                "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTeams",
-                "Next": "MapGetPlayersFromTeam"
-              },
-              "MapGetPlayersFromTeam": {
-                "Type": "Map",
-                "ItemsPath": "$.teams",
-                "Iterator": {
-                  "StartAt": "GetPlayersFromTeam",
-                  "States": {
-                    "GetPlayersFromTeam": {
-                      "Type": "Task",
-                      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetPlayersFromTeam",
-                      "ResultPath": "$.players",
-                      "End": true
-                    }
+      DefinitionString: !Sub |
+        {
+          "Comment": "A state machine to handle getting players and making predictions",
+          "StartAt": "Backfill",
+          "States": {
+            "Backfill": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PerformBackfilling",
+              "Next": "GetTeams"
+            },
+            "GetTeams": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTeams",
+              "Next": "MapGetPlayersFromTeam"
+            },
+            "MapGetPlayersFromTeam": {
+              "Type": "Map",
+              "ItemsPath": "$.teams",
+              "MaxConcurrency": 8,
+              "Iterator": {
+                "StartAt": "GetPlayersFromTeam",
+                "States": {
+                  "GetPlayersFromTeam": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetPlayersFromTeam",
+                    "ResultPath": "$.players",
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "IntervalSeconds": 2,
+                        "MaxAttempts": 3,
+                        "BackoffRate": 2.0
+                      }
+                    ],
+                    "End": true
                   }
-                },
-                "Next": "MakePredictions"
+                }
               },
-              "MakePredictions": {
-                "Type": "Task",
-                "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions",
-                "End": true
-              }
+              "Next": "GetTims"
+            },
+            "GetTims": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims",
+              "Next": "MakePredictions"
+            },
+            "MakePredictions": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions",
+              "Next": "SaveToDb"
+            },
+            "SaveToDb": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api",
+              "End": true
             }
           }
+        }
 
   # IAM Role for State Machine Execution
   StateMachineExecutionRole:
@@ -153,6 +237,40 @@ Resources:
                 Action:
                   - lambda:InvokeFunction
                 Resource:
-                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTeams"
-                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetPlayersFromTeam"
-                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions"
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTeams
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetPlayersFromTeam
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PerformBackfilling
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PublishDb
+
+  DailyStepFunctionTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(0 8 * * ? *)"  # 8 AM UTC, which is 3 AM EST
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt StateMachine.Arn
+          RoleArn: !GetAtt EventBridgeInvokeRole.Arn
+          Id: GetAllPlayersStateMachineTarget
+
+  EventBridgeInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EventBridgeInvokeStepFunctionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !GetAtt StateMachine.Arn
