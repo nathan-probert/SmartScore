@@ -81,6 +81,19 @@ Resources:
       Timeout: 10
       MemorySize: 128
 
+  CheckCompletedFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CheckCompleted
+      Handler: event_handler.handle_check_completed
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: Code.zip
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 128
+
   # Lambda Log Groups
   GetTeamsLogGroup:
     Type: AWS::Logs::LogGroup
@@ -116,6 +129,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /aws/lambda/PublishDb
+      RetentionInDays: 1
+
+  CheckCompletedLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/CheckCompleted
       RetentionInDays: 1
 
   # IAM Role for Lambda Execution
@@ -167,7 +186,27 @@ Resources:
             "Backfill": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PerformBackfilling",
-              "Next": "GetTeams"
+              "Next": "GetDate"
+            },
+            "GetDate": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:CheckCompleted",
+              "Next": "CheckCompletion"
+            },
+            "CheckCompletion": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.completed",
+                  "BooleanEquals": true,
+                  "Next": "MakePredictions"
+                },
+                {
+                  "Variable": "$.completed",
+                  "BooleanEquals": false,
+                  "Next": "GetTeams"
+                }
+              ]
             },
             "GetTeams": {
               "Type": "Task",
@@ -197,21 +236,30 @@ Resources:
                   }
                 }
               },
-              "Next": "GetTims"
-            },
-            "GetTims": {
-              "Type": "Task",
-              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims",
-              "Next": "MakePredictions"
-            },
-            "MakePredictions": {
-              "Type": "Task",
-              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions",
               "Next": "SaveToDb"
             },
             "SaveToDb": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api",
+              "Parameters": {
+                "teams.$": "$",
+                "method": "POST_BATCH"
+              },
+              "Next": "MakePredictions"
+            },
+            "MakePredictions": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions",
+              "Next": "GetTims"
+            },
+            "GetTims": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims",
+              "Next": "PublishToDb"
+            },
+            "PublishToDb": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PublishDb",
               "End": true
             }
           }
@@ -244,6 +292,7 @@ Resources:
                   - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api
                   - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PerformBackfilling
                   - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PublishDb
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:CheckCompleted
 
   DailyStepFunctionTrigger:
     Type: AWS::Events::Rule

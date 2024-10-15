@@ -13,7 +13,8 @@ GET_PLAYERS_FROM_TEAM_NAME="GetPlayersFromTeam"
 MAKE_PREDICTION_NAME="MakePredictions"
 GET_TIMS_NAME="GetTims"
 PERFORM_BACKFILL_NAME="PerformBackfilling"
-PUBLISH_DB_NAME="PublishDB"
+PUBLISH_DB_NAME="PublishDb"
+CHECK_COMPLETION_NAME="CheckCompleted"
 
 OUTPUT_MOD_TIME=$(find "$OUTPUT_DIR" -type f -exec stat -c %Y {} + | sort -n | tail -1)
 
@@ -154,6 +155,9 @@ update_lambda_functions() {
     --s3-bucket "$S3_BUCKET_NAME" --s3-key "$S3_KEY" > /dev/null 2>&1
 
   aws lambda update-function-code --function-name "$PUBLISH_DB_NAME" \
+    --s3-bucket "$S3_BUCKET_NAME" --s3-key "$S3_KEY" > /dev/null 2>&1
+
+  aws lambda update-function-code --function-name "$CHECK_COMPLETION_NAME" \
     --s3-bucket "$S3_BUCKET_NAME" --s3-key "$S3_KEY" > /dev/null 2>&1
 }
 

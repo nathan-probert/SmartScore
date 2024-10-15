@@ -1,24 +1,24 @@
 import datetime
+import json
 import random
 import time
 
 import pytz
 import requests
 from aws_lambda_powertools import Logger
-from smartscore_info_client.schemas.player_info import PlayerInfo
-from smartscore_info_client.schemas.team_info import TeamInfo
+from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
+from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
 from constants import DRAFTKINGS_GOAL_SCORER_CATEGORY, DRAFTKINGS_NHL_ID
-from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA
-from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA
 from utility import c_predict, get_tims_players, invoke_lambda, link_odds, save_to_db
-import json
 
 logger = Logger()
 
 
-def get_date():
+def get_date(hour=False):
     toronto_tz = pytz.timezone("America/Toronto")
+    if hour:
+        return datetime.datetime.now(toronto_tz).strftime("%Y-%m-%dT%H:%M:%S")
     return datetime.datetime.now(toronto_tz).strftime("%Y-%m-%d")
 
 
@@ -75,15 +75,76 @@ def get_players_from_team(team):
     return players
 
 
-def make_predictions(teams, players, date):
-    payload = {
-        "method": "GET_ALL",
-    }
-    data = invoke_lambda("Api", payload)
-    new_players = json.loads(data.get("entries", []))
+def get_min_max():
+    # payload = {
+    #     "method": "GET_MIN_MAX",
+    # }
+    # data = invoke_lambda("Api", payload)
+    # min_max = data.get("body", {})
 
-    c_predict(teams, players, new_players, date)
-    return players
+    # hardcoding min_max for now
+    min_max = {
+        "gpg": {"min": 0.0, "max": 2.0},
+        "hgpg": {"min": 0.0, "max": 2.0},
+        "five_gpg": {"min": 0.0, "max": 2.0},
+        "tgpg": {"min": 0.0, "max": 4.0},
+        "otga": {"min": 0.0, "max": 4.0},
+    }
+    return min_max
+
+
+def make_predictions_teams(teams, players):
+    min_max = get_min_max()
+    c_players = []
+    team_table = {team.team_id: TEAM_INFO_SCHEMA.dump(team) for team in teams}
+    for player in players:
+        c_players.append(
+            {
+                "gpg": player.gpg,
+                "hgpg": player.hgpg,
+                "five_gpg": player.five_gpg,
+                "tgpg": team_table[player.team_id]["tgpg"],
+                "otga": team_table[player.team_id]["otga"],
+            }
+        )
+
+    entries = []
+    probabilities = c_predict(c_players, min_max)
+    for i, player in enumerate(players):
+        team_info = team_table[player.team_id]
+
+        team_info_filtered = {
+            key: value
+            for key, value in team_info.items()
+            if key not in ("team_id", "opponent_id", "season", "team_abbr")
+        }
+        player_data = PLAYER_INFO_SCHEMA.dump(player)
+        player_info_filtered = {
+            key: value for key, value in player_data.items() if key not in ("team_id", "odds", "stat")
+        }
+
+        entries.append({"stat": probabilities[i], **player_info_filtered, **team_info_filtered})
+    return entries
+
+
+def make_predictions_entries(entries):
+    min_max = get_min_max()
+    c_players = []
+    for player in entries:
+        c_players.append(
+            {
+                "gpg": player["gpg"],
+                "hgpg": player["hgpg"],
+                "five_gpg": player["five_gpg"],
+                "tgpg": player["tgpg"],
+                "otga": player["otga"],
+            }
+        )
+
+    probabilities = c_predict(entries, min_max)
+    for i, entry in enumerate(entries):
+        entry["stat"] = probabilities[i]
+    return entries
 
 
 def gather_odds(players):
@@ -157,11 +218,11 @@ def gather_odds(players):
 def get_tims(players):
     group_ids = get_tims_players()
 
-    player_table = {player.id: player for player in players}
+    player_table = {player.get("id"): player for player in players}
     for i in range(3):
         for id in group_ids[i]:
             if player_table.get(id):
-                player_table[id].set_tims(i + 1)
+                player_table[id]["tims"] = i + 1
             else:
                 print(f"Player id {id} not found in player list")
 
@@ -170,6 +231,7 @@ def get_tims(players):
 
 def backfill_dates():
     today = get_date()
+    logger.info(f"Checking for existance of date: {today}")
     response = invoke_lambda("Api", {"method": "GET_DATES_NO_SCORED"})
     body = response.get("body", {})
     dates_no_scored = json.loads(body.get("dates", "[]"))
@@ -182,41 +244,42 @@ def backfill_dates():
 
     scorers_dict = {}
     for date in dates_no_scored:
-        data = requests.get(f"https://api-web.nhle.com/v1/score/{date}").json()
+        data = requests.get(f"https://api-web.nhle.com/v1/score/{date}", timeout=5).json()
 
         # get players who actually played
         players = []
-        for game in data.get('games'):
-            players.extend(list({goal.get('playerId') for goal in game.get('goals', {})}))
+        for game in data.get("games"):
+            # ensure each game is completed
+            if not game.get("gameOutcome"):
+                logger.info(
+                    f"Game not completed: {
+                    game.get('homeTeam', {}).get('abbrev')
+                } vs {
+                    game.get('awayTeam', {}).get('abbrev')
+                }"
+                )
+                return
+
+            players.extend(list({goal.get("playerId") for goal in game.get("goals", {})}))
         scorers_dict[date] = players
 
-    print(scorers_dict)
     response = invoke_lambda("Api", {"method": "POST_BACKFILL", "data": scorers_dict})
     return response
 
 
-def publish_public_db(teams, players):
+def publish_public_db(players):
     date = get_date()
-    players_to_save = []
-
-    team_data = {team.team_id: TEAM_INFO_SCHEMA.dump(team) for team in teams}
     for player in players:
-        team_info = team_data[player.team_id]
-        team_info_filtered = {
-            key: value for key, value in team_info.items()
-            if key not in ('team_id', 'opponent_id', 'season', 'team_abbr', 'tims', 'odds', 'stat')
-        }
+        player["date"] = date
 
-        player_data = PLAYER_INFO_SCHEMA.dump(player)
-        player_info_filtered = {
-            key: value for key, value in player_data.items()
-            if key not in ('id', 'team_id', 'odds')
-        }
+    save_to_db(players)
 
-        players_to_save.append({
-            "date": date,
-            **player_info_filtered,
-            **team_info_filtered
-        })
 
-    save_to_db(players_to_save)
+def check_db_for_date():
+    date = get_date()
+    logger.info(f"Checking date: {date}")
+
+    response = invoke_lambda("Api", {"method": "GET_DATE", "date": date})
+    entries = json.loads(response.get("body", "[]"))
+
+    return entries

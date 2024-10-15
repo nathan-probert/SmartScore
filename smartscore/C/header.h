@@ -14,3 +14,16 @@ typedef struct {
 	float tgpg;
 	float otga;
 } TeamInfo;
+
+typedef struct {
+	float min_gpg;
+	float max_gpg;
+	float min_hgpg;
+	float max_hgpg;
+	float min_five_gpg;
+	float max_five_gpg;
+	float min_tgpg;
+	float max_tgpg;
+	float min_otga;
+	float max_otga;
+} MinMax;

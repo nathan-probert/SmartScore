@@ -1,27 +1,42 @@
 import ctypes
 import json
+from http import HTTPStatus
 
 import boto3
 import requests
 from aws_lambda_powertools import Logger
 
-
 logger = Logger()
 lambda_client = boto3.client("lambda")
-sts_client = boto3.client('sts')
+sts_client = boto3.client("sts")
 
 
 class PlayerInfoC(ctypes.Structure):
-  _fields_ = [
-    ("gpg", ctypes.c_float),
-    ("hgpg", ctypes.c_float),
-    ("five_gpg", ctypes.c_float),
-    ("tgpg", ctypes.c_float),
-    ("otga", ctypes.c_float),
-  ]
+    _fields_ = [
+        ("gpg", ctypes.c_float),
+        ("hgpg", ctypes.c_float),
+        ("five_gpg", ctypes.c_float),
+        ("tgpg", ctypes.c_float),
+        ("otga", ctypes.c_float),
+    ]
+
+
+class MinMaxC(ctypes.Structure):
+    _fields_ = [
+        ("min_gpg", ctypes.c_float),
+        ("max_gpg", ctypes.c_float),
+        ("min_hgpg", ctypes.c_float),
+        ("max_hgpg", ctypes.c_float),
+        ("min_five_gpg", ctypes.c_float),
+        ("max_five_gpg", ctypes.c_float),
+        ("min_tgpg", ctypes.c_float),
+        ("max_tgpg", ctypes.c_float),
+        ("min_otga", ctypes.c_float),
+        ("max_otga", ctypes.c_float),
+    ]
+
 
 def create_player_info_array(players):
-
     PlayerArrayC = PlayerInfoC * len(players)
     player_array = PlayerArrayC()
 
@@ -35,41 +50,43 @@ def create_player_info_array(players):
     return player_array
 
 
-def c_predict(teams, players, all_players, date):
-    c_players = []
-    team_table = {teams.team_id: teams for teams in teams}
-    for player in players:
-        c_players.append(
-            {
-                "gpg": player.gpg,
-                "hgpg": player.hgpg,
-                "five_gpg": player.five_gpg,
-                "tgpg": team_table[player.team_id].tgpg,
-                "otga": team_table[player.team_id].otga,
-            }
-        )
+def create_min_max(min_max):
+    min_max_c = MinMaxC()
+    min_max_c.min_gpg = min_max.get("gpg", {}).get("min")
+    min_max_c.max_gpg = min_max.get("gpg", {}).get("max")
+    min_max_c.min_hgpg = min_max.get("hgpg", {}).get("min")
+    min_max_c.max_hgpg = min_max.get("hgpg", {}).get("max")
+    min_max_c.min_five_gpg = min_max.get("five_gpg", {}).get("min")
+    min_max_c.max_five_gpg = min_max.get("five_gpg", {}).get("max")
+    min_max_c.min_tgpg = min_max.get("tgpg", {}).get("min")
+    min_max_c.max_tgpg = min_max.get("tgpg", {}).get("max")
+    min_max_c.min_otga = min_max.get("otga", {}).get("min")
+    min_max_c.max_otga = min_max.get("otga", {}).get("max")
 
+    return min_max_c
+
+
+def c_predict(c_players, min_max):
     player_array = create_player_info_array(c_players)
-    all_player_array = create_player_info_array(all_players)
+    size = len(c_players)
 
-    ProbabilitiesC = ctypes.c_float * len(players)
+    ProbabilitiesC = ctypes.c_float * size
     probabilities = ProbabilitiesC()
 
+    min_max_c = create_min_max(min_max)
+
     players_lib = ctypes.CDLL("./compiled_code.so")
-    players_lib.process_players(player_array, len(players), all_player_array, len(all_players), probabilities)
+    players_lib.process_players(player_array, size, min_max_c, probabilities)
 
-    for i, player in enumerate(players):
-        player.set_stat(probabilities[i])
-
-    return players
+    return probabilities
 
 
 def invoke_lambda(function_name, payload):
     session = boto3.session.Session()
     region = session.region_name
-    account_id = sts_client.get_caller_identity()['Account']
+    account_id = sts_client.get_caller_identity()["Account"]
 
-    function_arn = f'arn:aws:lambda:{region}:{account_id}:function:{function_name}'
+    function_arn = f"arn:aws:lambda:{region}:{account_id}:function:{function_name}"
     response = lambda_client.invoke(
         FunctionName=function_arn, InvocationType="RequestResponse", Payload=json.dumps(payload)
     )
@@ -78,7 +95,7 @@ def invoke_lambda(function_name, payload):
 
 
 def get_tims_players():
-    response = requests.get("https://api.hockeychallengehelper.com/api/picks?").json()
+    response = requests.get("https://api.hockeychallengehelper.com/api/picks?", timeout=5).json()
     allPlayers = response["playerLists"]
 
     ids = []
@@ -117,12 +134,14 @@ def link_odds(players, player_infos):
 
 def save_to_db(players):
     data = {"items": players}
-    response = requests.post("https://x8ki-letl-twmt.n7.xano.io/api:OvqrJ0Ps/players", json=data)
+    response = requests.post("https://x8ki-letl-twmt.n7.xano.io/api:OvqrJ0Ps/players", timeout=5, json=data)
 
-    if response.status_code == 200:
-        logger.info("Successfully updated the database",)
+    if response.status_code == HTTPStatus.OK:
+        logger.info(
+            "Successfully updated the database",
+        )
     else:
-        logger.info("Request failed with status code: ", response.status_code)
+        logger.info(f"Request failed with status code: {response.status_code}")
         raise ValueError(f"Failed to update the database: {response.text}")
 
     return response.status_code
