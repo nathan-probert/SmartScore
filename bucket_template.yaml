@@ -1,0 +1,28 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation stack for creating the S3 bucket.
+
+Resources:
+  CodeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join
+        - '-'
+        - - "code-bucket"
+          - !Ref AWS::AccountId
+          - !Ref AWS::Region
+          - !Select
+            - 0
+            - !Split
+              - '-'
+              - !Select
+                - 2
+                - !Split
+                  - /
+                  - !Ref AWS::StackId
+
+Outputs:
+  CodeBucketName:
+    Description: "The name of the S3 bucket"
+    Value: !Ref CodeBucket
+    Export:
+      Name: CodeBucketNameExport
