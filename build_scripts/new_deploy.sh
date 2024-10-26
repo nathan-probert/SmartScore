@@ -9,12 +9,15 @@ SOURCE_DIR="smartscore"
 OUTPUT_DIR="output"
 
 BUCKET_STACK_NAME="codeBucket"
-BUCKET_TEMPLATE_FILE=".\bucket_template.yaml"
+BUCKET_TEMPLATE_FILE="./bucket_template.yaml"
 
-STACK_NAME="smartScore-"$ENV
-TEMPLATE_FILE=".\template.yaml"
+STACK_NAME="smartScore-$ENV"
+TEMPLATE_FILE="./template.yaml"
 
-KEY="Code-"$ENV".zip"
+KEY="Code-$ENV.zip"
+
+
+echo "Current working directory: $(pwd)"
 
 generate_bucket_stack() {
   echo "Creating or updating CloudFormation stack for S3 bucket..." >&2
