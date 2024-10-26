@@ -8,6 +8,7 @@ import requests
 from aws_lambda_powertools import Logger
 from dateutil import parser
 
+from config import ENV
 from constants import DB_URL
 
 logger = Logger()
@@ -233,7 +234,7 @@ def schedule_run(times):
         trigger_time = event_time + timedelta(minutes=5)
         cron_schedule = create_cron_schedule(trigger_time)
 
-        rule_name = f"TriggerStateMachineAt_{trigger_time.strftime('%Y%m%d%H%M')}"
+        rule_name = f"TriggerStateMachineAt_{trigger_time.strftime('%Y%m%d%H%M')}-{ENV}"
 
         events_client.put_rule(
             Name=rule_name,
