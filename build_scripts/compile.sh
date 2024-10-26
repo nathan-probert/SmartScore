@@ -16,7 +16,8 @@ if ! docker run -it --rm -v "$PROJECT_PATH:/project" amazonlinux:2 sh -c "
     make compile
 "; then
     echo "Error: Docker daemon is not running or another error occurred."
-    exit 1  # Exit the script with a non-zero exit code
+
+    make compile
 fi
 
 # Print a message upon successful completion
