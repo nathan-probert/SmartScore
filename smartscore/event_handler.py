@@ -35,7 +35,7 @@ def handle_check_completed(event, context):
     if entries:
         completed = True
 
-    return {"statusCode": 200, "completed": completed, "entries": entries}
+    return {"statusCode": 200, "completed": completed, "players": entries}
 
 
 @lambda_handler_error_responder

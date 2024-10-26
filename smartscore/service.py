@@ -1,7 +1,5 @@
 import datetime
 import json
-import random
-import time
 
 import pytz
 import requests
@@ -9,17 +7,30 @@ from aws_lambda_powertools import Logger
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
-from constants import DRAFTKINGS_GOAL_SCORER_CATEGORY, DRAFTKINGS_NHL_ID
-from utility import c_predict, get_tims_players, invoke_lambda, link_odds, save_to_db
+from utility import (
+    c_predict,
+    get_tims_players,
+    get_today_db,
+    invoke_lambda,
+    remove_min_max_times,
+    save_to_db,
+    schedule_run,
+)
 
 logger = Logger()
 
 
-def get_date(hour=False):
+def get_date(hour=False, add_days=0, subtract_days=0):
     toronto_tz = pytz.timezone("America/Toronto")
+    date = datetime.datetime.now(toronto_tz)
+    if add_days:
+        date += datetime.timedelta(days=add_days)
+    if subtract_days:
+        date -= datetime.timedelta(days=subtract_days)
+
     if hour:
-        return datetime.datetime.now(toronto_tz).strftime("%Y-%m-%dT%H:%M:%S")
-    return datetime.datetime.now(toronto_tz).strftime("%Y-%m-%d")
+        return date.strftime("%Y-%m-%dT%H:%M:%S")
+    return date.strftime("%Y-%m-%d")
 
 
 def get_todays_schedule():
@@ -34,7 +45,11 @@ def get_teams(data):
     games = data["gameWeek"][0]["games"]
 
     teams = []
+    start_times = set()
     for game in games:
+        print(f"Start time: {game['startTimeUTC']}")
+        start_times.add(game["startTimeUTC"])
+
         home_team = TeamInfo(
             team_name=game["homeTeam"]["placeName"]["default"],
             team_abbr=game["homeTeam"]["abbrev"],
@@ -52,6 +67,12 @@ def get_teams(data):
 
         teams.append(home_team)
         teams.append(away_team)
+
+    start_times = remove_min_max_times(start_times)
+    if not start_times:
+        logger.info("No start times found")
+    else:
+        schedule_run(start_times)
 
     return teams
 
@@ -147,72 +168,72 @@ def make_predictions_entries(entries):
     return entries
 
 
-def gather_odds(players):
-    retries = 3
-    delay = 1
-
-    url = f"https://sportsbook.draftkings.com/sites/CA-ON/api/v5/eventgroups/{DRAFTKINGS_NHL_ID}/categories/{DRAFTKINGS_GOAL_SCORER_CATEGORY}"
-    user_agents = [
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Safari/605.1.15",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
-        "Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; AS; rv:11.0) like Gecko",
-    ]
-
-    for attempt in range(retries):
-        try:
-            headers = {
-                "User-Agent": random.choice(user_agents),
-                "Accept": "application/json, text/html",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://www.google.com",
-                "Connection": "keep-alive",
-            }
-
-            logger.info("Making request to DraftKings")
-            response = requests.get(url, headers=headers, timeout=300)
-            response.raise_for_status()
-            data = response.json()
-
-            if "eventGroup" in data:
-                player_infos = []
-                for category in data["eventGroup"]["offerCategories"]:
-                    if category.get("name") == "Goalscorer":
-                        for subcategory in category.get("offerSubcategoryDescriptors", []):
-                            if subcategory.get("name") == "Goalscorer":
-                                offers = subcategory["offerSubcategory"]["offers"]
-                                for offer_group in offers:
-                                    for offer in offer_group:
-                                        if offer["label"] == "Anytime Goalscorer":
-                                            for outcome in offer["outcomes"]:
-                                                if outcome.get("providerId") == 2:
-                                                    if not (player_name := outcome.get("playerNameIdentifier")):
-                                                        player_name = outcome.get("participant")
-                                                    odds = outcome["oddsAmerican"]
-                                                    player_infos.append(
-                                                        {
-                                                            "name": player_name,
-                                                            "odds": odds,
-                                                        }
-                                                    )
-                link_odds(players, player_infos)
-                break
-
-            else:
-                logger.error("Currently no Goalscorer bets on DraftKings")
-                raise ValueError("Currently no Goalscorer bets on DraftKings")
-
-        except (requests.Timeout, requests.ConnectionError) as e:
-            logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {delay} seconds...")
-            time.sleep(delay)
-        except requests.RequestException as e:
-            logger.error(f"Failed to retrieve data: {e}")
-            raise ValueError("Failed to retrieve data")
-
-    else:
-        logger.error("Max retries reached. Could not gather odds.")
-        raise ValueError("Max retries reached. Could not gather odds.")
-
-    return players
+# def gather_odds(players):
+#     retries = 3
+#     delay = 1
+#
+#     url = f"https://sportsbook.draftkings.com/sites/CA-ON/api/v5/eventgroups/{DRAFTKINGS_NHL_ID}/categories/{DRAFTKINGS_GOAL_SCORER_CATEGORY}"
+#     user_agents = [
+#         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Safari/605.1.15", # noqa: E501
+#         "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1", # noqa: E501
+#         "Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; AS; rv:11.0) like Gecko",
+#     ]
+#
+#     for attempt in range(retries):
+#         try:
+#             headers = {
+#                 "User-Agent": random.choice(user_agents),
+#                 "Accept": "application/json, text/html",
+#                 "Accept-Language": "en-US,en;q=0.9",
+#                 "Referer": "https://www.google.com",
+#                 "Connection": "keep-alive",
+#             }
+#
+#             logger.info("Making request to DraftKings")
+#             response = requests.get(url, headers=headers, timeout=300)
+#             response.raise_for_status()
+#             data = response.json()
+#
+#             if "eventGroup" in data:
+#                 player_infos = []
+#                 for category in data["eventGroup"]["offerCategories"]:
+#                     if category.get("name") == "Goalscorer":
+#                         for subcategory in category.get("offerSubcategoryDescriptors", []):
+#                             if subcategory.get("name") == "Goalscorer":
+#                                 offers = subcategory["offerSubcategory"]["offers"]
+#                                 for offer_group in offers:
+#                                     for offer in offer_group:
+#                                         if offer["label"] == "Anytime Goalscorer":
+#                                             for outcome in offer["outcomes"]:
+#                                                 if outcome.get("providerId") == 2:
+#                                                     if not (player_name := outcome.get("playerNameIdentifier")):
+#                                                         player_name = outcome.get("participant")
+#                                                     odds = outcome["oddsAmerican"]
+#                                                     player_infos.append(
+#                                                         {
+#                                                             "name": player_name,
+#                                                             "odds": odds,
+#                                                         }
+#                                                     )
+#                 link_odds(players, player_infos)
+#                 break
+#
+#             else:
+#                 logger.error("Currently no Goalscorer bets on DraftKings")
+#                 raise ValueError("Currently no Goalscorer bets on DraftKings")
+#
+#         except (requests.Timeout, requests.ConnectionError) as e:
+#             logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {delay} seconds...")
+#             time.sleep(delay)
+#         except requests.RequestException as e:
+#             logger.error(f"Failed to retrieve data: {e}")
+#             raise ValueError("Failed to retrieve data")
+#
+#     else:
+#         logger.error("Max retries reached. Could not gather odds.")
+#         raise ValueError("Max retries reached. Could not gather odds.")
+#
+#     return players
 
 
 def get_tims(players):
@@ -230,8 +251,8 @@ def get_tims(players):
 
 
 def backfill_dates():
-    today = get_date()
-    logger.info(f"Checking for existance of date: {today}")
+    today = get_date(subtract_days=1)
+    logger.info(f"Checking for existence of date: {today}")
     response = invoke_lambda("Api", {"method": "GET_DATES_NO_SCORED"})
     body = response.get("body", {})
     dates_no_scored = json.loads(body.get("dates", "[]"))
@@ -271,6 +292,7 @@ def publish_public_db(players):
     date = get_date()
     for player in players:
         player["date"] = date
+        player["player_id"] = player.pop("id")
 
     save_to_db(players)
 
@@ -279,7 +301,9 @@ def check_db_for_date():
     date = get_date()
     logger.info(f"Checking date: {date}")
 
-    response = invoke_lambda("Api", {"method": "GET_DATE", "date": date})
-    entries = json.loads(response.get("body", "[]"))
-
-    return entries
+    entries = get_today_db()
+    if entries and entries[0]["date"] == date:
+        for entry in entries:
+            entry["id"] = entry.pop("player_id")
+        return entries
+    return None

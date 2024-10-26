@@ -19,6 +19,13 @@ Resources:
                 - !Split
                   - /
                   - !Ref AWS::StackId
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: "DeleteOldVersions"
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
 
 Outputs:
   CodeBucketName:
@@ -26,3 +33,7 @@ Outputs:
     Value: !Ref CodeBucket
     Export:
       Name: CodeBucketNameExport
+  CodeBucketVersion:
+    Value: !GetAtt CodeBucket.Arn
+    Export:
+      Name: CodeBucketVersionExport

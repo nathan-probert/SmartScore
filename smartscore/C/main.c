@@ -23,11 +23,11 @@ void normalize_stats(
 // Function to calculate probabilities based on normalized stats
 void calculate_probabilities(PlayerInfo* players, int num_players, float* probabilities) {
     // Define weight constants for the attributes
-    const float GPG_WEIGHT = 0.1;        // Weight for goals per game
-    const float FIVE_GPG_WEIGHT = 0.0;   // Weight for last 5 games goals per game
-    const float HGPG_WEIGHT = 0.8;       // Weight for historical goals per game
+    const float GPG_WEIGHT = 0.3;        // Weight for goals per game
+    const float FIVE_GPG_WEIGHT = 0.4;   // Weight for last 5 games goals per game
+    const float HGPG_WEIGHT = 0.3;       // Weight for historical goals per game
     const float TGPG_WEIGHT = 0.0;       // Weight for team goals per game
-    const float OTGA_WEIGHT = 0.1;       // Weight for other team goals average
+    const float OTGA_WEIGHT = 0.0;       // Weight for other team goals average
 
     // Calculate probabilities using normalized stats
     for (int i = 0; i < num_players; i++) {
