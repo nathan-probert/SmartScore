@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # one of {dev, prod}
-ENV="dev"
+ENV=${ENV:-dev}  # If ENV is not set, default to "dev"
 
 MAX_ZIP_SIZE_MB=25
 
@@ -9,10 +9,10 @@ SOURCE_DIR="smartscore"
 OUTPUT_DIR="output"
 
 BUCKET_STACK_NAME="codeBucket"
-BUCKET_TEMPLATE_FILE="D:\code\smartScore\bucket_template.yaml"
+BUCKET_TEMPLATE_FILE=".\bucket_template.yaml"
 
 STACK_NAME="smartScore-"$ENV
-TEMPLATE_FILE="D:\code\smartScore\template.yaml"
+TEMPLATE_FILE=".\template.yaml"
 
 KEY="Code-"$ENV".zip"
 
