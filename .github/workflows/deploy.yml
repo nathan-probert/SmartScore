@@ -5,20 +5,12 @@ on:
     branches:
       - main
 
+env:
+  ENV: prod
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
-    env:
-      ENV: "prod"  # Adjust as necessary
-      MAX_ZIP_SIZE_MB: "25"
-      SOURCE_DIR: "smartscore"
-      OUTPUT_DIR: "output"
-      BUCKET_STACK_NAME: "codeBucket"
-      BUCKET_TEMPLATE_FILE: "./bucket_template.yaml"
-      STACK_NAME: "smartScore-${{ env.ENV }}"
-      TEMPLATE_FILE: "./template.yaml"
-      KEY: "Code-${{ env.ENV }}.zip"
 
     steps:
       - name: Checkout code
