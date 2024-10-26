@@ -246,7 +246,7 @@ def schedule_run(times):
         region = session.region_name
         account_id = sts_client.get_caller_identity()["Account"]
 
-        sm_name = "GetAllPlayersStateMachine"
+        sm_name = f"GetAllPlayersStateMachine-{ENV}"
         state_machine_arn = f"arn:aws:states:{region}:{account_id}:stateMachine:{sm_name}"
         events_client.put_targets(
             Rule=rule_name,
