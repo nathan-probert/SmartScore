@@ -38,7 +38,3 @@ AI Output (small dataset, still WIP):        |  Linear Estimator
 
 *To-Do: Add penalty kill pct*
 
-
-```commandline
-sh build_scripts/deploy.sh
-```
