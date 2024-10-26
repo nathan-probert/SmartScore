@@ -1,3 +1,5 @@
-lib/*.so
-lib/*.o
-src/__pycache__
+*.so
+*.o
+__pycache__
+output/*
+.idea/*

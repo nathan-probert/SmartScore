@@ -1,0 +1,351 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation stack for the GetAllPlayers Step Function and Lambda functions.
+
+Parameters:
+  ENV:
+    Type: String
+    Description: The environment (e.g., dev, prod)
+    Default: dev2
+  CodeVersionId:
+    Type: String
+    Description: "The version ID of the Lambda function code in S3."
+
+Resources:
+  # IAM Role for Lambda Execution
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetAllPlayersStateMachine"
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api"
+              - Effect: Allow
+                Action:
+                  - events:* # Consider restricting this based on your actual requirements
+                Resource: "*"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/service-role/StepFunctions-EventBridge-ExecutionRole"
+
+  # Lambda Functions
+  GetTeamsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "GetTeams-${ENV}"
+      Handler: event_handler.handle_get_teams
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: !Sub "Code-${ENV}.zip"
+        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 128
+
+  GetPlayersFromTeamFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "GetPlayersFromTeam-${ENV}"
+      Handler: event_handler.handle_get_players_from_team
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: !Sub "Code-${ENV}.zip"
+        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
+      Runtime: python3.12
+      Timeout: 20
+      MemorySize: 128
+
+  MakePredictionsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "MakePredictions-${ENV}"
+      Handler: event_handler.handle_make_predictions
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: !Sub "Code-${ENV}.zip"
+        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 512
+
+  GetTimsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "GetTims-${ENV}"
+      Handler: event_handler.handle_get_tims
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: !Sub "Code-${ENV}.zip"
+        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
+      Runtime: python3.12
+      Timeout: 5
+      MemorySize: 128
+
+  PerformBackfillingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "PerformBackfilling-${ENV}"
+      Handler: event_handler.handle_backfill
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: !Sub "Code-${ENV}.zip"
+        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 128
+
+  PublishDbFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "PublishDb-${ENV}"
+      Handler: event_handler.handle_publish_db
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: !Sub "Code-${ENV}.zip"
+        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+
+  CheckCompletedFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "CheckCompleted-${ENV}"
+      Handler: event_handler.handle_check_completed
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: !Sub "Code-${ENV}.zip"
+        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+
+  # Lambda Log Groups
+  GetTeamsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/GetTeams-${ENV}"
+      RetentionInDays: 1
+
+  GetPlayersFromTeamLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/GetPlayersFromTeam-${ENV}"
+      RetentionInDays: 1
+
+  MakePredictionsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/MakePredictions-${ENV}"
+      RetentionInDays: 1
+
+  GetTimsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/GetTims-${ENV}"
+      RetentionInDays: 1
+
+  PerformBackfillingLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/PerformBackfilling-${ENV}"
+      RetentionInDays: 1
+
+  PublishDbLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/PublishDb-${ENV}"
+      RetentionInDays: 1
+
+  CheckCompletedLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/CheckCompleted-${ENV}"
+      RetentionInDays: 1
+
+  # State Machine Execution Role
+  StateMachineExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StateMachineExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt GetTeamsFunction.Arn
+                  - !GetAtt GetPlayersFromTeamFunction.Arn
+                  - !GetAtt MakePredictionsFunction.Arn
+                  - !GetAtt GetTimsFunction.Arn
+                  - !GetAtt PerformBackfillingFunction.Arn
+                  - !GetAtt PublishDbFunction.Arn
+                  - !GetAtt CheckCompletedFunction.Arn
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api"
+
+  # State Machine
+  StateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "GetAllPlayersStateMachine-${ENV}"
+      RoleArn: !GetAtt StateMachineExecutionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "A state machine to handle getting players and making predictions",
+          "StartAt": "GetDate",
+          "States": {
+            "GetDate": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:CheckCompleted-${ENV}",
+              "Next": "CheckCompletion"
+            },
+            "CheckCompletion": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.completed",
+                  "BooleanEquals": true,
+                  "Next": "GetTims"
+                },
+                {
+                  "Variable": "$.completed",
+                  "BooleanEquals": false,
+                  "Next": "Backfill"
+                }
+              ]
+            },
+            "Backfill": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PerformBackfilling-${ENV}",
+              "Next": "GetTeams"
+            },
+            "GetTeams": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTeams-${ENV}",
+              "Next": "MapGetPlayersFromTeam"
+            },
+            "MapGetPlayersFromTeam": {
+              "Type": "Map",
+              "ItemsPath": "$.teams",
+              "MaxConcurrency": 8,
+              "Iterator": {
+                "StartAt": "GetPlayersFromTeam",
+                "States": {
+                  "GetPlayersFromTeam": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetPlayersFromTeam-${ENV}",
+                    "ResultPath": "$.players",
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "IntervalSeconds": 2,
+                        "MaxAttempts": 3,
+                        "BackoffRate": 2.0
+                      }
+                    ],
+                    "End": true
+                  }
+                }
+              },
+              "Next": "SaveToDb"
+            },
+            "SaveToDb": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api",
+              "Parameters": {
+                "teams.$": "$",
+                "method": "POST_BATCH"
+              },
+              "Next": "MakePredictions"
+            },
+            "MakePredictions": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions-${ENV}",
+              "Next": "GetTims"
+            },
+            "GetTims": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims-${ENV}",
+              "Next": "PublishToDb"
+            },
+            "PublishToDb": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PublishDb-${ENV}",
+              "End": true
+            }
+          }
+        }
+
+
+  DailyStepFunctionTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(0 8 * * ? *)"  # 8 AM UTC, which is 3 AM EST
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt StateMachine.Arn
+          RoleArn: !GetAtt EventBridgeInvokeRole.Arn
+          Id: GetAllPlayersStateMachineTarget
+
+  EventBridgeInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EventBridgeInvokeStepFunctionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !GetAtt StateMachine.Arn
