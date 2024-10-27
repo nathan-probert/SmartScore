@@ -248,13 +248,14 @@ def schedule_run(times):
 
         sm_name = f"GetAllPlayersStateMachine-{ENV}"
         state_machine_arn = f"arn:aws:states:{region}:{account_id}:stateMachine:{sm_name}"
+        role_arn = f"arn:aws:iam::{account_id}:role/smartScore"
         events_client.put_targets(
             Rule=rule_name,
             Targets=[
                 {
                     "Id": "1",
                     "Arn": state_machine_arn,
-                    "RoleArn": "arn:aws:iam::242254217132:role/service-role/StepFunctions-EventBridge-ExecutionRole",
+                    "RoleArn": role_arn,
                     "Input": '{"source": "eventBridge"}',
                 }
             ],
