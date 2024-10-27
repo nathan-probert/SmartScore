@@ -219,6 +219,14 @@ def delete_expired_rules():
                 # Check if the rule's time has expired
                 if rule_time < current_time:
                     print(f"Deleting expired rule: {rule['Name']}")
+
+                    # List and remove all targets associated with the rule
+                    targets = client.list_targets_by_rule(Rule=rule["Name"]).get("Targets", [])
+                    if targets:
+                        target_ids = [target["Id"] for target in targets]
+                        client.remove_targets(Rule=rule["Name"], Ids=target_ids)
+
+
                     client.delete_rule(Name=rule["Name"])
             except ValueError:
                 # If the timestamp format is incorrect, skip the rule
