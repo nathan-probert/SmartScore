@@ -109,3 +109,7 @@ def handle_publish_db(event, context):
 #         "teams": TEAM_INFO_SCHEMA.dump(all_teams, many=True),
 #         "players": PLAYER_INFO_SCHEMA.dump(all_players, many=True),
 #     }
+
+
+if __name__ == "__main__":
+    handle_get_teams({}, {})

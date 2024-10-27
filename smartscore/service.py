@@ -12,7 +12,7 @@ from utility import (
     get_tims_players,
     get_today_db,
     invoke_lambda,
-    remove_min_max_times,
+    remove_last_game,
     save_to_db,
     schedule_run,
 )
@@ -47,7 +47,6 @@ def get_teams(data):
     teams = []
     start_times = set()
     for game in games:
-        print(f"Start time: {game['startTimeUTC']}")
         start_times.add(game["startTimeUTC"])
 
         home_team = TeamInfo(
@@ -68,7 +67,7 @@ def get_teams(data):
         teams.append(home_team)
         teams.append(away_team)
 
-    start_times = remove_min_max_times(start_times)
+    start_times = remove_last_game(start_times)
     if not start_times:
         logger.info("No start times found")
     else:
