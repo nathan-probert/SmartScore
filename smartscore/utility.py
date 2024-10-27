@@ -158,32 +158,11 @@ def save_to_db(players):
 def get_today_db():
     response = requests.get(DB_URL, timeout=5)
 
-    if response.status_code == HTTPStatus.OK:
-        logger.info(
-            "Got today's players from the database",
-        )
-    else:
+    if response.status_code != HTTPStatus.OK:
         logger.info(f"Request failed with status code: {response.status_code}")
         raise ValueError(f"Failed to access the database: {response.text}")
 
     return response.json()
-
-
-def calculate_hours_to_set_endtime(invocation_time, buffer_hours=1):
-    # Convert the invocation time from string to a timezone-aware datetime object
-    invocation_datetime = datetime.fromisoformat(invocation_time.replace("Z", "+00:00"))
-
-    # Use timezone-aware current time
-    current_time = datetime.now(timezone.utc)
-
-    # Calculate the expiration time based on the buffer
-    expiration_time = invocation_datetime + timedelta(hours=buffer_hours)
-    expiration_time = expiration_time.replace(tzinfo=timezone.utc)
-
-    # Calculate how many hours until the expiration time
-    hours_until_expiration = (expiration_time - current_time).total_seconds() // 3600
-
-    return int(hours_until_expiration)
 
 
 def create_cron_schedule(date_string):
@@ -272,19 +251,13 @@ def schedule_run(times):
         print(f"Scheduled event for {trigger_time} with rule name {rule_name}")
 
 
-def remove_min_max_times(time_set):
+def remove_last_game(time_set):
     time_objects = set()
     for time_str in time_set:
         event_time = parser.parse(time_str)
         time_objects.add(event_time)
 
-    # Find the minimum and maximum times
-    min_time = min(time_objects)
-    max_time = max(time_objects)
-
-    # Remove min and max times from the original set
-    time_objects.discard(min_time)
-    time_objects.discard(max_time)
+    time_objects.discard(max(time_objects))
 
     # Return the updated set
     return {time.isoformat() for time in time_objects}
