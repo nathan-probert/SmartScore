@@ -47,7 +47,7 @@ Resources:
                 Resource: "*"
               - Effect: Allow
                 Action: iam:PassRole
-                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/service-role/StepFunctions-EventBridge-ExecutionRole"
+                Resource: "*"  # Applies to all resources
 
   # Lambda Functions
   GetTeamsFunction:
