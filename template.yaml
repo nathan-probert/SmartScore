@@ -63,6 +63,9 @@ Resources:
       Runtime: python3.12
       Timeout: 10
       MemorySize: 128
+      Environment:
+        Variables:
+          ENV: !Ref ENV
 
   GetPlayersFromTeamFunction:
     Type: AWS::Lambda::Function
