@@ -17,8 +17,6 @@ TEMPLATE_FILE="./template.yaml"
 KEY="Code-$ENV.zip"
 
 
-echo "Current working directory: $(pwd)"
-
 generate_bucket_stack() {
   echo "Creating or updating CloudFormation stack for S3 bucket..." >&2
 

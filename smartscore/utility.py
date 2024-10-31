@@ -15,6 +15,7 @@ logger = Logger()
 lambda_client = boto3.client("lambda")
 sts_client = boto3.client("sts")
 events_client = boto3.client("events")
+ssm_client = boto3.client('ssm')
 
 
 class PlayerInfoC(ctypes.Structure):
@@ -177,9 +178,6 @@ def delete_expired_rules():
     # Create a CloudWatch Events client
     client = boto3.client("events")
 
-    # Get the current time in UTC
-    current_time = datetime.now(timezone.utc)
-
     # List all rules
     response = client.list_rules()
 
@@ -187,29 +185,14 @@ def delete_expired_rules():
         # Check if the rule name matches the desired format
         # The format is TriggerStateMachineAt_YYYYMMDDHHMM
         if rule["Name"].startswith("TriggerStateMachineAt_"):
-            # Extract the timestamp part from the rule name
-            timestamp_str = rule["Name"][len("TriggerStateMachineAt_") :]
 
-            # Attempt to parse the timestamp
-            try:
-                # Convert the timestamp string to a datetime object
-                rule_time = datetime.strptime(timestamp_str, "%Y%m%d%H%M").replace(tzinfo=timezone.utc)
+            # List and remove all targets associated with the rule
+            targets = client.list_targets_by_rule(Rule=rule["Name"]).get("Targets", [])
+            if targets:
+                target_ids = [target["Id"] for target in targets]
+                client.remove_targets(Rule=rule["Name"], Ids=target_ids)
 
-                # Check if the rule's time has expired
-                if rule_time < current_time:
-                    print(f"Deleting expired rule: {rule['Name']}")
-
-                    # List and remove all targets associated with the rule
-                    targets = client.list_targets_by_rule(Rule=rule["Name"]).get("Targets", [])
-                    if targets:
-                        target_ids = [target["Id"] for target in targets]
-                        client.remove_targets(Rule=rule["Name"], Ids=target_ids)
-
-
-                    client.delete_rule(Name=rule["Name"])
-            except ValueError:
-                # If the timestamp format is incorrect, skip the rule
-                print(f"Skipping rule with invalid timestamp format: {rule['Name']}")
+            client.delete_rule(Name=rule["Name"])
 
 
 def schedule_run(times):
@@ -235,7 +218,10 @@ def schedule_run(times):
 
         sm_name = f"GetAllPlayersStateMachine-{ENV}"
         state_machine_arn = f"arn:aws:states:{region}:{account_id}:stateMachine:{sm_name}"
-        role_arn = f"arn:aws:iam::{account_id}:role/smartScore"
+
+        parameter = ssm_client.get_parameter(Name='/smartscore/event_bridge_role_arn')
+        role_arn = parameter['Parameter']['Value']
+
         events_client.put_targets(
             Rule=rule_name,
             Targets=[

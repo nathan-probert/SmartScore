@@ -48,6 +48,11 @@ Resources:
               - Effect: Allow
                 Action: iam:PassRole
                 Resource: "*"  # Applies to all resources
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: "*"
 
   # Lambda Functions
   GetTeamsFunction:
@@ -352,3 +357,11 @@ Resources:
                 Action:
                   - states:StartExecution
                 Resource: !GetAtt StateMachine.Arn
+
+  EventBridgeRoleParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: "/smartscore/event_bridge_role_arn"
+      Description: "ARN of the EventBridge Invoke Role"
+      Type: String
+      Value: !GetAtt EventBridgeInvokeRole.Arn
