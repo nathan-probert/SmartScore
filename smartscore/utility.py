@@ -1,6 +1,6 @@
 import ctypes
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from http import HTTPStatus
 
 import boto3
@@ -15,7 +15,7 @@ logger = Logger()
 lambda_client = boto3.client("lambda")
 sts_client = boto3.client("sts")
 events_client = boto3.client("events")
-ssm_client = boto3.client('ssm')
+ssm_client = boto3.client("ssm")
 
 
 class PlayerInfoC(ctypes.Structure):
@@ -114,33 +114,6 @@ def get_tims_players():
     return ids
 
 
-def adjust_name(df_name):
-    name_replacements = {
-        "Cam": "Cameron",
-        "J.J. Moser": "Janis Moser",
-        "Pat Maroon": "Patrick Maroon",
-        "T.J. Brodie": "TJ Brodie",
-    }
-    for old_name, new_name in name_replacements.items():
-        df_name = df_name.replace(old_name, new_name)
-
-    return df_name
-
-
-def link_odds(players, player_infos):
-    player_table = {player.name: player for player in players}
-    for player_info in player_infos:
-        if player_table.get(player_info["name"]):
-            player_table[player_info["name"]].set_odds(player_info["odds"])
-        else:
-            # retry with adjustments
-            player_info["name"] = adjust_name(player_info["name"])
-            if player_table.get(player_info["name"]):
-                player_table[player_info["name"]].set_odds(player_info["odds"])
-            else:
-                print(f"Player {player_info['name']} not found in player list")
-
-
 def save_to_db(players):
     data = {"items": players}
     response = requests.post(DB_URL, timeout=5, json=data)
@@ -185,7 +158,6 @@ def delete_expired_rules():
         # Check if the rule name matches the desired format
         # The format is TriggerStateMachineAt_YYYYMMDDHHMM
         if rule["Name"].startswith("TriggerStateMachineAt_"):
-
             # List and remove all targets associated with the rule
             targets = client.list_targets_by_rule(Rule=rule["Name"]).get("Targets", [])
             if targets:
@@ -219,8 +191,8 @@ def schedule_run(times):
         sm_name = f"GetAllPlayersStateMachine-{ENV}"
         state_machine_arn = f"arn:aws:states:{region}:{account_id}:stateMachine:{sm_name}"
 
-        parameter = ssm_client.get_parameter(Name='/smartscore/event_bridge_role_arn')
-        role_arn = parameter['Parameter']['Value']
+        parameter = ssm_client.get_parameter(Name=f"/event_bridge_role/arn/{ENV}")
+        role_arn = parameter["Parameter"]["Value"]
 
         events_client.put_targets(
             Rule=rule_name,

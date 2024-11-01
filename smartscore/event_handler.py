@@ -93,19 +93,3 @@ def handle_publish_db(event, context):
     publish_public_db(entries)
 
     return {"statusCode": 200}
-
-
-### This code does not work on AWS environment as the AWS IP is blacklisted ###
-# @lambda_handler_error_responder
-# def handle_get_odds(event, context):
-#     logger.info("Getting odds for players")
-#     all_players = [PlayerInfo(**player) for player in event.get("players")]
-#     all_teams = [TeamInfo(**team) for team in event.get("teams")]
-#
-#     all_players = gather_odds(all_players)
-#
-#     return {
-#         "statusCode": 200,
-#         "teams": TEAM_INFO_SCHEMA.dump(all_teams, many=True),
-#         "players": PLAYER_INFO_SCHEMA.dump(all_players, many=True),
-#     }
