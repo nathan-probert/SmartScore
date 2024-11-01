@@ -15,7 +15,8 @@ if ! docker run -it --rm -v "$PROJECT_PATH:/project" amazonlinux:2 sh -c "
     # Compile the C code into a shared object
     make compile
 "; then
-    echo "Error: Docker daemon is not running or another error occurred."
+    echo "Running for linux environment."
+    echo "If you are on windows, ensure docker is running."
 
     make compile
 fi

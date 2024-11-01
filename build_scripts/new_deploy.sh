@@ -61,7 +61,7 @@ generate_bucket_stack() {
 generate_smartscore_stack() {
   VERSION_ID=$1  # Get the version ID as a parameter
 
-  if aws cloudformation describe-stacks --stack-name $STACK_NAME &>/dev/null; then
+  if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
     aws cloudformation update-stack \
       --stack-name "$STACK_NAME" \
@@ -72,7 +72,6 @@ generate_smartscore_stack() {
 
     echo "Waiting for CloudFormation stack update to complete..."
     aws cloudformation wait stack-update-complete --stack-name "$STACK_NAME"
-    echo "CloudFormation stack $STACK_NAME updated successfully."
   else
     echo "Creating CloudFormation stack $STACK_NAME..."
     aws cloudformation create-stack \
@@ -84,8 +83,17 @@ generate_smartscore_stack() {
 
     echo "Waiting for CloudFormation stack creation to complete..."
     aws cloudformation wait stack-create-complete --stack-name "$STACK_NAME"
-    echo "CloudFormation stack $STACK_NAME created successfully."
   fi
+
+  # Check the final status of the stack
+  STACK_STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].StackStatus" --output text)
+
+  if [[ "$STACK_STATUS" != "CREATE_COMPLETE" && "$STACK_STATUS" != "UPDATE_COMPLETE" ]]; then
+    echo "CloudFormation stack operation failed with status: $STACK_STATUS."
+    exit 1  # Exit with error
+  fi
+
+  echo "CloudFormation stack $STACK_NAME completed successfully with status: $STACK_STATUS."
 }
 
 

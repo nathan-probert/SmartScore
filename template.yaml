@@ -361,7 +361,7 @@ Resources:
   EventBridgeRoleParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: "/smartscore/event_bridge_role_arn"
+      Name: !Sub "/event_bridge_role/arn/${ENV}"
       Description: "ARN of the EventBridge Invoke Role"
       Type: String
       Value: !GetAtt EventBridgeInvokeRole.Arn
