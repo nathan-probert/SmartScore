@@ -42,5 +42,5 @@ jobs:
 
       - name: Run deploy script
         run: |
-          chmod +x build_scripts/new_deploy.sh
-          ./build_scripts/new_deploy.sh
+          chmod +x build_scripts/deploy.sh
+          ./build_scripts/deploy.sh
