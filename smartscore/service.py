@@ -55,6 +55,7 @@ def get_teams(data):
             season=game["season"],
             team_id=game["homeTeam"]["id"],
             opponent_id=game["awayTeam"]["id"],
+            home=True,
         )
         away_team = TeamInfo(
             team_name=game["awayTeam"]["placeName"]["default"],
@@ -62,6 +63,7 @@ def get_teams(data):
             season=game["season"],
             team_id=game["awayTeam"]["id"],
             opponent_id=game["homeTeam"]["id"],
+            home=False,
         )
 
         teams.append(home_team)

@@ -8,6 +8,10 @@ Use prod to access the product database as it will be kept up to date
 import secrets
 import sys
 import time
+from datetime import datetime
+
+from unidecode import unidecode
+import csv
 
 import requests
 from aws_lambda_powertools import Logger
@@ -27,6 +31,9 @@ def adjust_name(df_name):
         "T.J. Brodie": "TJ Brodie",
         "Mitchell Marner": "Mitch Marner",
         "Alex Wennberg": "Alexander Wennberg",
+        "Tim Stuetzle": "Tim Stutzle",
+        "Zach Aston-Reese": "Zachary Aston-Reese",
+        "Nicholas Paul": "Nick Paul",
     }
     for old_name, new_name in name_replacements.items():
         df_name = df_name.replace(old_name, new_name)
@@ -35,9 +42,9 @@ def adjust_name(df_name):
 
 
 def link_odds(players, player_infos):
-    player_table = {player["name"]: player for player in players}
+    player_table = {unidecode(player["name"]): player for player in players}
     for player_info in player_infos:
-        if player_table.get(player_info["name"]):
+        if player_table.get(unidecode(player_info["name"])):
             player_table[player_info["name"]]["odds"] = player_info["odds"]
         else:
             # retry with adjustments
@@ -150,7 +157,7 @@ def calculate_bet_size(player, bankroll):
     kelly_fraction = edge / (decimal_odds - 1)
 
     bet_amount = max(0, kelly_fraction * bankroll)
-    return min(bet_amount, bankroll)
+    return round(min(bet_amount, bankroll), 2)
 
 
 if __name__ == "__main__":
@@ -159,13 +166,38 @@ if __name__ == "__main__":
     players = convert_to_percent(players)
 
     bankroll_per_person = 100  # bet up to this amount per person
-    print("Name, my probability, DraftKings probability, DraftKings odds")
-    for player in players:
-        stat = player.get("stat") * 100
-        odds = player.get("percent_odds")
+    print("Name, Team, my probability, DraftKings probability, DraftKings odds")
 
-        bet_size = calculate_bet_size(player, bankroll_per_person)
-        if bet_size > 0:
-            print(f"{player['name']}, {player['stat']*100:.2f}%, {player['percent_odds']:.2f}%, {player['odds']}")
-            print(f"Bet size: ${bet_size:.2f}")
-            print()
+    with open("./lib/bets.csv", mode="r") as file:
+        reader = csv.reader(file)
+        data = list(reader)
+        last_date = data[-1][0]
+
+    with open("./lib/bets.csv", mode="a", newline="") as file:
+        writer = csv.writer(file)
+
+        for player in players:
+            stat = player.get("stat") * 100
+            odds = player.get("percent_odds")
+
+            bet_size = calculate_bet_size(player, bankroll_per_person)
+            if bet_size > 0.1:
+                payout_amount = bet_size + (bet_size * float(player["odds"]) / 100)
+                date_today = datetime.now().strftime("%Y-%m-%d")
+
+                print(f"{player['name']}, {player['team_name']}, {player['stat']*100:.2f}%, {player['percent_odds']:.2f}%, {player['odds']}")
+                print(f"Bet size: ${bet_size:.2f}, Return: ${payout_amount:.2f}")
+                print()
+
+                if date_today != last_date:
+                    writer.writerow([
+                        date_today,
+                        player["name"],
+                        player["team_name"],
+                        f"{stat:.2f}",
+                        f"{odds:.2f}",
+                        player["odds"],
+                        f"{bet_size:.2f}",
+                        f"{payout_amount:.2f}",
+                        player.get("scored", "")  # Default to an empty string if "scored" is not available
+                    ])
