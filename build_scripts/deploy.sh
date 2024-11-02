@@ -1,176 +1,161 @@
 #!/bin/bash
 
-# Configuration variables
-STACK_NAME="smartScoreBucket"
-LAMBDA_STACK_NAME="smartScoreFunction"
-LAMBDA_FUNCTION_NAME="GetAllPlayers"
-LAMBDA_ZIP="Code.zip"
-TEMPLATE_FILE="D:\code\smartScore\bucket_template.yaml"  # Updated to a new template for the bucket
-LAMBDA_TEMPLATE_FILE="D:\code\smartScore\lambda_template.yaml"  # New template for Lambda function
-S3_KEY="Code.zip"
+# one of {dev, prod}
+ENV=${ENV:-dev}  # If ENV is not set, default to "dev"
+
+MAX_ZIP_SIZE_MB=25
+
 SOURCE_DIR="smartscore"
 OUTPUT_DIR="output"
 
+BUCKET_STACK_NAME="codeBucket"
+BUCKET_TEMPLATE_FILE="./bucket_template.yaml"
 
-#
-## Create a new directory for your deployment package
-#mkdir -p $OUTPUT_DIR
-#
-#
-#
-## DO SOMETHING LIKE THIS WITH POETRY.LOCK
-#
-## Function to check if the output directory needs an update
-#needs_update() {
-#    # Check if the output directory exists and is not empty
-#    if [ -d "$OUTPUT_DIR" ] && [ "$(ls -A $OUTPUT_DIR)" ]; then
-#        # Get the last modification time of the source directory and the output directory
-#        SOURCE_MOD_TIME=$(find "$SOURCE_DIR" -type f -exec stat -c %Y {} + | sort -n | tail -1)
-#        OUTPUT_MOD_TIME=$(find "$OUTPUT_DIR" -type f -exec stat -c %Y {} + | sort -n | tail -1)
-#
-#        # Compare modification times
-#        if [ "$SOURCE_MOD_TIME" -gt "$OUTPUT_MOD_TIME" ]; then
-#            return 0  # Update needed
-#        else
-#            return 1  # No update needed
-#        fi
-#    else
-#        return 0  # Update needed if output directory does not exist or is empty
-#    fi
-#}
-#
-## Check if an update is needed
-#if needs_update; then
-#    echo "Changes detected. Updating the deployment package..."
-#
-#    # Export dependencies to a requirements file without hashes
-#    echo "Exporting dependencies..."
-#    poetry export -f requirements.txt --output $OUTPUT_DIR/requirements.txt --without-hashes
-#
-#    # Install dependencies into the output directory using pip within Poetry's environment
-#    echo "Installing dependencies into output directory..."
-#    poetry run pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
-#
-#    # Copy your Lambda code into the output directory
-#    cp -r $SOURCE_DIR/* $OUTPUT_DIR/
-#
-#    # Change to the output directory and create a zip file
-#    echo "Creating ZIP package for Lambda..."
-#    cd $OUTPUT_DIR
-#    zip -r $LAMBDA_ZIP .  # Zip everything in the output directory
-#    cd ..
-#
-#    # Check the size of the ZIP file
-#    ZIP_FILE_SIZE=$(stat -c%s "$OUTPUT_DIR/$LAMBDA_ZIP")  # Get size in bytes
-#    ZIP_FILE_SIZE_MB=$((ZIP_FILE_SIZE / 1024 / 1024))  # Convert to MB
-#
-#    echo "Size of ZIP file: $ZIP_FILE_SIZE_MB MB"
-#
-#    # Check if the ZIP file size exceeds 20 MB
-#    if [ $ZIP_FILE_SIZE_MB -gt 20 ]; then
-#        echo "Error: The ZIP file exceeds 20 MB. Aborting deployment."
-#        exit 1
-#    fi
-#else
-#    echo "No changes detected. Skipping deployment."
-#    exit 0
-#fi
-#
-#
-#
-#exit 0
+STACK_NAME="smartScore-$ENV"
+TEMPLATE_FILE="./template.yaml"
+
+KEY="Code-$ENV.zip"
 
 
-## Create a new directory for your deployment package
-#mkdir -p output
-#
-## Export dependencies to a requirements file
-#poetry export -f requirements.txt --output requirements.txt
-#
-## Install dependencies in the output directory
-#poetry run pip install --no-deps -r requirements.txt -t output/  # Install into the output directory
-#
-## Copy your Lambda code into the output directory
-cp -r smartscore/* output/
-#
-# Change to the output directory and create a zip file
-cd output
-zip -r Code.zip .  # Zip everything in the output directory
-cd ..
+generate_bucket_stack() {
+  echo "Creating or updating CloudFormation stack for S3 bucket..." >&2
+
+  # Check if the stack exists
+  if aws cloudformation describe-stacks --stack-name $BUCKET_STACK_NAME &>/dev/null; then
+    # Stack exists, update it
+    echo "Updating existing CloudFormation stack..." >&2
+    aws cloudformation update-stack \
+      --stack-name $BUCKET_STACK_NAME \
+      --template-body file://$BUCKET_TEMPLATE_FILE \
+      --capabilities CAPABILITY_NAMED_IAM
+  else
+    # Stack does not exist, create it
+    echo "Creating new CloudFormation stack..." >&2
+    aws cloudformation create-stack \
+      --stack-name $BUCKET_STACK_NAME \
+      --template-body file://$BUCKET_TEMPLATE_FILE \
+      --capabilities CAPABILITY_NAMED_IAM
+  fi
+
+  echo "Waiting for S3 bucket stack creation/updating to complete..." >&2
+  aws cloudformation wait stack-update-complete --stack-name $BUCKET_STACK_NAME || \
+  aws cloudformation wait stack-create-complete --stack-name $BUCKET_STACK_NAME
+
+  echo "S3 bucket stack creation/updating completed." >&2
+
+  S3_BUCKET_NAME=$(aws cloudformation describe-stacks \
+    --stack-name $BUCKET_STACK_NAME \
+    --query "Stacks[0].Outputs[?OutputKey=='CodeBucketName'].OutputValue" \
+    --output text)
+
+  if [ -z "$S3_BUCKET_NAME" ]; then
+    echo "Error: Unable to retrieve the S3 bucket name." >&2
+    return 1
+  else
+    echo "$S3_BUCKET_NAME"  # Only print the bucket name to stdout
+    return 0
+  fi
+}
 
 
-# Check the size of the ZIP file
-ZIP_FILE_SIZE=$(stat -c%s "$OUTPUT_DIR/$LAMBDA_ZIP")  # Get size in bytes
-ZIP_FILE_SIZE_MB=$((ZIP_FILE_SIZE / 1024 / 1024))  # Convert to MB
+generate_smartscore_stack() {
+  VERSION_ID=$1  # Get the version ID as a parameter
 
-echo "Size of ZIP file: $ZIP_FILE_SIZE_MB MB"
+  if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
+    echo "Updating CloudFormation stack $STACK_NAME..."
+    aws cloudformation update-stack \
+      --stack-name "$STACK_NAME" \
+      --template-body file://"$TEMPLATE_FILE" \
+      --parameters ParameterKey=ENV,ParameterValue="$ENV" \
+                   ParameterKey=CodeVersionId,ParameterValue="$VERSION_ID" \
+      --capabilities CAPABILITY_NAMED_IAM
 
-# Check if the ZIP file size exceeds 20 MB
-if [ $ZIP_FILE_SIZE_MB -gt 20 ]; then
-    echo "Error: The ZIP file exceeds 20 MB. Aborting deployment."
-    exit 1
+    echo "Waiting for CloudFormation stack update to complete..."
+    aws cloudformation wait stack-update-complete --stack-name "$STACK_NAME"
+  else
+    echo "Creating CloudFormation stack $STACK_NAME..."
+    aws cloudformation create-stack \
+      --stack-name "$STACK_NAME" \
+      --template-body file://"$TEMPLATE_FILE" \
+      --parameters ParameterKey=ENV,ParameterValue="$ENV" \
+                   ParameterKey=CodeVersionId,ParameterValue="$VERSION_ID" \
+      --capabilities CAPABILITY_NAMED_IAM
+
+    echo "Waiting for CloudFormation stack creation to complete..."
+    aws cloudformation wait stack-create-complete --stack-name "$STACK_NAME"
+  fi
+
+  # Check the final status of the stack
+  STACK_STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].StackStatus" --output text)
+
+  if [[ "$STACK_STATUS" != "CREATE_COMPLETE" && "$STACK_STATUS" != "UPDATE_COMPLETE" ]]; then
+    echo "CloudFormation stack operation failed with status: $STACK_STATUS."
+    exit 1  # Exit with error
+  fi
+
+  echo "CloudFormation stack $STACK_NAME completed successfully with status: $STACK_STATUS."
+}
+
+
+generate_zip_file() {
+  echo "Creating ZIP package for Lambda..."
+  cd $OUTPUT_DIR
+
+  # Exclude any .zip files from the ZIP package
+  zip -r $KEY . -x "*.zip" > /dev/null
+
+  cd ..
+
+  ZIP_FILE_SIZE=$(stat -c%s "$OUTPUT_DIR/$KEY")
+  ZIP_FILE_SIZE_MB=$((ZIP_FILE_SIZE / 1024 / 1024))
+
+  echo "Size of ZIP file: $ZIP_FILE_SIZE_MB MB"
+
+  if [ $ZIP_FILE_SIZE_MB -gt $MAX_ZIP_SIZE_MB ]; then
+      echo "Error: The ZIP file exceeds $MAX_ZIP_SIZE_MB MB. Aborting deployment."
+      exit 1
+  fi
+}
+
+
+# main
+
+# create the output directory
+mkdir -p $OUTPUT_DIR
+
+# update dependencies
+poetry export -f requirements.txt --output $OUTPUT_DIR/requirements.txt --without-hashes
+poetry run pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
+rm -f $OUTPUT_DIR/requirements.txt
+
+# compile C code
+sh build_scripts/compile.sh
+if [ $? -ne 0 ]; then
+  echo "Error: Compilation failed. Ensure docker is running."
+  exit 1
 fi
 
-#
-# 2. Create the S3 bucket stack
-#echo "Creating CloudFormation stack for S3 bucket..."
-#aws cloudformation create-stack \
-#  --stack-name $STACK_NAME \
-#  --template-body file://$TEMPLATE_FILE \
-#  --capabilities CAPABILITY_NAMED_IAM
-#
-#echo "Waiting for S3 bucket stack creation to complete..."
-#aws cloudformation wait stack-create-complete --stack-name $STACK_NAME
-#echo "S3 bucket stack creation completed."
-#
-# Retrieve the S3 bucket name from the CloudFormation stack's output
-S3_BUCKET_NAME=$(aws cloudformation describe-stacks \
-  --stack-name $STACK_NAME \
-  --query "Stacks[0].Outputs[?OutputKey=='CodeBucketName'].OutputValue" \
-  --output text)
+# update the code
+cp -r $SOURCE_DIR/* $OUTPUT_DIR/
 
-if [ -z "$S3_BUCKET_NAME" ]; then
-  echo "Error: Unable to retrieve the S3 bucket name."
+# generate the ZIP file
+generate_zip_file
+
+# create the CloudFormation stack for the S3 bucket
+S3_BUCKET_NAME=$(generate_bucket_stack 2>/dev/null)
+if [ $? -ne 0 ]; then
+  echo "Failed to create or retrieve S3 bucket name." >&2
   exit 1
 else
-  echo "S3 Bucket Name: $S3_BUCKET_NAME"
+  echo "S3 bucket created: $S3_BUCKET_NAME"
 fi
 
-# 3. Upload the Lambda zip to S3 after confirming the bucket stack exists
-echo "Uploading Lambda function to S3..."
-aws s3 cp $OUTPUT_DIR/$LAMBDA_ZIP s3://$S3_BUCKET_NAME/$S3_KEY
+# upload the code to bucket stack
+aws s3 cp $OUTPUT_DIR/$KEY s3://$S3_BUCKET_NAME/$KEY
+VERSION_ID=$(aws s3api list-object-versions --bucket $S3_BUCKET_NAME --prefix $KEY --query "Versions[?IsLatest].VersionId" --output text)
 
-# 4. Create or update the Lambda function stack
-echo "Creating or updating CloudFormation stack for Lambda function..."
-STACK_STATUS=$(aws cloudformation describe-stacks --stack-name $LAMBDA_STACK_NAME 2>&1)
+# Output the version ID
+echo "Uploaded version ID: $VERSION_ID"
 
-if [[ $STACK_STATUS == *"does not exist"* ]]; then
-    echo "Stack does not exist. Creating a new CloudFormation stack for Lambda function..."
-
-    aws cloudformation create-stack \
-      --stack-name $LAMBDA_STACK_NAME \
-      --template-body file://$LAMBDA_TEMPLATE_FILE \
-      --capabilities CAPABILITY_NAMED_IAM
-
-    # 5. Wait for the Lambda stack update to complete
-  echo "Waiting for Lambda stack update to complete..."
-  aws cloudformation wait stack-create-complete --stack-name $LAMBDA_STACK_NAME
-
-else
-    echo "Stack exists. Updating the CloudFormation stack for Lambda function..."
-
-    aws cloudformation update-stack \
-      --stack-name $LAMBDA_STACK_NAME \
-      --template-body file://$LAMBDA_TEMPLATE_FILE \
-      --capabilities CAPABILITY_NAMED_IAM
-
-    # 5. Wait for the Lambda stack update to complete
-  echo "Waiting for Lambda stack update to complete..."
-  aws cloudformation wait stack-update-complete --stack-name $LAMBDA_STACK_NAME
-
-fi
-
-echo "Lambda stack update completed."
-
-# 6. Confirm deployment success
-echo "Deployment successful. Lambda function '$LAMBDA_FUNCTION_NAME' is up to date."
+# create the CloudFormation stack for smartscore
+generate_smartscore_stack "$VERSION_ID"  # Pass the version ID to the function

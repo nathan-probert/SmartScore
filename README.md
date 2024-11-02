@@ -20,7 +20,7 @@ First install all necessary packages:<br/>
 ```make local-setup```<br/>
 
 Deploy to AWS using:<br />
-```sh build_scripts/new_deploy.sh```<br/><br/>
+```sh build_scripts/deploy.sh```<br/><br/>
 
 *Note: This program is intended for informational purposes only and does not facilitate actual betting. Users should exercise their own judgment and discretion when using the provided suggestions for betting purposes.*
 

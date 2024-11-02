@@ -5,22 +5,23 @@ ENV=prod poetry run python smartscore/scripts/get_odds.py
 Use prod to access the product database as it will be kept up to date
 """
 
+import csv
 import secrets
 import sys
 import time
 from datetime import datetime
 
-from unidecode import unidecode
-import csv
-
 import requests
 from aws_lambda_powertools import Logger
+from unidecode import unidecode
 
 sys.path.append("D:\\code\\smartScore\\smartscore")
 from constants import DRAFTKINGS_GOAL_SCORER_CATEGORY, DRAFTKINGS_NHL_ID, DRAFTKINGS_PROVIDER_ID  # noqa: E402
 from utility import get_today_db  # noqa: E402
 
 logger = Logger()
+
+MINIMUM_BET_SIZE = 0.1
 
 
 def adjust_name(df_name):
@@ -181,23 +182,31 @@ if __name__ == "__main__":
             odds = player.get("percent_odds")
 
             bet_size = calculate_bet_size(player, bankroll_per_person)
-            if bet_size > 0.1:
+            if bet_size > MINIMUM_BET_SIZE:
                 payout_amount = bet_size + (bet_size * float(player["odds"]) / 100)
                 date_today = datetime.now().strftime("%Y-%m-%d")
 
-                print(f"{player['name']}, {player['team_name']}, {player['stat']*100:.2f}%, {player['percent_odds']:.2f}%, {player['odds']}")
+                print(
+                    f"{player['name']}, "
+                    f"{player['team_name']}, "
+                    f"{player['stat'] * 100:.2f}%, "
+                    f"{player['percent_odds']:.2f}%, "
+                    f"{player['odds']}"
+                )
                 print(f"Bet size: ${bet_size:.2f}, Return: ${payout_amount:.2f}")
                 print()
 
                 if date_today != last_date:
-                    writer.writerow([
-                        date_today,
-                        player["name"],
-                        player["team_name"],
-                        f"{stat:.2f}",
-                        f"{odds:.2f}",
-                        player["odds"],
-                        f"{bet_size:.2f}",
-                        f"{payout_amount:.2f}",
-                        player.get("scored", "")  # Default to an empty string if "scored" is not available
-                    ])
+                    writer.writerow(
+                        [
+                            date_today,
+                            player["name"],
+                            player["team_name"],
+                            f"{stat:.2f}",
+                            f"{odds:.2f}",
+                            player["odds"],
+                            f"{bet_size:.2f}",
+                            f"{payout_amount:.2f}",
+                            player.get("scored", ""),  # Default to an empty string if "scored" is not available
+                        ]
+                    )
