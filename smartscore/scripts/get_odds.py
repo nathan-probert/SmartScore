@@ -3,12 +3,18 @@ Usage
 
 ENV=prod poetry run python smartscore/scripts/get_odds.py
 Use prod to access the product database as it will be kept up to date
+
+DOES NOT CURRENTLY TAKE INTO ACCOUNT THAT SOME GAMES MAY HAVE STARTED
+e.g if game starts, df odds will be higher (+100 -> +200 etc) because time has already passed in the game
+My probability does not take that into account, so the program will believe this to be a very good bet
 """
 
 import csv
+import json
 import secrets
 import sys
 import time
+from collections import defaultdict
 from datetime import datetime
 
 import requests
@@ -35,11 +41,18 @@ def adjust_name(df_name):
         "Tim Stuetzle": "Tim Stutzle",
         "Zach Aston-Reese": "Zachary Aston-Reese",
         "Nicholas Paul": "Nick Paul",
+        "Matt Dumba": "Mathew Dumba",
+        "Alex Kerfoot": "Alexander Kerfoot",
     }
     for old_name, new_name in name_replacements.items():
         df_name = df_name.replace(old_name, new_name)
 
     return df_name
+
+
+def ignore_player(df_name):
+    ignore = {"Brendan Brisson"}
+    return df_name in ignore
 
 
 def link_odds(players, player_infos):
@@ -53,11 +66,12 @@ def link_odds(players, player_infos):
             if player_table.get(player_info["name"]):
                 player_table[player_info["name"]]["odds"] = player_info["odds"]
             else:
-                for player in players:
-                    print(player["name"])
-                print(f"Player {player_info['name']} not found in player list")
-                print("Add this discrepancy to the adjust_name function")
-                sys.exit(1)
+                if not ignore_player(player_info["name"]):
+                    for player in players:
+                        print(player["name"])
+                    print(f"Player {player_info['name']} not found in player list")
+                    print("Add this discrepancy to the adjust_name function")
+                    sys.exit(1)
 
 
 def fetch_draftkings_data(url, user_agents, retries=3, delay=1):
@@ -161,13 +175,35 @@ def calculate_bet_size(player, bankroll):
     return round(min(bet_amount, bankroll), 2)
 
 
+def get_names():
+    result = defaultdict(list)
+
+    players = get_today_db()
+    players = gather_odds(players)
+    players = convert_to_percent(players)
+
+    bankroll_per_person = 100
+    for player in players:
+        bet_size = calculate_bet_size(player, bankroll_per_person)
+        if bet_size > MINIMUM_BET_SIZE:
+            payout_amount = bet_size + (bet_size * float(player["odds"]) / 100)
+
+            result[player["team_name"]].append(player["name"])
+
+    print(result)
+    return result
+
+
 if __name__ == "__main__":
     players = get_today_db()
     players = gather_odds(players)
     players = convert_to_percent(players)
 
     bankroll_per_person = 100  # bet up to this amount per person
-    print("Name, Team, my probability, DraftKings probability, DraftKings odds")
+    print("\n\nName, Team, my probability, DraftKings probability, DraftKings odds\n")
+
+    total_bets = 0
+    total_possible_payout = 0
 
     with open("./lib/bets.csv", mode="r") as file:
         reader = csv.reader(file)
@@ -185,6 +221,9 @@ if __name__ == "__main__":
             if bet_size > MINIMUM_BET_SIZE:
                 payout_amount = bet_size + (bet_size * float(player["odds"]) / 100)
                 date_today = datetime.now().strftime("%Y-%m-%d")
+
+                total_bets += bet_size
+                total_possible_payout += payout_amount
 
                 print(
                     f"{player['name']}, "
@@ -210,3 +249,8 @@ if __name__ == "__main__":
                             player.get("scored", ""),  # Default to an empty string if "scored" is not available
                         ]
                     )
+
+    print(f"Total bets: ${total_bets:.2f}")
+    print(f"Total possible payout: ${total_possible_payout:.2f}")
+
+    print(f"Info for live updates: \n{json.dumps(get_names(), indent=4)}")
