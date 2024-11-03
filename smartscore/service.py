@@ -172,6 +172,8 @@ def make_predictions_entries(entries):
 def get_tims(players):
     group_ids = get_tims_players()
 
+    for player in players:
+        player["tims"] = 0
     player_table = {player.get("id"): player for player in players}
     for i in range(3):
         for id in group_ids[i]:

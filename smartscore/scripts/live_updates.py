@@ -14,12 +14,35 @@ BLUE = "\033[34m"
 RESET = "\033[0m"
 
 # API updates around 15 seconds, using 10 to account for load time etc.
-SLEEP_TIME = 10
+SLEEP_TIME = 3
 scores = {}
 goal_scorers = {}
 # Track the last time a player scored
 recent_scorers = {}
 SCORER_HIGHLIGHT_TIME = 30  # Time in seconds to keep a scorer highlighted
+
+# create from get_odds get_names function, can't be generated dynamically as games will have started
+WATCHLIST = {
+    "Toronto": [
+        "John Tavares",
+        "Steven Lorentz",
+        "Oliver Ekman-Larsson",
+    ],
+    "Seattle": [
+        "Brandon Montour"
+    ],
+    "Carolina": [
+        "Jack Roslovic"
+    ],
+    "Washington": [
+        "Nic Dowd",
+        "Connor McMichael",
+        "Alex Ovechkin"
+    ],
+    "Chicago": [
+        "Ryan Donato"
+    ]
+}
 
 
 def clear_terminal():
@@ -36,6 +59,7 @@ def get_goal_scorers(game_id):
         for goal in scoring_play.get("goals", []):
             player_name = goal.get("name", {}).get("default", "Unknown Player")
             team_abbrev = goal.get("teamAbbrev", {}).get("default", "")
+            full_name = goal.get("firstName", {}).get("default", "") + " " + goal.get("lastName", {}).get("default", "")
 
             goal_period = scoring_play.get("periodDescriptor", {}).get("number")
             time_in_goal_period = goal.get("timeInPeriod", "00:00")
@@ -46,13 +70,18 @@ def get_goal_scorers(game_id):
             )
 
             if player_name not in cur_goal_scorers:
-                cur_goal_scorers[player_name] = {"teamAbbr": team_abbrev, "time": goal_time, "goal": 0}
+                cur_goal_scorers[player_name] = {"teamAbbr": team_abbrev, "time": goal_time, "goal": 0, "full_name": full_name}
             cur_goal_scorers[player_name]["goal"] += 1
 
     result = defaultdict(list)
     for index, value in cur_goal_scorers.items():
         player_name = index
-        player_info = {"name": player_name, "time": value["time"], "goal": value["goal"]}
+        player_info = {
+            "name": player_name,
+            "time": value["time"],
+            "goal": value["goal"],
+            "full_name": value["full_name"],
+        }
         result[value["teamAbbr"]].append(player_info)
 
     return dict(result)
@@ -68,18 +97,19 @@ def get_overview():
     for day in response.get("gamesByDate", []):
         if day.get("date") == today:
             for game in day.get("games", []):
-                if game.get("gameState") in ["LIVE", "CRIT"]:
+                if game.get("gameState") in ["LIVE", "CRIT", "OVER", "FINAL"]:
                     period = game.get("periodDescriptor", {}).get("number", 0)
                     time_remaining = game.get("clock", {}).get("timeRemaining", "00:00")
                     is_intermission = bool(game.get("clock", {}).get("inIntermission", False))
+
                     total_time_passed = (period - 1) * 1200 + (
                         20 * 60 - int(time_remaining.split(":")[0]) * 60 - int(time_remaining.split(":")[1])
                     )
 
-                    away_team = game.get("awayTeam", {}).get("name", {}).get("default", "Unknown Team")
+                    away_team = game.get("awayTeam", {}).get("placeNameWithPreposition", {}).get("default", "Unknown Team")
                     away_abbr = game.get("awayTeam", {}).get("abbrev", "")
 
-                    home_team = game.get("homeTeam", {}).get("name", {}).get("default", "Unknown Team")
+                    home_team = game.get("homeTeam", {}).get("placeNameWithPreposition", {}).get("default", "Unknown Team")
                     home_abbr = game.get("homeTeam", {}).get("abbrev", "")
 
                     away_score = game.get("awayTeam", {}).get("score", 0)
@@ -98,9 +128,14 @@ def get_overview():
                         # Append game information to output
                         away_scorers = []
                         for goal in goal_scorers[game_id].get(away_abbr, []):
-                            if (total_time_passed - goal["time"] < 60) and not is_intermission:
-                                away_scorers.append(f"{GREEN}{goal['name']} ({goal['goal']}){RESET}")
-                                has_green_scorer = True  # Mark that we have a green scorer
+                            same_period = period == goal["time"] // 1200 + 1
+                            if (total_time_passed - goal["time"] < 60) and same_period and not is_intermission:
+                                if goal["full_name"] in WATCHLIST.get(away_team, []):
+                                    away_scorers.append(f"{GREEN}{goal['name']} ({goal['goal']}){RESET}")
+                                else:
+                                    away_scorers.append(f"{BLUE}{goal['name']} ({goal['goal']}){RESET}")
+
+                                has_green_scorer = True
                             else:
                                 away_scorers.append(f"{goal['name']} ({goal['goal']})")
 
@@ -108,8 +143,12 @@ def get_overview():
                         for goal in goal_scorers[game_id].get(home_abbr, []):
                             same_period = period == goal["time"] // 1200 + 1
                             if (total_time_passed - goal["time"] < 60) and same_period and not is_intermission:
-                                home_scorers.append(f"{GREEN}{goal['name']} ({goal['goal']}){RESET}")
-                                has_green_scorer = True  # Mark that we have a green scorer
+                                if goal["full_name"] in WATCHLIST.get(home_team, []):
+                                    home_scorers.append(f"{GREEN}{goal['name']} ({goal['goal']}){RESET}")
+                                else:
+                                    home_scorers.append(f"{BLUE}{goal['name']} ({goal['goal']}){RESET}")
+
+                                has_green_scorer = True
                             else:
                                 home_scorers.append(f"{goal['name']} ({goal['goal']})")
 
@@ -120,10 +159,12 @@ def get_overview():
                             output.append(
                                 f"{header_color}Intermission {period} | {time_remaining} | {home_team} @ {away_team}{RESET}"
                             )
-                        else:
+                        elif game.get("gameState") in ["LIVE", "CRIT"]:
                             output.append(
                                 f"{header_color}Period {period} | {time_remaining} | {home_team} @ {away_team}{RESET}"
                             )
+                        else:
+                            output.append(f"{header_color}Final | {home_team} @ {away_team}{RESET}")
                         output.append(f"{home_score} - {away_score}")
 
                         # Append formatted scorer output
