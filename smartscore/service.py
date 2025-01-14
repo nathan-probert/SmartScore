@@ -149,26 +149,6 @@ def make_predictions_teams(teams, players):
     return entries
 
 
-def make_predictions_entries(entries):
-    min_max = get_min_max()
-    c_players = []
-    for player in entries:
-        c_players.append(
-            {
-                "gpg": player["gpg"],
-                "hgpg": player["hgpg"],
-                "five_gpg": player["five_gpg"],
-                "tgpg": player["tgpg"],
-                "otga": player["otga"],
-            }
-        )
-
-    probabilities = c_predict(entries, min_max)
-    for i, entry in enumerate(entries):
-        entry["stat"] = probabilities[i]
-    return entries
-
-
 def get_tims(players):
     group_ids = get_tims_players()
 

@@ -20,7 +20,10 @@ First install all necessary packages:<br/>
 ```make local-setup```<br/>
 
 Deploy to AWS using:<br />
-```sh build_scripts/deploy.sh```<br/><br/>
+```sh build_scripts/deploy.sh```<br/>
+*If you are on windows, ensure Docker is running with the image: "public.ecr.aws/amazonlinux/amazonlinux:2".*<br/>
+*Also ensure you have adjusted the path in build_scripts/compile.sh to match your local path.*
+<br/><br/>
 
 *Note: This program is intended for informational purposes only and does not facilitate actual betting. Users should exercise their own judgment and discretion when using the provided suggestions for betting purposes.*
 
