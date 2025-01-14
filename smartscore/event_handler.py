@@ -10,7 +10,6 @@ from service import (
     get_teams,
     get_tims,
     get_todays_schedule,
-    make_predictions_entries,
     make_predictions_teams,
     publish_public_db,
 )
@@ -60,19 +59,10 @@ def handle_get_players_from_team(event, context):
 
 @lambda_handler_error_responder
 def handle_make_predictions(event, context):
-    if event.get("players"):
-        all_players = [PlayerInfo(**player) for player in event.get("players")]
-        all_teams = [TeamInfo(**team) for team in event.get("teams")]
+    all_players = [PlayerInfo(**player) for player in event.get("players")]
+    all_teams = [TeamInfo(**team) for team in event.get("teams")]
 
-        entries = make_predictions_teams(all_teams, all_players)
-    else:
-        entries = event.get("entries")
-
-        # remove date attribute from each player
-        for player in entries:
-            player.pop("date", None)
-            player.pop("scored", None)
-        entries = make_predictions_entries(entries)
+    entries = make_predictions_teams(all_teams, all_players)
 
     return {"statusCode": 200, "players": entries}
 
