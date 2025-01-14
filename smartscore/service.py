@@ -1,5 +1,7 @@
 import datetime
 import json
+import secrets
+from collections import defaultdict
 
 import pytz
 import requests
@@ -7,6 +9,7 @@ from aws_lambda_powertools import Logger
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
+from constants import FACEOFF_API_TEAM_URLS
 from utility import (
     c_predict,
     get_tims_players,
@@ -84,6 +87,37 @@ def get_players_from_team(team):
     URL = f"https://api-web.nhle.com/v1/roster/{team.team_abbr}/current"
     data = requests.get(URL, timeout=10).json()
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; AS; rv:11.0) like Gecko",
+        "Accept": "application/json, text/html",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com",
+        "Connection": "keep-alive",
+    }
+    URL_2 = FACEOFF_API_TEAM_URLS[team.team_id]
+    line_data = requests.get(URL_2, headers=headers, timeout=15)
+    line_data.raise_for_status()
+
+    player_line_data = line_data.json().get("pageProps", {}).get("combinations", {}).get("players", [])
+
+    player_table = {}
+    for player in player_line_data:
+        name = player.get("name")
+        if name not in player_table:
+            player_table[name] = player
+
+            category = player_table[name]["categoryIdentifier"]
+            player_table[name][category] = player_table[name]["groupIdentifier"]
+
+            del player_table[name]["groupIdentifier"]
+        else:
+            for key, value in player.items():
+                if key == "groupIdentifier":
+                    category = player.get("categoryIdentifier")
+                    player_table[name][category] = value
+                else:
+                    player_table[name][key] = value
+
     types = ["forwards", "defensemen"]
     for player_type in types:
         for player in data[player_type]:
@@ -92,6 +126,17 @@ def get_players_from_team(team):
                 id=player["id"],
                 team_id=team.team_id,
             )
+            info = player_table.get(player_info.name)
+            if not info:
+                continue
+
+            line = info.get("ev")
+            pp_line = info.get("pp")
+            pk_line = info.get("pk")
+            injury_status = info.get("injuryStatus")
+            game_time_decision = info.get("gameTimeDecision")
+
+            player_info.set_cur_game_stats(line, pp_line, pk_line, injury_status, game_time_decision)
             players.append(player_info)
 
     return players
