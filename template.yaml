@@ -43,7 +43,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
-                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api"
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
               - Effect: Allow
                 Action:
                   - events:* # Consider restricting this based on your actual requirements
@@ -235,7 +235,7 @@ Resources:
                   - !GetAtt PerformBackfillingFunction.Arn
                   - !GetAtt PublishDbFunction.Arn
                   - !GetAtt CheckCompletedFunction.Arn
-                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api"
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
 
   # State Machine
   StateMachine:
