@@ -3,10 +3,10 @@ name: Deploy to AWS
 on:
   push:
     branches:
-      - upgrade-aws-version-for-deployment
+      - main
 
 env:
-  ENV: dev
+  ENV: prod
 
 jobs:
   deploy:
