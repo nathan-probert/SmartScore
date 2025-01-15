@@ -9,6 +9,9 @@ Parameters:
   CodeVersionId:
     Type: String
     Description: "The version ID of the Lambda function code in S3."
+  S3Key:
+    Type: String
+    Description: "The key used by s3 to find the location of this code"
 
 Resources:
   # IAM Role for Lambda Execution
