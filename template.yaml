@@ -5,7 +5,7 @@ Parameters:
   ENV:
     Type: String
     Description: The environment (e.g., dev, prod)
-    Default: dev2
+    Default: dev
   CodeVersionId:
     Type: String
     Description: "The version ID of the Lambda function code in S3."
@@ -63,7 +63,7 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Sub "Code-${ENV}.zip"
+        S3Key: !Ref S3Key
         S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 10
@@ -80,7 +80,7 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Sub "Code-${ENV}.zip"
+        S3Key: !Ref S3Key
         S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 20
@@ -94,7 +94,7 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Sub "Code-${ENV}.zip"
+        S3Key: !Ref S3Key
         S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 10
@@ -108,7 +108,7 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Sub "Code-${ENV}.zip"
+        S3Key: !Ref S3Key
         S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 5
@@ -122,7 +122,7 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Sub "Code-${ENV}.zip"
+        S3Key: !Ref S3Key
         S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 10
@@ -136,7 +136,7 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Sub "Code-${ENV}.zip"
+        S3Key: !Ref S3Key
         S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 10
@@ -153,7 +153,7 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Sub "Code-${ENV}.zip"
+        S3Key: !Ref S3Key
         S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 10
@@ -302,7 +302,7 @@ Resources:
             },
             "SaveToDb": {
               "Type": "Task",
-              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
               "Parameters": {
                 "teams.$": "$",
                 "method": "POST_BATCH"
