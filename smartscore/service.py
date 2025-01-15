@@ -7,6 +7,7 @@ from aws_lambda_powertools import Logger
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
+from config import ENV
 from utility import (
     c_predict,
     get_tims_players,
@@ -168,7 +169,7 @@ def get_tims(players):
 def backfill_dates():
     today = get_date(subtract_days=1)
     logger.info(f"Checking for existence of date: {today}")
-    response = invoke_lambda("Api", {"method": "GET_DATES_NO_SCORED"})
+    response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATES_NO_SCORED"})
     body = response.get("body", {})
     dates_no_scored = json.loads(body.get("dates", "[]"))
 
