@@ -9,3 +9,5 @@ DB_URL = (
     if ENV == "prod"
     else "https://x8ki-letl-twmt.n7.xano.io/api:OvqrJ0Ps/players_dev"
 )
+
+LAMBDA_API_NAME = f"Api-{ENV}"
