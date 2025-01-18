@@ -200,13 +200,14 @@ def backfill_dates():
             if game.get("gameScheduleState") == "PPD":
                 # Game was postponed, delete all entries
                 invoke_lambda(
-                    LAMBDA_API_NAME,
-                    {
+                    function_name=LAMBDA_API_NAME,
+                    payload={
                         "method": "DELETE_GAME",
                         "date": date,
                         "home": game.get("homeTeam", {}).get("abbrev"),
                         "away": game.get("awayTeam", {}).get("abbrev"),
                     },
+                    wait=False,
                 )
 
             players.extend(list({goal.get("playerId") for goal in game.get("goals", {})}))
