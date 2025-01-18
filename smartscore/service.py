@@ -7,6 +7,8 @@ from aws_lambda_powertools import Logger
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
+from config import ENV
+from constants import LAMBDA_API_NAME
 from utility import (
     c_predict,
     get_tims_players,
@@ -168,7 +170,7 @@ def get_tims(players):
 def backfill_dates():
     today = get_date(subtract_days=1)
     logger.info(f"Checking for existence of date: {today}")
-    response = invoke_lambda("Api", {"method": "GET_DATES_NO_SCORED"})
+    response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATES_NO_SCORED"})
     body = response.get("body", {})
     dates_no_scored = json.loads(body.get("dates", "[]"))
 
@@ -185,21 +187,33 @@ def backfill_dates():
         # get players who actually played
         players = []
         for game in data.get("games"):
-            # ensure each game is completed
-            if not game.get("gameOutcome"):
-                logger.info(
-                    f"Game not completed: {
-                    game.get('homeTeam', {}).get('abbrev')
-                } vs {
-                    game.get('awayTeam', {}).get('abbrev')
-                }"
+            if game.get("gameScheduleState") == "OK":
+                if not game.get("gameOutcome"):
+                    logger.info(
+                        f"Game not completed: {
+                        game.get('homeTeam', {}).get('abbrev')
+                    } vs {
+                        game.get('awayTeam', {}).get('abbrev')
+                    }"
+                    )
+                    return
+            if game.get("gameScheduleState") == "PPD":
+                # Game was postponed, delete all entries
+                invoke_lambda(
+                    function_name=LAMBDA_API_NAME,
+                    payload={
+                        "method": "DELETE_GAME",
+                        "date": date,
+                        "home": game.get("homeTeam", {}).get("abbrev"),
+                        "away": game.get("awayTeam", {}).get("abbrev"),
+                    },
+                    wait=False,
                 )
-                return
 
             players.extend(list({goal.get("playerId") for goal in game.get("goals", {})}))
         scorers_dict[date] = players
 
-    response = invoke_lambda("Api", {"method": "POST_BACKFILL", "data": scorers_dict})
+    response = invoke_lambda(LAMBDA_API_NAME, {"method": "POST_BACKFILL", "data": scorers_dict})
     return response
 
 

@@ -24,9 +24,7 @@ SCORER_HIGHLIGHT_TIME = 30  # Time in seconds to keep a scorer highlighted
 
 # create from get_odds get_names function, can't be generated dynamically as games will have started
 WATCHLIST = {
-    "Toronto": [
-        "Auston Matthews"
-    ],
+    "Toronto": ["Auston Matthews"],
 }
 
 

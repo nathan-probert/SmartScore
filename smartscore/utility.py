@@ -88,14 +88,15 @@ def c_predict(c_players, min_max):
     return probabilities
 
 
-def invoke_lambda(function_name, payload):
+def invoke_lambda(function_name, payload, wait=True):
     session = boto3.session.Session()
     region = session.region_name
     account_id = sts_client.get_caller_identity()["Account"]
+    invocation_type = "RequestResponse" if wait else "Event"
 
     function_arn = f"arn:aws:lambda:{region}:{account_id}:function:{function_name}"
     response = lambda_client.invoke(
-        FunctionName=function_arn, InvocationType="RequestResponse", Payload=json.dumps(payload)
+        FunctionName=function_arn, InvocationType=invocation_type, Payload=json.dumps(payload)
     )
     response_payload = json.loads(response["Payload"].read())
     return response_payload

@@ -1,11 +1,12 @@
 .PHONY: local-setup
 local-setup:
-	@echo "Creating virtual environment"
+	@echo Creating virtual environment
+	@poetry env activate
 	@$(MAKE) install
 
 install:
-	@echo "Installing dependencies"
-	@poetry install --sync
+	@echo Installing all dev dependencies
+	@poetry install --with dev
 
 .PHONY: lint
 lint:

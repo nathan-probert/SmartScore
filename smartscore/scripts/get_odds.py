@@ -65,13 +65,12 @@ def link_odds(players, player_infos):
             player_info["name"] = adjust_name(player_info["name"])
             if player_table.get(player_info["name"]):
                 player_table[player_info["name"]]["odds"] = player_info["odds"]
-            else:
-                if not ignore_player(player_info["name"]):
-                    for player in players:
-                        print(player["name"])
-                    print(f"Player {player_info['name']} not found in player list")
-                    print("Add this discrepancy to the adjust_name function")
-                    sys.exit(1)
+            elif not ignore_player(player_info["name"]):
+                for player in players:
+                    print(player["name"])
+                print(f"Player {player_info['name']} not found in player list")
+                print("Add this discrepancy to the adjust_name function")
+                sys.exit(1)
 
 
 def fetch_draftkings_data(url, user_agents, retries=3, delay=1):
@@ -186,7 +185,7 @@ def get_names():
     for player in players:
         bet_size = calculate_bet_size(player, bankroll_per_person)
         if bet_size > MINIMUM_BET_SIZE:
-            payout_amount = bet_size + (bet_size * float(player["odds"]) / 100)
+            _payout_amount = bet_size + (bet_size * float(player["odds"]) / 100)
 
             result[player["team_name"]].append(player["name"])
 

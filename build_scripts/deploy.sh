@@ -11,10 +11,10 @@ OUTPUT_DIR="output"
 BUCKET_STACK_NAME="codeBucket"
 BUCKET_TEMPLATE_FILE="./bucket_template.yaml"
 
-STACK_NAME="smartScore-$ENV"
+STACK_NAME="SmartScore-$ENV"
 TEMPLATE_FILE="./template.yaml"
 
-KEY="Code-$ENV.zip"
+KEY="$STACK_NAME.zip"
 
 
 generate_bucket_stack() {
@@ -68,6 +68,7 @@ generate_smartscore_stack() {
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
                    ParameterKey=CodeVersionId,ParameterValue="$VERSION_ID" \
+                   ParameterKey=S3Key,ParameterValue="$KEY" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack update to complete..."
@@ -79,6 +80,7 @@ generate_smartscore_stack() {
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
                    ParameterKey=CodeVersionId,ParameterValue="$VERSION_ID" \
+                   ParameterKey=S3Key,ParameterValue="$KEY" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
