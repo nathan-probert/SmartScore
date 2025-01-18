@@ -209,6 +209,7 @@ def backfill_dates():
                     },
                     wait=False,
                 )
+                continue
 
             players.extend(list({goal.get("playerId") for goal in game.get("goals", {})}))
         scorers_dict[date] = players
