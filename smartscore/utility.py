@@ -98,8 +98,10 @@ def invoke_lambda(function_name, payload, wait=True):
     response = lambda_client.invoke(
         FunctionName=function_arn, InvocationType=invocation_type, Payload=json.dumps(payload)
     )
-    response_payload = json.loads(response["Payload"].read())
-    return response_payload
+    if wait:
+        response_payload = json.loads(response["Payload"].read())
+        return response_payload
+    return None
 
 
 def get_tims_players():
