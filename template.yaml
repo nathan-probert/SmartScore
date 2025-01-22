@@ -310,7 +310,7 @@ Resources:
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions-${ENV}",
               "Parameters": {
-                "teams.$": "$",
+                "teams.$": "$"
               },
               "Next": "GetTims"
             },
