@@ -294,7 +294,9 @@ Resources:
                     "ResultPath": "$.players",
                     "Retry": [
                       {
-                        "ErrorEquals": ["States.ALL"],
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
                         "IntervalSeconds": 2,
                         "MaxAttempts": 3,
                         "BackoffRate": 2.0
@@ -304,25 +306,43 @@ Resources:
                   }
                 }
               },
-              "Next": "SaveToDb"
-            },
-            "SaveToDb": {
-              "Type": "Task",
-              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
-              "Parameters": {
-                "teams.$": "$",
-                "method": "POST_BATCH"
-              },
               "Next": "MakePredictions"
             },
             "MakePredictions": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions-${ENV}",
+              "Parameters": {
+                "teams.$": "$"
+              },
               "Next": "GetTims"
             },
             "GetTims": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims-${ENV}",
+              "Next": "CheckInitialRun"
+            },
+            "CheckInitialRun": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.is_initial_run",
+                  "BooleanEquals": true,
+                  "Next": "SaveToDb"
+                },
+                {
+                  "Variable": "$.is_initial_run",
+                  "BooleanEquals": false,
+                  "Next": "PublishToDb"
+                }
+              ]
+            },
+            "SaveToDb": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
+              "Parameters": {
+                "method": "POST_BATCH",
+                "players.$": "$.players"
+              },
               "Next": "PublishToDb"
             },
             "PublishToDb": {

@@ -59,6 +59,17 @@ def handle_get_players_from_team(event, context):
 
 @lambda_handler_error_responder
 def handle_make_predictions(event, context):
+    all_players = [PlayerInfo(**player) for team in event.get("teams") for player in team.pop("players")]
+    all_teams = [TeamInfo(**team) for team in event.get("teams")]
+
+    num_entries = len(all_players)
+    logger.info(f"Received POST_BATCH request for [{num_entries}] entries")
+
+    event = {
+        "teams": TEAM_INFO_SCHEMA.dump(all_teams, many=True),
+        "players": PLAYER_INFO_SCHEMA.dump(all_players, many=True),
+    }
+
     all_players = [PlayerInfo(**player) for player in event.get("players")]
     all_teams = [TeamInfo(**team) for team in event.get("teams")]
 
@@ -73,7 +84,10 @@ def handle_get_tims(event, context):
 
     players = get_tims(players)
 
-    return {"statusCode": 200, "players": players}
+    # we only have completed property if this is not the first run
+    initial_run = False if event.get("completed") else True
+
+    return {"statusCode": 200, "players": players, "is_initial_run": initial_run}
 
 
 @lambda_handler_error_responder
