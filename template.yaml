@@ -304,6 +304,11 @@ Resources:
                   }
                 }
               },
+              "Next": "MakePredictions"
+            },
+            "MakePredictions": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions-${ENV}",
               "Next": "GetTims"
             },
             "GetTims": {
@@ -322,7 +327,7 @@ Resources:
                 {
                   "Variable": "$.is_first_day",
                   "BooleanEquals": false,
-                  "Next": "MakePredictions"
+                  "Next": "PublishToDb"
                 }
               ]
             },
@@ -333,11 +338,6 @@ Resources:
                 "teams.$": "$",
                 "method": "POST_BATCH"
               },
-              "Next": "MakePredictions"
-            },
-            "MakePredictions": {
-              "Type": "Task",
-              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions-${ENV}",
               "Next": "PublishToDb"
             },
             "PublishToDb": {
