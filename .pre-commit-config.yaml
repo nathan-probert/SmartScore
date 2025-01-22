@@ -27,3 +27,9 @@ repos:
         args:
           - '--config=./pyproject.toml'
         pass_filenames: false
+      - id: cfn-lint
+        name: AWS CloudFormation Linter
+        description: 'cfn-lint is a tool for finding issues with CloudFormation templates'
+        entry: cfn-lint
+        language: python
+        files: ^.*template.*\.(json|yaml)$

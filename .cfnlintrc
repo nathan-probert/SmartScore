@@ -1,0 +1,3 @@
+templates:
+    - template.yaml
+    - bucket_template.yaml

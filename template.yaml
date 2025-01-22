@@ -294,7 +294,9 @@ Resources:
                     "ResultPath": "$.players",
                     "Retry": [
                       {
-                        "ErrorEquals": ["States.ALL"],
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
                         "IntervalSeconds": 2,
                         "MaxAttempts": 3,
                         "BackoffRate": 2.0
