@@ -304,7 +304,27 @@ Resources:
                   }
                 }
               },
-              "Next": "SaveToDb"
+              "Next": "GetTims"
+            },
+            "GetTims": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims-${ENV}",
+              "Next": "CheckInitialRun"
+            },
+            "CheckInitialRun": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.is_first_day",
+                  "BooleanEquals": true,
+                  "Next": "SaveToDb"
+                },
+                {
+                  "Variable": "$.is_first_day",
+                  "BooleanEquals": false,
+                  "Next": "MakePredictions"
+                }
+              ]
             },
             "SaveToDb": {
               "Type": "Task",
@@ -318,11 +338,6 @@ Resources:
             "MakePredictions": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions-${ENV}",
-              "Next": "GetTims"
-            },
-            "GetTims": {
-              "Type": "Task",
-              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims-${ENV}",
               "Next": "PublishToDb"
             },
             "PublishToDb": {
