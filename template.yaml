@@ -325,12 +325,12 @@ Resources:
               "Type": "Choice",
               "Choices": [
                 {
-                  "Variable": "$.is_first_day",
+                  "Variable": "$.is_initial_run",
                   "BooleanEquals": true,
                   "Next": "SaveToDb"
                 },
                 {
-                  "Variable": "$.is_first_day",
+                  "Variable": "$.is_initial_run",
                   "BooleanEquals": false,
                   "Next": "PublishToDb"
                 }
