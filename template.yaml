@@ -309,6 +309,9 @@ Resources:
             "MakePredictions": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions-${ENV}",
+              "Parameters": {
+                "teams.$": "$",
+              },
               "Next": "GetTims"
             },
             "GetTims": {
@@ -335,7 +338,6 @@ Resources:
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
               "Parameters": {
-                "teams.$": "$",
                 "method": "POST_BATCH"
               },
               "Next": "PublishToDb"
