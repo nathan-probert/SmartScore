@@ -340,7 +340,8 @@ Resources:
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
               "Parameters": {
-                "method": "POST_BATCH"
+                "method": "POST_BATCH",
+                "players.$": "$.players"
               },
               "Next": "PublishToDb"
             },
