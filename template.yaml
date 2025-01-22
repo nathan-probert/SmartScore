@@ -311,6 +311,9 @@ Resources:
             "MakePredictions": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions-${ENV}",
+              "Parameters": {
+                "$": "$.teams"
+              },
               "Next": "GetTims"
             },
             "GetTims": {
