@@ -66,7 +66,6 @@ def handle_make_predictions(event, context):
     logger.info(f"Received POST_BATCH request for [{num_entries}] entries")
 
     event = {
-        "date": get_date(),
         "teams": TEAM_INFO_SCHEMA.dump(all_teams, many=True),
         "players": PLAYER_INFO_SCHEMA.dump(all_players, many=True),
     }
