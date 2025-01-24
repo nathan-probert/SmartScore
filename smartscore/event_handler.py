@@ -63,12 +63,9 @@ def handle_get_players_from_team(event, context):
 
 @lambda_handler_error_responder
 def handle_make_predictions(event, context):
-    all_players = [PlayerInfo(**player) for player in event.get("players")]
-    all_teams = [TeamInfo(**team) for team in event.get("teams")]
+    players = make_predictions_teams(event.get(players))
 
-    entries = make_predictions_teams(all_teams, all_players)
-
-    return {"statusCode": 200, "players": entries}
+    return {"statusCode": 200, "players": players}
 
 
 @lambda_handler_error_responder
