@@ -98,6 +98,6 @@ def handle_parse_teams(event, context):
 
     return {
         "statusCode": 200,
-        "players": json.dumps(all_players),
+        "players": all_players,
         "date": get_date(),
     }
