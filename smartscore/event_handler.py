@@ -1,3 +1,5 @@
+import json
+
 from aws_lambda_powertools import Logger
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
@@ -6,6 +8,7 @@ from decorators import lambda_handler_error_responder
 from service import (
     backfill_dates,
     check_db_for_date,
+    get_date,
     get_players_from_team,
     get_teams,
     get_tims,
@@ -13,7 +16,6 @@ from service import (
     make_predictions_teams,
     publish_public_db,
     separate_players,
-    get_date,
 )
 
 logger = Logger()
