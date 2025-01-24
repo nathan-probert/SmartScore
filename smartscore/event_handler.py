@@ -96,6 +96,6 @@ def handle_parse_teams(event, context):
 
     return {
         "statusCode": 200,
-        "players": PLAYER_INFO_SCHEMA.dump(all_players, many=True),
+        "players": dumps(all_players),
         "date": get_date(),
     }
