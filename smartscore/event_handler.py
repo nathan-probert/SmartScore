@@ -12,6 +12,7 @@ from service import (
     get_todays_schedule,
     make_predictions_teams,
     publish_public_db,
+    separate_players,
 )
 
 logger = Logger()
@@ -83,3 +84,17 @@ def handle_publish_db(event, context):
     publish_public_db(entries)
 
     return {"statusCode": 200}
+
+
+@lambda_handler_error_responder
+def handle_parse_teams(event, context):
+    players = [
+      PlayerInfo(**player)
+      for team in event.get("teams")
+      for player in team.pop("players")
+    ]
+    teams = [TeamInfo(**team) for team in event.get("teams")]
+
+    all_players = separate_players(players, teams)
+
+    return {"statusCode": 200, "players": PLAYER_INFO_SCHEMA.dump(all_players, many=True)}

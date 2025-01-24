@@ -3,10 +3,10 @@ name: Deploy to AWS
 on:
   push:
     branches:
-      - main
+      - rearrange-state-machine-for-tims
 
 env:
-  ENV: prod
+  ENV: dev
 
 jobs:
   deploy:

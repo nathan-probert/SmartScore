@@ -6,6 +6,7 @@ import requests
 from aws_lambda_powertools import Logger
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
+from smartscore_info_client.schemas.db_player_info import PLAYER_DB_INFO_SCHEMA, PlayerDbInfo
 
 from config import ENV
 from constants import LAMBDA_API_NAME
@@ -237,3 +238,25 @@ def check_db_for_date():
             entry["id"] = entry.pop("player_id")
         return entries
     return None
+
+
+def separate_players(players, teams):
+    entries = []
+    team_table = {team.team_id: TEAM_INFO_SCHEMA.dump(team) for team in teams}
+    for player in players:
+        team_info = team_table[player.team_id]
+        team_info_filtered = {
+            key: value
+            for key, value in team_info.items()
+            if key not in ("team_id", "opponent_id", "season", "team_abbr")
+        }
+
+        player_data = PLAYER_INFO_SCHEMA.dump(player)
+        player_info_filtered = {
+            key: value for key, value in player_data.items() if key not in ("team_id", "odds", "stat")
+        }
+
+        entries.append({**player_info_filtered, **team_info_filtered})
+
+    print(f"Entry: {entries[0]}")
+    return entries

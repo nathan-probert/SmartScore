@@ -722,10 +722,10 @@ files = [
 
 [[package]]
 name = "smartscore-info-client"
-version = "1.1.0"
+version = "1.1.5"
 description = ""
 optional = false
-python-versions = "^3.12"
+python-versions = ">=3.9, <3.13"
 groups = ["main"]
 files = []
 develop = false
@@ -737,8 +737,8 @@ requests = "^2.32.3"
 [package.source]
 type = "git"
 url = "https://github.com/nathan-probert/smartscore-info-client.git"
-reference = "v1.1.0"
-resolved_reference = "98e54078e7240aafd2ec4e4b91a5e260ea105ba9"
+reference = "v1.1.5"
+resolved_reference = "d4799aa55ce0033082d4a3ca81437afd0cad0e49"
 
 [[package]]
 name = "typing-extensions"
@@ -805,5 +805,5 @@ test = ["covdefaults (>=2.3)", "coverage (>=7.2.7)", "coverage-enable-subprocess
 
 [metadata]
 lock-version = "2.1"
-python-versions = "^3.12"
-content-hash = "308d4d0a79bf0d430db56eacc2dcf88d5216ab5c2c2c32331098068267fdeadf"
+python-versions = ">=3.12, <3.13"
+content-hash = "89f63f195444ca4339ff11a7fdf4567385bc9f2aba0b5bf9574f88be333c7721"

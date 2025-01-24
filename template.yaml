@@ -168,6 +168,23 @@ Resources:
         Variables:
           ENV: !Ref ENV
 
+  ParseData:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "ParseData-${ENV}"
+      Handler: event_handler.handle_parse_teams
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: !Ref S3Key
+        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+
   # Lambda Log Groups
   GetTeamsLogGroup:
     Type: AWS::Logs::LogGroup
@@ -209,6 +226,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/CheckCompleted-${ENV}"
+      RetentionInDays: 1
+
+  ParseDataLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/ParseData-${ENV}"
       RetentionInDays: 1
 
   # State Machine Execution Role
@@ -304,6 +327,11 @@ Resources:
                   }
                 }
               },
+              "Next": "ParseData"
+            },
+            "ParseData": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:ParseData-${ENV}",
               "Next": "SaveToDb"
             },
             "SaveToDb": {
