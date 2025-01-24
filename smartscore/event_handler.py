@@ -13,6 +13,7 @@ from service import (
     make_predictions_teams,
     publish_public_db,
     separate_players,
+    get_date,
 )
 
 logger = Logger()
@@ -93,4 +94,8 @@ def handle_parse_teams(event, context):
 
     all_players = separate_players(players, teams)
 
-    return {"statusCode": 200, "players": PLAYER_INFO_SCHEMA.dump(all_players, many=True)}
+    return {
+        "statusCode": 200,
+        "players": PLAYER_INFO_SCHEMA.dump(all_players, many=True),
+        "date": get_date(),
+    }
