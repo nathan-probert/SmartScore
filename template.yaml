@@ -261,6 +261,7 @@ Resources:
                   - !GetAtt PerformBackfillingFunction.Arn
                   - !GetAtt PublishDbFunction.Arn
                   - !GetAtt CheckCompletedFunction.Arn
+                  - !GetAtt ParseData.Arn
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
 
   # State Machine
