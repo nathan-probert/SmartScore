@@ -6,7 +6,6 @@ import requests
 from aws_lambda_powertools import Logger
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
-from smartscore_info_client.schemas.db_player_info import PLAYER_DB_INFO_SCHEMA, PlayerDbInfo
 
 from config import ENV
 from constants import LAMBDA_API_NAME
@@ -258,5 +257,4 @@ def separate_players(players, teams):
 
         entries.append({**player_info_filtered, **team_info_filtered})
 
-    print(f"Entry: {entries[0]}")
     return entries

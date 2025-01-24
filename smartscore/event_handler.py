@@ -88,12 +88,8 @@ def handle_publish_db(event, context):
 
 @lambda_handler_error_responder
 def handle_parse_teams(event, context):
-    players = [
-      PlayerInfo(**player)
-      for team in event.get("teams")
-      for player in team.pop("players")
-    ]
-    teams = [TeamInfo(**team) for team in event.get("teams")]
+    players = [PlayerInfo(**player) for team in event for player in team.pop("players")]
+    teams = [TeamInfo(**team) for team in event]
 
     all_players = separate_players(players, teams)
 
