@@ -63,7 +63,7 @@ def handle_get_players_from_team(event, context):
 
 @lambda_handler_error_responder
 def handle_make_predictions(event, context):
-    players = make_predictions_teams(event.get(players))
+    players = make_predictions_teams(event.get("players"))
 
     return {"statusCode": 200, "players": players}
 
