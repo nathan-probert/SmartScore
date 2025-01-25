@@ -318,7 +318,9 @@ Resources:
                     "ResultPath": "$.players",
                     "Retry": [
                       {
-                        "ErrorEquals": ["States.ALL"],
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
                         "IntervalSeconds": 2,
                         "MaxAttempts": 3,
                         "BackoffRate": 2.0
@@ -333,16 +335,6 @@ Resources:
             "ParseData": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:ParseData-${ENV}",
-              "Next": "SaveToDb"
-            },
-            "SaveToDb": {
-              "Type": "Task",
-              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
-              "Parameters": {
-                "players.$": "$.players",
-                "date.$": "$.date",
-                "method": "POST_BATCH"
-              },
               "Next": "MakePredictions"
             },
             "MakePredictions": {
@@ -353,7 +345,32 @@ Resources:
             "GetTims": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims-${ENV}",
+              "Next": "CheckInitialRun"
+            },
+            "SaveToDb": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
+              "Parameters": {
+                "players.$": "$.players",
+                "date.$": "$.date",
+                "method": "POST_BATCH"
+              },
               "Next": "PublishToDb"
+            },
+            "CheckInitialRun": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.is_initial_run",
+                  "BooleanEquals": true,
+                  "Next": "SaveToDb"
+                },
+                {
+                  "Variable": "$.is_initial_run",
+                  "BooleanEquals": false,
+                  "Next": "PublishToDb"
+                }
+              ]
             },
             "PublishToDb": {
               "Type": "Task",
@@ -362,7 +379,6 @@ Resources:
             }
           }
         }
-
 
   DailyStepFunctionTrigger:
     Type: AWS::Events::Rule

@@ -71,10 +71,12 @@ def handle_make_predictions(event, context):
 @lambda_handler_error_responder
 def handle_get_tims(event, context):
     players = event.get("players")
-
     players = get_tims(players)
 
-    return {"statusCode": 200, "players": players}
+    # we only have completed property if this is not the first run
+    initial_run = False if event.get("completed") else True
+
+    return {"statusCode": 200, "players": players, "is_initial_run": initial_run}
 
 
 @lambda_handler_error_responder
