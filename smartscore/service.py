@@ -117,38 +117,25 @@ def get_min_max():
     return min_max
 
 
-def make_predictions_teams(teams, players):
+def make_predictions_teams(players):
     min_max = get_min_max()
     c_players = []
-    team_table = {team.team_id: TEAM_INFO_SCHEMA.dump(team) for team in teams}
     for player in players:
         c_players.append(
             {
-                "gpg": player.gpg,
-                "hgpg": player.hgpg,
-                "five_gpg": player.five_gpg,
-                "tgpg": team_table[player.team_id]["tgpg"],
-                "otga": team_table[player.team_id]["otga"],
+                "gpg": player["gpg"],
+                "hgpg": player["hgpg"],
+                "five_gpg": player["five_gpg"],
+                "tgpg": player["tgpg"],
+                "otga": player["otga"],
             }
         )
 
-    entries = []
     probabilities = c_predict(c_players, min_max)
     for i, player in enumerate(players):
-        team_info = team_table[player.team_id]
+        player["stat"] = probabilities[i]
 
-        team_info_filtered = {
-            key: value
-            for key, value in team_info.items()
-            if key not in ("team_id", "opponent_id", "season", "team_abbr")
-        }
-        player_data = PLAYER_INFO_SCHEMA.dump(player)
-        player_info_filtered = {
-            key: value for key, value in player_data.items() if key not in ("team_id", "odds", "stat")
-        }
-
-        entries.append({"stat": probabilities[i], **player_info_filtered, **team_info_filtered})
-    return entries
+    return players
 
 
 def get_tims(players):
@@ -237,3 +224,24 @@ def check_db_for_date():
             entry["id"] = entry.pop("player_id")
         return entries
     return None
+
+
+def separate_players(players, teams):
+    entries = []
+    team_table = {team.team_id: TEAM_INFO_SCHEMA.dump(team) for team in teams}
+    for player in players:
+        team_info = team_table[player.team_id]
+        team_info_filtered = {
+            key: value
+            for key, value in team_info.items()
+            if key not in ("team_id", "opponent_id", "season", "team_abbr")
+        }
+
+        player_data = PLAYER_INFO_SCHEMA.dump(player)
+        player_info_filtered = {
+            key: value for key, value in player_data.items() if key not in ("team_id", "odds", "stat")
+        }
+
+        entries.append({**player_info_filtered, **team_info_filtered})
+
+    return entries

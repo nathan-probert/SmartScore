@@ -6,12 +6,14 @@ from decorators import lambda_handler_error_responder
 from service import (
     backfill_dates,
     check_db_for_date,
+    get_date,
     get_players_from_team,
     get_teams,
     get_tims,
     get_todays_schedule,
     make_predictions_teams,
     publish_public_db,
+    separate_players,
 )
 
 logger = Logger()
@@ -59,21 +61,25 @@ def handle_get_players_from_team(event, context):
 
 @lambda_handler_error_responder
 def handle_make_predictions(event, context):
-    all_players = [PlayerInfo(**player) for player in event.get("players")]
-    all_teams = [TeamInfo(**team) for team in event.get("teams")]
+    players = make_predictions_teams(event.get("players"))
 
-    entries = make_predictions_teams(all_teams, all_players)
-
-    return {"statusCode": 200, "players": entries}
+    return {"statusCode": 200, "players": players}
 
 
 @lambda_handler_error_responder
 def handle_get_tims(event, context):
     players = event.get("players")
-
     players = get_tims(players)
 
-    return {"statusCode": 200, "players": players}
+    # we only have completed property if this is not the first run
+    initial_run = False if event.get("completed") else True
+
+    return {
+        "statusCode": 200,
+        "date": get_date(),
+        "players": players,
+        "is_initial_run": initial_run,
+    }
 
 
 @lambda_handler_error_responder
@@ -83,3 +89,16 @@ def handle_publish_db(event, context):
     publish_public_db(entries)
 
     return {"statusCode": 200}
+
+
+@lambda_handler_error_responder
+def handle_parse_teams(event, context):
+    players = [PlayerInfo(**player) for team in event for player in team.pop("players")]
+    teams = [TeamInfo(**team) for team in event]
+
+    all_players = separate_players(players, teams)
+
+    return {
+        "statusCode": 200,
+        "players": all_players,
+    }

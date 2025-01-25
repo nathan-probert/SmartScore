@@ -168,6 +168,23 @@ Resources:
         Variables:
           ENV: !Ref ENV
 
+  ParseData:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "ParseData-${ENV}"
+      Handler: event_handler.handle_parse_teams
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue CodeBucketNameExport
+        S3Key: !Ref S3Key
+        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+
   # Lambda Log Groups
   GetTeamsLogGroup:
     Type: AWS::Logs::LogGroup
@@ -211,6 +228,12 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/CheckCompleted-${ENV}"
       RetentionInDays: 1
 
+  ParseDataLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/ParseData-${ENV}"
+      RetentionInDays: 1
+
   # State Machine Execution Role
   StateMachineExecutionRole:
     Type: AWS::IAM::Role
@@ -238,6 +261,7 @@ Resources:
                   - !GetAtt PerformBackfillingFunction.Arn
                   - !GetAtt PublishDbFunction.Arn
                   - !GetAtt CheckCompletedFunction.Arn
+                  - !GetAtt ParseData.Arn
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
 
   # State Machine
@@ -294,7 +318,9 @@ Resources:
                     "ResultPath": "$.players",
                     "Retry": [
                       {
-                        "ErrorEquals": ["States.ALL"],
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
                         "IntervalSeconds": 2,
                         "MaxAttempts": 3,
                         "BackoffRate": 2.0
@@ -304,15 +330,11 @@ Resources:
                   }
                 }
               },
-              "Next": "SaveToDb"
+              "Next": "ParseData"
             },
-            "SaveToDb": {
+            "ParseData": {
               "Type": "Task",
-              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
-              "Parameters": {
-                "teams.$": "$",
-                "method": "POST_BATCH"
-              },
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:ParseData-${ENV}",
               "Next": "MakePredictions"
             },
             "MakePredictions": {
@@ -323,6 +345,31 @@ Resources:
             "GetTims": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims-${ENV}",
+              "Next": "CheckInitialRun"
+            },
+            "CheckInitialRun": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.is_initial_run",
+                  "BooleanEquals": true,
+                  "Next": "SaveToDb"
+                },
+                {
+                  "Variable": "$.is_initial_run",
+                  "BooleanEquals": false,
+                  "Next": "PublishToDb"
+                }
+              ]
+            },
+            "SaveToDb": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
+              "Parameters": {
+                "players.$": "$.players",
+                "date.$": "$.date",
+                "method": "POST_BATCH"
+              },
               "Next": "PublishToDb"
             },
             "PublishToDb": {
@@ -332,7 +379,6 @@ Resources:
             }
           }
         }
-
 
   DailyStepFunctionTrigger:
     Type: AWS::Events::Rule

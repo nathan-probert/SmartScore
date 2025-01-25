@@ -5,7 +5,7 @@ from collections import defaultdict
 
 import requests
 
-sys.path.append("D:\\code\\smartScore\\smartscore")
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from service import get_date  # noqa: E402
 
 # ANSI escape code for green text
@@ -30,7 +30,7 @@ WATCHLIST = {
 
 def clear_terminal():
     # Clear the terminal screen in a cross-platform way
-    os.system("cls" if os.name == "nt" else "clear")
+    os.system("cls" if os.name == "nt" else "clear")  # noqa: S605
 
 
 def get_goal_scorers(game_id):
@@ -167,7 +167,8 @@ def get_overview():
                 )
             else:
                 output.append(
-                    f"{header_color}{state} {game.get('period')} | {game.get('period_time_remaining')} | {game.get('home_team')} @ {(game.get('away_team'))}{RESET}"
+                    f"{header_color}{state} {game.get('period')} | {game.get('period_time_remaining')} | "
+                    f"{game.get('home_team')} @ {game.get('away_team')}{RESET}"
                 )
             output.append(f"{game.get('home_score')} - {game.get('away_score')}")
 
