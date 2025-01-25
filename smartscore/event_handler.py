@@ -1,5 +1,3 @@
-import json
-
 from aws_lambda_powertools import Logger
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
@@ -71,7 +69,7 @@ def handle_make_predictions(event, context):
 @lambda_handler_error_responder
 def handle_get_tims(event, context):
     players = event.get("players")
-    # players = get_tims(players)
+    players = get_tims(players)
 
     # we only have completed property if this is not the first run
     initial_run = False if event.get("completed") else True
