@@ -347,16 +347,6 @@ Resources:
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims-${ENV}",
               "Next": "CheckInitialRun"
             },
-            "SaveToDb": {
-              "Type": "Task",
-              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
-              "Parameters": {
-                "players.$": "$.players",
-                "date.$": "$.date",
-                "method": "POST_BATCH"
-              },
-              "Next": "PublishToDb"
-            },
             "CheckInitialRun": {
               "Type": "Choice",
               "Choices": [
@@ -371,6 +361,16 @@ Resources:
                   "Next": "PublishToDb"
                 }
               ]
+            },
+            "SaveToDb": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
+              "Parameters": {
+                "players.$": "$.players",
+                "date.$": "$.date",
+                "method": "POST_BATCH"
+              },
+              "Next": "PublishToDb"
             },
             "PublishToDb": {
               "Type": "Task",

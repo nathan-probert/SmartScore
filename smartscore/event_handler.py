@@ -76,7 +76,12 @@ def handle_get_tims(event, context):
     # we only have completed property if this is not the first run
     initial_run = False if event.get("completed") else True
 
-    return {"statusCode": 200, "players": players, "is_initial_run": initial_run}
+    return {
+        "statusCode": 200,
+        "date": get_date(),
+        "players": players,
+        "is_initial_run": initial_run,
+    }
 
 
 @lambda_handler_error_responder
@@ -98,5 +103,4 @@ def handle_parse_teams(event, context):
     return {
         "statusCode": 200,
         "players": all_players,
-        "date": get_date(),
     }
