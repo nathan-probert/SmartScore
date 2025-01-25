@@ -132,7 +132,7 @@ def make_predictions_teams(players):
         )
 
     probabilities = c_predict(c_players, min_max)
-    for player in players:
+    for i, player in enumerate(players):
         player["stat"] = probabilities[i]
 
     return players
