@@ -154,25 +154,45 @@ def get_tims(players):
     return players
 
 
-def backfill_dates():
-    today = get_date(subtract_days=1)
-    logger.info(f"Checking for existence of date: {today}")
-    response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATES_NO_SCORED"})
-    body = response.get("body", {})
-    dates_no_scored = json.loads(body.get("dates", "[]"))
+def get_all_players(game_id):
+    url = f"https://api-web.nhle.com/v1/gamecenter/{game_id}/boxscore"
+    r = requests.get(url)
+    data = r.json()
 
-    # remove dates that are in the future (shouldn't happen, except maybe today's date)
-    dates_no_scored = [date for date in dates_no_scored if date < today]
+    game_data = data['playerByGameStats']
+    player_ids = set()
+
+    # Extract players from both away and home teams
+    for team in ['awayTeam', 'homeTeam']:
+        for player_type in ['forwards', 'defense']:
+            for player in game_data[team][player_type]:
+                player_ids.add(player['playerId'])
+
+    return player_ids
+
+
+def backfill_dates():
+    yesterday = get_date(subtract_days=1)
+    logger.info(f"Checking for existence of date: {yesterday}")
+    # response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATES_NO_SCORED"})
+    # body = response.get("body", {})
+    # dates_no_scored = json.loads(body.get("dates", "[]"))
+
+    # dates_no_scored = [date for date in dates_no_scored if date < yesterday]
+    dates_no_scored = [yesterday]
+
     logger.info(f"Dates to backfill: {dates_no_scored}")
     if not dates_no_scored:
         return
 
     scorers_dict = {}
+    players_who_played_ids = set()
+    game_ids = set()
     for date in dates_no_scored:
         data = requests.get(f"https://api-web.nhle.com/v1/score/{date}", timeout=5).json()
 
         # get players who actually played
-        players = []
+        cur_scorers = []
         for game in data.get("games"):
             if game.get("gameScheduleState") == "OK":
                 if not game.get("gameOutcome"):
@@ -198,9 +218,13 @@ def backfill_dates():
                 )
                 continue
 
-            players.extend(list({goal.get("playerId") for goal in game.get("goals", {})}))
-        scorers_dict[date] = players
+            cur_scorers.extend(list({goal.get("playerId") for goal in game.get("goals", {})}))
+            players_who_played_ids.update(get_all_players(game.get("id")))
 
+        scorers_dict[date] = cur_scorers
+
+    print(players_who_played_ids)
+    exit()
     response = invoke_lambda(LAMBDA_API_NAME, {"method": "POST_BACKFILL", "data": scorers_dict})
     return response
 

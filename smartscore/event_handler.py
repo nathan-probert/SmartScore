@@ -102,3 +102,7 @@ def handle_parse_teams(event, context):
         "statusCode": 200,
         "players": all_players,
     }
+
+
+if __name__ == "__main__":
+    handle_backfill({}, {})
