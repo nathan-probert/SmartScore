@@ -64,13 +64,13 @@ Resources:
       FunctionName: !Sub "GetTeams-${ENV}"
       Handler: event_handler.handle_get_teams
       Role: !GetAtt LambdaExecutionRole.Arn
-      Code:
-        S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Ref S3Key
-        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 10
       MemorySize: 128
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
       Environment:
         Variables:
           ENV: !Ref ENV
@@ -81,13 +81,13 @@ Resources:
       FunctionName: !Sub "GetPlayersFromTeam-${ENV}"
       Handler: event_handler.handle_get_players_from_team
       Role: !GetAtt LambdaExecutionRole.Arn
-      Code:
-        S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Ref S3Key
-        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 20
       MemorySize: 128
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
 
   MakePredictionsFunction:
     Type: AWS::Lambda::Function
@@ -95,13 +95,13 @@ Resources:
       FunctionName: !Sub "MakePredictions-${ENV}"
       Handler: event_handler.handle_make_predictions
       Role: !GetAtt LambdaExecutionRole.Arn
-      Code:
-        S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Ref S3Key
-        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 10
       MemorySize: 512
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
 
   GetTimsFunction:
     Type: AWS::Lambda::Function
@@ -109,13 +109,13 @@ Resources:
       FunctionName: !Sub "GetTims-${ENV}"
       Handler: event_handler.handle_get_tims
       Role: !GetAtt LambdaExecutionRole.Arn
-      Code:
-        S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Ref S3Key
-        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 5
       MemorySize: 128
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
 
   PerformBackfillingFunction:
     Type: AWS::Lambda::Function
@@ -123,16 +123,16 @@ Resources:
       FunctionName: !Sub "PerformBackfilling-${ENV}"
       Handler: event_handler.handle_backfill
       Role: !GetAtt LambdaExecutionRole.Arn
-      Code:
-        S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Ref S3Key
-        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 10
       MemorySize: 128
       Environment:
         Variables:
           ENV: !Ref ENV
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
 
   PublishDbFunction:
     Type: AWS::Lambda::Function
@@ -140,16 +140,16 @@ Resources:
       FunctionName: !Sub "PublishDb-${ENV}"
       Handler: event_handler.handle_publish_db
       Role: !GetAtt LambdaExecutionRole.Arn
-      Code:
-        S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Ref S3Key
-        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 10
       MemorySize: 128
       Environment:
         Variables:
           ENV: !Ref ENV
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
 
   CheckCompletedFunction:
     Type: AWS::Lambda::Function
@@ -157,16 +157,16 @@ Resources:
       FunctionName: !Sub "CheckCompleted-${ENV}"
       Handler: event_handler.handle_check_completed
       Role: !GetAtt LambdaExecutionRole.Arn
-      Code:
-        S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Ref S3Key
-        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 10
       MemorySize: 128
       Environment:
         Variables:
           ENV: !Ref ENV
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
 
   ParseData:
     Type: AWS::Lambda::Function
@@ -174,16 +174,16 @@ Resources:
       FunctionName: !Sub "ParseData-${ENV}"
       Handler: event_handler.handle_parse_teams
       Role: !GetAtt LambdaExecutionRole.Arn
-      Code:
-        S3Bucket: !ImportValue CodeBucketNameExport
-        S3Key: !Ref S3Key
-        S3ObjectVersion: !Ref CodeVersionId  # Use the passed version ID here
       Runtime: python3.12
       Timeout: 10
       MemorySize: 128
       Environment:
         Variables:
           ENV: !Ref ENV
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
 
   # Lambda Log Groups
   GetTeamsLogGroup:
@@ -191,48 +191,56 @@ Resources:
     Properties:
       LogGroupName: !Sub "/aws/lambda/GetTeams-${ENV}"
       RetentionInDays: 1
+    DeletionPolicy: Retain
 
   GetPlayersFromTeamLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/GetPlayersFromTeam-${ENV}"
       RetentionInDays: 1
+    DeletionPolicy: Retain
 
   MakePredictionsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/MakePredictions-${ENV}"
       RetentionInDays: 1
+    DeletionPolicy: Retain
 
   GetTimsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/GetTims-${ENV}"
       RetentionInDays: 1
+    DeletionPolicy: Retain
 
   PerformBackfillingLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/PerformBackfilling-${ENV}"
       RetentionInDays: 1
+    DeletionPolicy: Retain
 
   PublishDbLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/PublishDb-${ENV}"
       RetentionInDays: 1
+    DeletionPolicy: Retain
 
   CheckCompletedLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/CheckCompleted-${ENV}"
       RetentionInDays: 1
+    DeletionPolicy: Retain
 
   ParseDataLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/ParseData-${ENV}"
       RetentionInDays: 1
+    DeletionPolicy: Retain
 
   # State Machine Execution Role
   StateMachineExecutionRole:
