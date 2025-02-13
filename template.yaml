@@ -6,12 +6,6 @@ Parameters:
     Type: String
     Description: The environment (e.g., dev, prod)
     Default: dev
-  CodeVersionId:
-    Type: String
-    Description: "The version ID of the Lambda function code in S3."
-  S3Key:
-    Type: String
-    Description: "The key used by s3 to find the location of this code"
 
 Resources:
   # IAM Role for Lambda Execution
@@ -191,56 +185,48 @@ Resources:
     Properties:
       LogGroupName: !Sub "/aws/lambda/GetTeams-${ENV}"
       RetentionInDays: 1
-    DeletionPolicy: Retain
 
   GetPlayersFromTeamLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/GetPlayersFromTeam-${ENV}"
       RetentionInDays: 1
-    DeletionPolicy: Retain
 
   MakePredictionsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/MakePredictions-${ENV}"
       RetentionInDays: 1
-    DeletionPolicy: Retain
 
   GetTimsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/GetTims-${ENV}"
       RetentionInDays: 1
-    DeletionPolicy: Retain
 
   PerformBackfillingLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/PerformBackfilling-${ENV}"
       RetentionInDays: 1
-    DeletionPolicy: Retain
 
   PublishDbLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/PublishDb-${ENV}"
       RetentionInDays: 1
-    DeletionPolicy: Retain
 
   CheckCompletedLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/CheckCompleted-${ENV}"
       RetentionInDays: 1
-    DeletionPolicy: Retain
 
   ParseDataLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/ParseData-${ENV}"
       RetentionInDays: 1
-    DeletionPolicy: Retain
 
   # State Machine Execution Role
   StateMachineExecutionRole:

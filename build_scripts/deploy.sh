@@ -26,16 +26,12 @@ LAMBDA_FUNCTIONS=(
 
 
 generate_smartscore_stack() {
-  VERSION_ID=$1  # Get the version ID as a parameter
-
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
     aws cloudformation update-stack \
       --stack-name "$STACK_NAME" \
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
-                   ParameterKey=CodeVersionId,ParameterValue="$VERSION_ID" \
-                   ParameterKey=S3Key,ParameterValue="$KEY" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack update to complete..."
@@ -46,8 +42,6 @@ generate_smartscore_stack() {
       --stack-name "$STACK_NAME" \
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
-                   ParameterKey=CodeVersionId,ParameterValue="$VERSION_ID" \
-                   ParameterKey=S3Key,ParameterValue="$KEY" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
@@ -129,7 +123,7 @@ cp -r $SOURCE_DIR/* $OUTPUT_DIR/
 generate_zip_file
 
 # create the CloudFormation stack for smartscore
-generate_smartscore_stack "$VERSION_ID"  # Pass the version ID to the function
+generate_smartscore_stack
 
 # update the Lambda function code
 update_lambda_code
