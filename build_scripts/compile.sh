@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Define the absolute path to the project in windows format
-PROJECT_PATH="D:\code\smartScore"
+#PROJECT_PATH="D:\code\smartScore"
+PROJECT_PATH="C:\Users\natha\Documents\Code\SmartScore\SmartScore"
 
 # Run the Docker container with volume mounting
 if ! docker run -it --rm -v "$PROJECT_PATH:/project" amazonlinux:2 sh -c "

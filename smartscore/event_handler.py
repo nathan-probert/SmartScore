@@ -82,6 +82,10 @@ def handle_get_tims(event, context):
     }
 
 
+if __name__ == "__main__":
+    handle_get_tims({"players": []}, None)
+
+
 @lambda_handler_error_responder
 def handle_publish_db(event, context):
     entries = event.get("players")
