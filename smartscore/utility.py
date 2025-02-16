@@ -107,7 +107,8 @@ def invoke_lambda(function_name, payload, wait=True):
 def get_tims_players():
     response = requests.get("https://api.hockeychallengehelper.com/api/picks?", timeout=5)
     if response.status_code != HTTPStatus.OK:
-        raise ValueError(f"Failed to get Tim's players: {response.text}")
+        logger.info(f"Request failed with status code: {response.status_code}")
+        return []
     allPlayers = response.json()["playerLists"]
 
     ids = []

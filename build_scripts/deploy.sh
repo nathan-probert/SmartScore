@@ -28,14 +28,18 @@ LAMBDA_FUNCTIONS=(
 generate_smartscore_stack() {
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
-    aws cloudformation update-stack \
+    UPDATE_OUTPUT=$(aws cloudformation update-stack \
       --stack-name "$STACK_NAME" \
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
-      --capabilities CAPABILITY_NAMED_IAM
+      --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
-    echo "Waiting for CloudFormation stack update to complete..."
-    aws cloudformation wait stack-update-complete --stack-name "$STACK_NAME"
+    if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
+      echo "No updates needed. Skipping wait."
+    else
+      echo "Waiting for CloudFormation stack update to complete..."
+      aws cloudformation wait stack-update-complete --stack-name "$STACK_NAME"
+    fi
   else
     echo "Creating CloudFormation stack $STACK_NAME..."
     aws cloudformation create-stack \

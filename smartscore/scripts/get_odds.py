@@ -20,8 +20,10 @@ from datetime import datetime
 import requests
 from aws_lambda_powertools import Logger
 from unidecode import unidecode
+import os
 
-sys.path.append("D:\\code\\smartScore\\smartscore")
+sys.path.append("../smartscore")
+
 from constants import DRAFTKINGS_GOAL_SCORER_CATEGORY, DRAFTKINGS_NHL_ID, DRAFTKINGS_PROVIDER_ID  # noqa: E402
 from utility import get_today_db  # noqa: E402
 
@@ -43,6 +45,8 @@ def adjust_name(df_name):
         "Nicholas Paul": "Nick Paul",
         "Matt Dumba": "Mathew Dumba",
         "Alex Kerfoot": "Alexander Kerfoot",
+        "Josh Mahura": "Joshua Mahura",
+        "Elias-Nils Pettersson": "Elias Pettersson",
     }
     for old_name, new_name in name_replacements.items():
         df_name = df_name.replace(old_name, new_name)
@@ -85,7 +89,7 @@ def fetch_draftkings_data(url, user_agents, retries=3, delay=1):
                 "Connection": "keep-alive",
             }
             logger.info("Making request to DraftKings")
-            response = requests.get(url, headers=headers, timeout=300)
+            response = requests.get(url, headers=headers, timeout=15)
             response.raise_for_status()
             return response.json()
         except (requests.Timeout, requests.ConnectionError) as e:
@@ -204,10 +208,18 @@ if __name__ == "__main__":
     total_bets = 0
     total_possible_payout = 0
 
-    with open("./lib/bets.csv", mode="r") as file:
-        reader = csv.reader(file)
-        data = list(reader)
-        last_date = data[-1][0]
+    # create file if it does not exist
+
+    try:
+        with open("./lib/bets.csv", mode="r") as file:
+            reader = csv.reader(file)
+            data = list(reader)
+            last_date = data[-1][0]
+    except FileNotFoundError:
+        os.makedirs("./lib", exist_ok=True)
+        with open("./lib/bets.csv", "w") as file:
+            writer = csv.writer(file)
+            writer.writerow(["Date", "Name", "Team", "My Probability", "DraftKings Probability", "DraftKings Odds", "Bet Size", "Payout Amount", "Scored"])
 
     with open("./lib/bets.csv", mode="a", newline="") as file:
         writer = csv.writer(file)

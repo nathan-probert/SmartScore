@@ -139,10 +139,13 @@ def make_predictions_teams(players):
 
 
 def get_tims(players):
-    group_ids = get_tims_players()
-
     for player in players:
         player["tims"] = 0
+
+    group_ids = get_tims_players()
+    if not group_ids:
+        return players
+
     player_table = {player.get("id"): player for player in players}
     for i in range(3):
         for id in group_ids[i]:
