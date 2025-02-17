@@ -51,8 +51,16 @@ def get_teams(data):
     for game in games:
         start_times.add(game["startTimeUTC"])
 
+        home_name = game["homeTeam"]["placeName"]["default"]
+        if home_name == " ":
+            home_name = game["homeTeam"]["commonName"]["default"]
+
+        away_name = game["awayTeam"]["placeName"]["default"]
+        if away_name == " ":
+            away_name = game["awayTeam"]["commonName"]["default"]
+
         home_team = TeamInfo(
-            team_name=game["homeTeam"]["placeName"]["default"],
+            team_name=home_name,
             team_abbr=game["homeTeam"]["abbrev"],
             season=game["season"],
             team_id=game["homeTeam"]["id"],
@@ -60,7 +68,7 @@ def get_teams(data):
             home=True,
         )
         away_team = TeamInfo(
-            team_name=game["awayTeam"]["placeName"]["default"],
+            team_name=away_name,
             team_abbr=game["awayTeam"]["abbrev"],
             season=game["season"],
             team_id=game["awayTeam"]["id"],
