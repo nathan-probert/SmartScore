@@ -44,6 +44,7 @@ void calculate_probabilities(PlayerInfo* players, int num_players, float* probab
 void process_players(PlayerInfo* players, int num_players, MinMax min_max, float* probabilities) {
 
     // Step 1: Normalize stats
+    printf("Normalizing stats...\n");
     normalize_stats(
         players, num_players,
         min_max.min_gpg, min_max.max_gpg,
@@ -54,5 +55,6 @@ void process_players(PlayerInfo* players, int num_players, MinMax min_max, float
     );
 
     // Step 2: Calculate probabilities using normalized stats
+    printf("Calculating probabilities...\n");
     calculate_probabilities(players, num_players, probabilities);
 }

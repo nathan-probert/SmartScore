@@ -7,6 +7,7 @@ import boto3
 import requests
 from aws_lambda_powertools import Logger
 from dateutil import parser
+from smartscore_info_client.schemas.player_info import PlayerInfoC
 
 from config import ENV
 from constants import DB_URL
@@ -16,16 +17,6 @@ lambda_client = boto3.client("lambda")
 sts_client = boto3.client("sts")
 events_client = boto3.client("events")
 ssm_client = boto3.client("ssm")
-
-
-class PlayerInfoC(ctypes.Structure):
-    _fields_ = [
-        ("gpg", ctypes.c_float),
-        ("hgpg", ctypes.c_float),
-        ("five_gpg", ctypes.c_float),
-        ("tgpg", ctypes.c_float),
-        ("otga", ctypes.c_float),
-    ]
 
 
 class MinMaxC(ctypes.Structure):

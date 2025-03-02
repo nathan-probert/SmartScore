@@ -1,49 +1,39 @@
-import csv
 import ctypes
+import os
 import sys
 
-from smartscore_info_client.schemas.player_info import PlayerDbInfo
+from smartscore_info_client.schemas.db_player_info import PlayerDbInfo
+from smartscore_info_client.schemas.player_info import PlayerInfoC
 
-sys.path.append("../smartscore")
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from shared import get_data
 
 from service import get_min_max  # noqa: E402
 from utility import create_min_max  # noqa: E402
 
 
-class PlayerInfoC(ctypes.Structure):
-    _fields_ = [
-        ("gpg", ctypes.c_float),
-        ("hgpg", ctypes.c_float),
-        ("five_gpg", ctypes.c_float),
-        ("tgpg", ctypes.c_float),
-        ("otga", ctypes.c_float),
-        ("scored", ctypes.c_int),
-    ]
-
-
 # get all players from lib/data.csv
 def get_players() -> list[PlayerDbInfo]:
-    all_players = []
-    with open("../lib/data.csv", "r") as f:
-        reader = csv.reader(f)
-        next(reader)
+    data, labels = get_data()
 
-        for row in reader:
-            all_players.append(
-                PlayerDbInfo(
-                    _id={},
-                    date=row[0],
-                    scored=row[1],
-                    name=row[2],
-                    id=row[3],
-                    team_name=row[4],
-                    gpg=row[6],
-                    five_gpg=row[7],
-                    hgpg=row[8],
-                    tgpg=row[11],
-                    otga=row[12],
-                )
+    all_players = []
+    for index, row in data.iterrows():
+        all_players.append(
+            PlayerDbInfo(
+                _id={},
+                date=row["date"],
+                scored=row["scored"],
+                name=row["name"],
+                id={},
+                team_name={},
+                gpg=row["gpg"],
+                five_gpg=row["five_gpg"],
+                hgpg=row["hgpg"],
+                tgpg=row["tgpg"],
+                otga=row["otga"],
+                tims=row["tims"],  # add this to class
             )
+        )
     return all_players
 
 
@@ -58,7 +48,6 @@ def create_player_info_array(players):
             player_array[i].five_gpg = float(player.five_gpg)
             player_array[i].tgpg = float(player.tgpg)
             player_array[i].otga = float(player.otga)
-            player_array[i].scored = int(player.scored)
 
     return player_array
 
@@ -67,13 +56,47 @@ def create_player_info_array(players):
 def call_c_function(all_players: list[PlayerDbInfo]):
     player_array = create_player_info_array(all_players)
     size = len(player_array)
+    probabilities = (ctypes.c_float * size)()
+    print(f"Size: {size}")
 
     min_max_c = create_min_max(get_min_max())
 
-    players_lib = ctypes.CDLL("./scripts/compiled_code.so")
-    players_lib.process_players(player_array, size, min_max_c)
+    players_lib = ctypes.CDLL("./smartscore/compiled_code.so")
+    players_lib.process_players(player_array, size, min_max_c, probabilities)
+
+    return probabilities
+
+
+def check_probabilities(all_players, probabilities):
+    correct = 0
+    total = 0
+    highest_prob_players = {}
+    highest_prob_values = {}
+
+    for player in all_players:
+        if player.tims in {1, 2, 3}:
+            date = player.date
+            if date not in highest_prob_players:
+                highest_prob_players[date] = {1: None, 2: None, 3: None}
+                highest_prob_values[date] = {1: -1, 2: -1, 3: -1}
+
+            if probabilities[all_players.index(player)] > highest_prob_values[date][player.tims]:
+                highest_prob_values[date][player.tims] = probabilities[all_players.index(player)]
+                highest_prob_players[date][player.tims] = player
+
+    for date, players in highest_prob_players.items():
+        for tims_group, player in players.items():
+            if player:
+                if player.scored:
+                    correct += 1
+                total += 1
+
+    return total, correct
 
 
 if __name__ == "__main__":
     all_players = get_players()
-    call_c_function(all_players)
+    probabilities = call_c_function(all_players)
+    total, correct = check_probabilities(all_players, probabilities)
+    print(f"Total: {total}, Correct: {correct}")
+    print(f"Accuracy: {correct / total:.2f}")
