@@ -11,19 +11,6 @@ from shared import get_data
 from service import get_min_max  # noqa: E402
 from utility import create_min_max  # noqa: E402
 
-class ExtendedPlayerInfoC(ctypes.Structure):
-    _fields_ = [
-        ("gpg", ctypes.c_float),
-        ("hgpg", ctypes.c_float),
-        ("five_gpg", ctypes.c_float),
-        ("tgpg", ctypes.c_float),
-        ("otga", ctypes.c_float),
-        ("hppg", ctypes.c_float),
-        ("otshga", ctypes.c_float),
-        ("is_home", ctypes.c_float),
-        ("hppg_otshga", ctypes.c_float)
-    ]
-
 
 class ExtendedTestingPlayerInfoC(ctypes.Structure):
     _fields_ = [
@@ -129,6 +116,10 @@ def create_player_info_array(players):
             player_array[i].hppg = float(player.hppg)
             player_array[i].otshga = float(player.otshga)
             player_array[i].hppg_otshga = 0.0
+
+            player_array[i].scored = float(player.scored)
+            player_array[i].tims = float(player.tims)
+            player_array[i].date = player.date.encode("utf-8")
 
     return player_array
 

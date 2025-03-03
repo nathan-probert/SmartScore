@@ -19,19 +19,6 @@ events_client = boto3.client("events")
 ssm_client = boto3.client("ssm")
 
 
-class ExtendedPlayerInfoC(ctypes.Structure):
-    _fields_ = [
-        ("gpg", ctypes.c_float),
-        ("hgpg", ctypes.c_float),
-        ("five_gpg", ctypes.c_float),
-        ("tgpg", ctypes.c_float),
-        ("otga", ctypes.c_float),
-        ("hppg", ctypes.c_float),
-        ("otshga", ctypes.c_float),
-        ("is_home", ctypes.c_float),
-        ("hppg_otshga", ctypes.c_float)
-    ]
-
 class MinMaxC(ctypes.Structure):
     _fields_ = [
         ("min_gpg", ctypes.c_float),
@@ -52,7 +39,7 @@ class MinMaxC(ctypes.Structure):
 
 
 def create_player_info_array(players):
-    PlayerArrayC = ExtendedPlayerInfoC * len(players)
+    PlayerArrayC = PlayerInfoC * len(players)
     player_array = PlayerArrayC()
 
     for i, player in enumerate(players):

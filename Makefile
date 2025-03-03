@@ -21,7 +21,7 @@ test:
 .PHONY: compile
 compile:
 	@echo "Compiling C code"
-	@gcc -Wall -std=c99 -shared -o smartscore/compiled_code.so -fPIC smartscore/C/helper.c smartscore/C/main.c
+	@gcc -Wall -std=c99 -shared -o smartscore/compiled_code.so -fPIC smartscore/C/main.c
 
 
 .PHONY: get_odds
