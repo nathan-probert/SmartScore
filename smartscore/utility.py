@@ -19,6 +19,19 @@ events_client = boto3.client("events")
 ssm_client = boto3.client("ssm")
 
 
+class ExtendedPlayerInfoC(ctypes.Structure):
+    _fields_ = [
+        ("gpg", ctypes.c_float),
+        ("hgpg", ctypes.c_float),
+        ("five_gpg", ctypes.c_float),
+        ("tgpg", ctypes.c_float),
+        ("otga", ctypes.c_float),
+        ("hppg", ctypes.c_float),
+        ("otshga", ctypes.c_float),
+        ("is_home", ctypes.c_float),
+        ("hppg_otshga", ctypes.c_float)
+    ]
+
 class MinMaxC(ctypes.Structure):
     _fields_ = [
         ("min_gpg", ctypes.c_float),
@@ -39,7 +52,7 @@ class MinMaxC(ctypes.Structure):
 
 
 def create_player_info_array(players):
-    PlayerArrayC = PlayerInfoC * len(players)
+    PlayerArrayC = ExtendedPlayerInfoC * len(players)
     player_array = PlayerArrayC()
 
     for i, player in enumerate(players):
@@ -48,6 +61,10 @@ def create_player_info_array(players):
         player_array[i].five_gpg = player.get("five_gpg")
         player_array[i].tgpg = player.get("tgpg")
         player_array[i].otga = player.get("otga")
+        player_array[i].is_home = player.get("is_home")
+        player_array[i].hppg = player.get("hppg")
+        player_array[i].otshga = player.get("otshga")
+        player_array[i].hppg_otshga = 0.0
 
     return player_array
 
@@ -85,6 +102,7 @@ def c_predict(c_players, min_max):
     players_lib.process_players(player_array, size, min_max_c, probabilities)
     # players_lib.extended_process_players(player_array, size, min_max_c, probabilities)
 
+    probabilities = list(probabilities)  # Convert once
     return probabilities
 
 

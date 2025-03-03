@@ -140,7 +140,7 @@ def make_predictions_teams(players):
                 "otga": player["otga"],
                 "otshga": player["otshga"],
                 "hppg": player["hppg"],
-                "is_home": player["is_home"],
+                "is_home": player["home"],
             }
         )
 

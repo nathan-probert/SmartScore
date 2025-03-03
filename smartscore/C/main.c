@@ -137,6 +137,8 @@ void process_players(PlayerInfo* players, int num_players, MinMax min_max, float
     // Step 2: Calculate probabilities using normalized stats
     printf("Calculating probabilities...\n");
     calculate_probabilities(players, num_players, probabilities);
+
+    printf("Done calculating probabilities...\n");
 }
 
 
