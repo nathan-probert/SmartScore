@@ -121,6 +121,8 @@ def get_min_max():
         "five_gpg": {"min": 0.0, "max": 2.0},
         "tgpg": {"min": 0.0, "max": 4.0},
         "otga": {"min": 0.0, "max": 4.0},
+        "otshga": {"min": 0.0, "max": 1.12},
+        "hppg": {"min": 0.0, "max": 0.314},
     }
     return min_max
 
@@ -136,6 +138,9 @@ def make_predictions_teams(players):
                 "five_gpg": player["five_gpg"],
                 "tgpg": player["tgpg"],
                 "otga": player["otga"],
+                "otshga": player["otshga"],
+                "hppg": player["hppg"],
+                "is_home": player["is_home"],
             }
         )
 

@@ -1,9 +1,9 @@
 import ctypes
 import os
 import sys
+from dataclasses import dataclass, field
 
-from smartscore_info_client.schemas.db_player_info import PlayerDbInfo
-from smartscore_info_client.schemas.player_info import PlayerInfoC
+from marshmallow import Schema, fields
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from shared import get_data
@@ -11,35 +11,112 @@ from shared import get_data
 from service import get_min_max  # noqa: E402
 from utility import create_min_max  # noqa: E402
 
+class ExtendedPlayerInfoC(ctypes.Structure):
+    _fields_ = [
+        ("gpg", ctypes.c_float),
+        ("hgpg", ctypes.c_float),
+        ("five_gpg", ctypes.c_float),
+        ("tgpg", ctypes.c_float),
+        ("otga", ctypes.c_float),
+        ("hppg", ctypes.c_float),
+        ("otshga", ctypes.c_float),
+        ("is_home", ctypes.c_float),
+        ("hppg_otshga", ctypes.c_float)
+    ]
 
-# get all players from lib/data.csv
-def get_players() -> list[PlayerDbInfo]:
+
+class ExtendedTestingPlayerInfoC(ctypes.Structure):
+    _fields_ = [
+        ("gpg", ctypes.c_float),
+        ("hgpg", ctypes.c_float),
+        ("five_gpg", ctypes.c_float),
+        ("tgpg", ctypes.c_float),
+        ("otga", ctypes.c_float),
+        ("hppg", ctypes.c_float),
+        ("otshga", ctypes.c_float),
+        ("is_home", ctypes.c_float),
+        ("hppg_otshga", ctypes.c_float),
+        ("scored", ctypes.c_float),
+        ("tims", ctypes.c_float),
+        ("date", ctypes.c_char_p),
+    ]
+
+
+@dataclass(frozen=True)
+class ExtendedPlayerInfo:
+    name: str
+    date: str
+
+    gpg: float
+    hgpg: float
+    five_gpg: float
+    hppg: float
+
+    scored: int = field(default=None)
+    tims: int = field(default=0)
+
+    tgpg: float = field(default=0.0)
+    otga: float = field(default=0.0)
+    otshga: float = field(default=0.0)
+    is_home: float = field(default=False)
+
+    hppg_otshga: float = field(default=0.0)
+
+
+class ExtendedPlayerInfoSchema(Schema):
+    name = fields.Str()
+    date = fields.Str()
+
+    gpg = fields.Float()
+    hgpg = fields.Float()
+    five_gpg = fields.Float()
+    hppg = fields.Float()
+
+    scored = fields.Int(allow_none=True)
+    tims = fields.Int(allow_none=True)
+
+    tgpg = fields.Float(allow_none=True)
+    otga = fields.Float(allow_none=True)
+    otshga = fields.Float(allow_none=True)
+    is_home = fields.Float(allow_none=True)
+
+    hppg_otshga = fields.Float(allow_none=True)
+
+
+EXTENDED_PLAYER_INFO_SCHEMA = ExtendedPlayerInfoSchema()
+
+
+def get_players():
     data, labels = get_data()
 
     all_players = []
     for index, row in data.iterrows():
+        if row["tims"] not in {0, 1, 2, 3}:
+            row["tims"] = 0.0
+
         all_players.append(
-            PlayerDbInfo(
-                _id={},
-                date=row["date"],
-                scored=row["scored"],
+            ExtendedPlayerInfo(
                 name=row["name"],
-                id={},
-                team_name={},
+                date=row["date"],
                 gpg=row["gpg"],
-                five_gpg=row["five_gpg"],
                 hgpg=row["hgpg"],
-                tgpg=row["tgpg"],
-                otga=row["otga"],
-                tims=row["tims"],  # add this to class
+                five_gpg=row["five_gpg"],
+                hppg=row["hppg"],
+                scored=row.get("scored", None),
+                tgpg=row.get("tgpg", 0.0),
+                otga=row.get("otga", 0.0),
+                otshga=row.get("otshga", 0.0),
+                is_home=row.get("home", 0.0),
+                hppg_otshga=0.0,
+                tims=row.get("tims", 0.0),
             )
         )
     return all_players
 
 
 def create_player_info_array(players):
-    PlayerArrayC = PlayerInfoC * len(players)
-    player_array = PlayerArrayC()
+    ExtendedTestingPlayerArrayC = ExtendedTestingPlayerInfoC * len(players)
+    player_array = ExtendedTestingPlayerArrayC()
 
     for i, player in enumerate(players):
         if player.scored not in {" ", "null"}:
@@ -48,12 +125,16 @@ def create_player_info_array(players):
             player_array[i].five_gpg = float(player.five_gpg)
             player_array[i].tgpg = float(player.tgpg)
             player_array[i].otga = float(player.otga)
+            player_array[i].is_home = float(player.is_home)
+            player_array[i].hppg = float(player.hppg)
+            player_array[i].otshga = float(player.otshga)
+            player_array[i].hppg_otshga = 0.0
 
     return player_array
 
 
 # call C function
-def call_c_function(all_players: list[PlayerDbInfo]):
+def call_c_function(all_players):
     player_array = create_player_info_array(all_players)
     size = len(player_array)
     probabilities = (ctypes.c_float * size)()
@@ -61,9 +142,12 @@ def call_c_function(all_players: list[PlayerDbInfo]):
 
     min_max_c = create_min_max(get_min_max())
 
+    num_tims_dates = len(set(player.date for player in all_players if player.tims in {1, 2, 3}))
     players_lib = ctypes.CDLL("./smartscore/compiled_code.so")
-    players_lib.process_players(player_array, size, min_max_c, probabilities)
+    players_lib.test_weights(player_array, size, min_max_c, probabilities, num_tims_dates)
 
+
+    exit()
     return probabilities
 
 

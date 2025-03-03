@@ -31,6 +31,10 @@ class MinMaxC(ctypes.Structure):
         ("max_tgpg", ctypes.c_float),
         ("min_otga", ctypes.c_float),
         ("max_otga", ctypes.c_float),
+        ("min_hppg", ctypes.c_float),
+        ("max_hppg", ctypes.c_float),
+        ("min_otshga", ctypes.c_float),
+        ("max_otshga", ctypes.c_float),
     ]
 
 
@@ -60,6 +64,10 @@ def create_min_max(min_max):
     min_max_c.max_tgpg = min_max.get("tgpg", {}).get("max")
     min_max_c.min_otga = min_max.get("otga", {}).get("min")
     min_max_c.max_otga = min_max.get("otga", {}).get("max")
+    min_max_c.min_hppg = min_max.get("hppg", {}).get("min")
+    min_max_c.max_hppg = min_max.get("hppg", {}).get("max")
+    min_max_c.min_otshga = min_max.get("otshga", {}).get("min")
+    min_max_c.max_otshga = min_max.get("otshga", {}).get("max")
 
     return min_max_c
 
@@ -72,9 +80,10 @@ def c_predict(c_players, min_max):
     probabilities = ProbabilitiesC()
 
     min_max_c = create_min_max(min_max)
-
     players_lib = ctypes.CDLL("./compiled_code.so")
+
     players_lib.process_players(player_array, size, min_max_c, probabilities)
+    # players_lib.extended_process_players(player_array, size, min_max_c, probabilities)
 
     return probabilities
 
