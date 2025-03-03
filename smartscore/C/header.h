@@ -2,6 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Constants
+#define STEP_SIZE 5
+
+// Structs
 typedef struct
 {
     float gpg;
