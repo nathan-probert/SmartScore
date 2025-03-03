@@ -11,6 +11,7 @@ My probability does not take that into account, so the program will believe this
 
 import csv
 import json
+import os
 import secrets
 import sys
 import time
@@ -20,7 +21,6 @@ from datetime import datetime
 import requests
 from aws_lambda_powertools import Logger
 from unidecode import unidecode
-import os
 
 sys.path.append("../smartscore")
 
@@ -219,7 +219,19 @@ if __name__ == "__main__":
         os.makedirs("./lib", exist_ok=True)
         with open("./lib/bets.csv", "w") as file:
             writer = csv.writer(file)
-            writer.writerow(["Date", "Name", "Team", "My Probability", "DraftKings Probability", "DraftKings Odds", "Bet Size", "Payout Amount", "Scored"])
+            writer.writerow(
+                [
+                    "Date",
+                    "Name",
+                    "Team",
+                    "My Probability",
+                    "DraftKings Probability",
+                    "DraftKings Odds",
+                    "Bet Size",
+                    "Payout Amount",
+                    "Scored",
+                ]
+            )
 
     with open("./lib/bets.csv", mode="a", newline="") as file:
         writer = csv.writer(file)
