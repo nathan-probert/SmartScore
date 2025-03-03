@@ -79,7 +79,7 @@ def call_c_function(all_players):
 
     start_time = time.time()
     players_lib.test_weights(player_array, size, min_max_c, probabilities, num_tims_dates)
-    print(f"C function took {time.time() - start_time} seconds")
+    print(f"C function took {time.time() - start_time:.2f} seconds")
 
 
 if __name__ == "__main__":
