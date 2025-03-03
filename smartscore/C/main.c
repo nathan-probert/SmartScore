@@ -102,56 +102,38 @@ void process_players(PlayerInfo *players, int num_players, MinMax min_max, float
 // Function to check probabilities and return the number of correct predictions
 int check_probabilities(TestingPlayerInfo *players, float *probabilities, int num_players)
 {
-#define MAX_DATES 100
     int correct = 0;
 
-    int highest_prob_indices[MAX_DATES][3];
-    float highest_prob_values[MAX_DATES][3];
-    char dates[MAX_DATES][20];
-    int date_count = 0;
+    int highest_prob_indices[3];
+    float highest_prob_values[3];
+    char last_date[20];
+    strcpy(last_date, players[0].date);
 
-    for (int i = 0; i < MAX_DATES; i++)
-        for (int j = 0; j < 3; j++)
-            highest_prob_values[i][j] = -1.0f;
+    for (int i = 0; i < 3; i++)
+        highest_prob_values[i] = -1.0f;
 
     for (int i = 0; i < num_players; i++)
     {
-        if (players[i].tims >= 1 && players[i].tims <= 3)
+        if (strcmp(last_date, players[i].date) != 0 || i == num_players - 1)
         {
-            int date_index = -1;
-
-            for (int j = 0; j < date_count; j++)
+            for (int j = 0; j < 3; j++)
             {
-                if (strcmp(dates[j], players[i].date) == 0)
+                if (highest_prob_values[j] != -1.0f && players[highest_prob_indices[j]].scored)
                 {
-                    date_index = j;
-                    break;
+                    correct++;
                 }
             }
 
-            if (date_index == -1 && date_count < MAX_DATES)
-            {
-                strcpy(dates[date_count], players[i].date);
-                date_index = date_count;
-                date_count++;
-            }
+            for (int j = 0; j < 3; j++)
+                highest_prob_values[j] = -1.0f;
 
-            if (date_index != -1 && probabilities[i] > highest_prob_values[date_index][(int)players[i].tims - 1])
-            {
-                highest_prob_values[date_index][(int)players[i].tims - 1] = probabilities[i];
-                highest_prob_indices[date_index][(int)players[i].tims - 1] = i;
-            }
+            strcpy(last_date, players[i].date);
         }
-    }
 
-    for (int i = 0; i < date_count; i++)
-    {
-        for (int j = 0; j < 3; j++)
+        if (probabilities[i] > highest_prob_values[(int)players[i].tims - 1])
         {
-            if (highest_prob_values[i][j] != -1.0f && players[highest_prob_indices[i][j]].scored)
-            {
-                correct++;
-            }
+            highest_prob_values[(int)players[i].tims - 1] = probabilities[i];
+            highest_prob_indices[(int)players[i].tims - 1] = i;
         }
     }
 
@@ -172,18 +154,17 @@ void test_weights(TestingPlayerInfo *players, int num_players, MinMax min_max, f
                                      min_max.min_hppg, min_max.max_hppg, min_max.min_otshga, min_max.max_otshga);
 
     printf("Calculating probabilities...\n");
-    const int STEP = 5;
-    for (int gpg_weight = 0; gpg_weight <= 100; gpg_weight += STEP)
+    for (int gpg_weight = 0; gpg_weight <= 100; gpg_weight += STEP_SIZE)
     {
-        for (int five_gpg_weight = 0; five_gpg_weight <= 100 - gpg_weight; five_gpg_weight += STEP)
+        for (int five_gpg_weight = 0; five_gpg_weight <= 100 - gpg_weight; five_gpg_weight += STEP_SIZE)
         {
-            for (int hgpg_weight = 0; hgpg_weight <= 100 - gpg_weight - five_gpg_weight; hgpg_weight += STEP)
+            for (int hgpg_weight = 0; hgpg_weight <= 100 - gpg_weight - five_gpg_weight; hgpg_weight += STEP_SIZE)
             {
-                for (int tgpg_weight = 0; tgpg_weight <= 100 - gpg_weight - five_gpg_weight - hgpg_weight; tgpg_weight += STEP)
+                for (int tgpg_weight = 0; tgpg_weight <= 100 - gpg_weight - five_gpg_weight - hgpg_weight; tgpg_weight += STEP_SIZE)
                 {
-                    for (int otga_weight = 0; otga_weight <= 100 - gpg_weight - five_gpg_weight - hgpg_weight - tgpg_weight; otga_weight += STEP)
+                    for (int otga_weight = 0; otga_weight <= 100 - gpg_weight - five_gpg_weight - hgpg_weight - tgpg_weight; otga_weight += STEP_SIZE)
                     {
-                        for (int hppg_otshga_weight = 0; hppg_otshga_weight <= 100 - gpg_weight - five_gpg_weight - hgpg_weight - tgpg_weight - otga_weight; hppg_otshga_weight += STEP)
+                        for (int hppg_otshga_weight = 0; hppg_otshga_weight <= 100 - gpg_weight - five_gpg_weight - hgpg_weight - tgpg_weight - otga_weight; hppg_otshga_weight += STEP_SIZE)
                         {
                             int is_home_weight = 100 - gpg_weight - five_gpg_weight - hgpg_weight - tgpg_weight - otga_weight - hppg_otshga_weight;
 
@@ -219,6 +200,7 @@ void test_weights(TestingPlayerInfo *players, int num_players, MinMax min_max, f
         }
     }
 
+    printf("\nDone testing weights...\n");
     printf("Max correct: %d\n", max_correct);
     printf("Number of dates: %d\n", num_tims_dates);
     printf("Accuracy: %f\n", (float)max_correct / (num_tims_dates * 3));

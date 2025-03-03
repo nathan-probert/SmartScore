@@ -1,7 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <omp.h>
 
+// Constants
+#define MAX_DATES 10000
+#define STEP_SIZE 5
+
+// Structs
 typedef struct
 {
     float gpg;

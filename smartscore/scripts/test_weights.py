@@ -1,6 +1,7 @@
 import ctypes
 import os
 import sys
+import time
 
 from smartscore_info_client.schemas.player_info import PlayerInfo, TestingPlayerInfoC
 
@@ -39,6 +40,9 @@ def get_players():
 
 
 def create_player_info_array(players):
+    # remove players who don't have scoring data or weren't a tims pick
+    players = [player for player in players if player.scored not in {" ", "null"} and player.tims in {1, 2, 3}]
+
     ExtendedTestingPlayerArrayC = TestingPlayerInfoC * len(players)
     player_array = ExtendedTestingPlayerArrayC()
 
@@ -70,9 +74,12 @@ def call_c_function(all_players):
 
     min_max_c = create_min_max(get_min_max())
 
-    num_tims_dates = len(set(player.date for player in all_players if player.tims in {1, 2, 3}))
+    num_tims_dates = len(set(player.date for player in player_array))                
     players_lib = ctypes.CDLL("./smartscore/compiled_code.so")
+
+    start_time = time.time()
     players_lib.test_weights(player_array, size, min_max_c, probabilities, num_tims_dates)
+    print(f"C function took {time.time() - start_time} seconds")
 
 
 if __name__ == "__main__":
