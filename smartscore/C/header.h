@@ -3,7 +3,6 @@
 #include <string.h>
 
 // Constants
-#define MAX_DATES 10000
 #define STEP_SIZE 5
 
 // Structs
