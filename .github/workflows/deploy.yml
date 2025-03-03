@@ -3,10 +3,10 @@ name: Deploy to AWS
 on:
   push:
     branches:
-      - update-weights
+      - main
 
 env:
-  ENV: dev
+  ENV: prod
 
 jobs:
   deploy:

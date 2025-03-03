@@ -87,10 +87,8 @@ def c_predict(c_players, min_max):
     players_lib = ctypes.CDLL("./compiled_code.so")
 
     players_lib.process_players(player_array, size, min_max_c, probabilities)
-    # players_lib.extended_process_players(player_array, size, min_max_c, probabilities)
 
-    probabilities = list(probabilities)  # Convert once
-    return probabilities
+    return list(probabilities)
 
 
 def invoke_lambda(function_name, payload, wait=True):
