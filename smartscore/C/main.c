@@ -172,7 +172,7 @@ void test_weights(TestingPlayerInfo *players, int num_players, MinMax min_max, f
                                      min_max.min_hppg, min_max.max_hppg, min_max.min_otshga, min_max.max_otshga);
 
     printf("Calculating probabilities...\n");
-    const int STEP = 10;
+    const int STEP = 5;
     for (int gpg_weight = 0; gpg_weight <= 100; gpg_weight += STEP)
     {
         for (int five_gpg_weight = 0; five_gpg_weight <= 100 - gpg_weight; five_gpg_weight += STEP)
@@ -207,7 +207,7 @@ void test_weights(TestingPlayerInfo *players, int num_players, MinMax min_max, f
                             }
 
                             int correct = check_probabilities(players, probabilities, num_players);
-                            if (correct > max_correct)
+                            if (correct >= max_correct)
                             {
                                 max_correct = correct;
                                 max_weights = weights;

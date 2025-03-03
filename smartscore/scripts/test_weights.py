@@ -1,9 +1,7 @@
 import ctypes
 import os
 import sys
-# from dataclasses import dataclass, field
 
-# from marshmallow import Schema, fields
 from smartscore_info_client.schemas.player_info import PlayerInfo, TestingPlayerInfoC
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -11,63 +9,6 @@ from shared import get_data
 
 from service import get_min_max  # noqa: E402
 from utility import create_min_max  # noqa: E402
-
-
-# class ExtendedTestingPlayerInfoC(ctypes.Structure):
-#     _fields_ = [
-#         ("gpg", ctypes.c_float),
-#         ("hgpg", ctypes.c_float),
-#         ("five_gpg", ctypes.c_float),
-#         ("tgpg", ctypes.c_float),
-#         ("otga", ctypes.c_float),
-#         ("hppg", ctypes.c_float),
-#         ("otshga", ctypes.c_float),
-#         ("is_home", ctypes.c_float),
-#         ("hppg_otshga", ctypes.c_float),
-#         ("scored", ctypes.c_float),
-#         ("tims", ctypes.c_float),
-#         ("date", ctypes.c_char_p),
-#     ]
-
-
-# @dataclass(frozen=True)
-# class ExtendedPlayerInfo:
-#     name: str
-#     date: str
-
-#     gpg: float
-#     hgpg: float
-#     five_gpg: float
-#     hppg: float
-
-#     scored: int = field(default=None)
-#     tims: int = field(default=0)
-
-#     tgpg: float = field(default=0.0)
-#     otga: float = field(default=0.0)
-#     otshga: float = field(default=0.0)
-#     is_home: float = field(default=False)
-
-
-# class ExtendedPlayerInfoSchema(Schema):
-#     name = fields.Str()
-#     date = fields.Str()
-
-#     gpg = fields.Float()
-#     hgpg = fields.Float()
-#     five_gpg = fields.Float()
-#     hppg = fields.Float()
-
-#     scored = fields.Int(allow_none=True)
-#     tims = fields.Int(allow_none=True)
-
-#     tgpg = fields.Float(allow_none=True)
-#     otga = fields.Float(allow_none=True)
-#     otshga = fields.Float(allow_none=True)
-#     is_home = fields.Float(allow_none=True)
-
-
-# EXTENDED_PLAYER_INFO_SCHEMA = ExtendedPlayerInfoSchema()
 
 
 def get_players():
@@ -132,8 +73,6 @@ def call_c_function(all_players):
     num_tims_dates = len(set(player.date for player in all_players if player.tims in {1, 2, 3}))
     players_lib = ctypes.CDLL("./smartscore/compiled_code.so")
     players_lib.test_weights(player_array, size, min_max_c, probabilities, num_tims_dates)
-
-    return
 
 
 if __name__ == "__main__":
