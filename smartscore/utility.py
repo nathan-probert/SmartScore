@@ -38,6 +38,18 @@ class MinMaxC(ctypes.Structure):
     ]
 
 
+class WeightsC(ctypes.Structure):
+    _fields_ = [
+        ("gpg", ctypes.c_float),
+        ("hgpg", ctypes.c_float),
+        ("five_gpg", ctypes.c_float),
+        ("tgpg", ctypes.c_float),
+        ("otga", ctypes.c_float),
+        ("is_home", ctypes.c_float),
+        ("hppg", ctypes.c_float),
+        ("otshga", ctypes.c_float),
+    ]
+
 def create_player_info_array(players):
     PlayerArrayC = PlayerInfoC * len(players)
     player_array = PlayerArrayC()
@@ -76,7 +88,21 @@ def create_min_max(min_max):
     return min_max_c
 
 
-def c_predict(c_players, min_max):
+def create_weights(weights):
+    weights_c = WeightsC()
+    weights_c.gpg = weights.get("gpg")
+    weights_c.five_gpg = weights.get("five_gpg")
+    weights_c.hgpg = weights.get("hgpg")
+    weights_c.tgpg = weights.get("tgpg")
+    weights_c.otga = weights.get("otga")
+    weights_c.hppg_otshga = weights.get("hppg_otshga")
+    weights_c.is_home = weights.get("is_home")
+
+    return weights_c
+
+
+def c_predict(c_players, min_max, weights):
+    weights = create_weights(weights)
     player_array = create_player_info_array(c_players)
     size = len(c_players)
 
@@ -86,7 +112,7 @@ def c_predict(c_players, min_max):
     min_max_c = create_min_max(min_max)
     players_lib = ctypes.CDLL("./compiled_code.so")
 
-    players_lib.process_players(player_array, size, min_max_c, probabilities)
+    players_lib.process_players(player_array, size, min_max_c, probabilities, weights)
 
     return list(probabilities)
 

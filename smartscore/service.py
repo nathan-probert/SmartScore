@@ -144,9 +144,32 @@ def make_predictions_teams(players):
             }
         )
 
-    probabilities = c_predict(c_players, min_max)
+    weights = {
+        "gpg": 0.3,
+        "five_gpg": 0.4,
+        "hgpg": 0.3,
+        "tgpg": 0.0,
+        "otga": 0.0,
+        "hppg_otshga": 0.0,
+        "is_home": 0.0,
+    }
+    probabilities = c_predict(c_players, min_max, weights)
     for i, player in enumerate(players):
         player["stat"] = probabilities[i]
+
+    # experimental weights
+    weights = {
+        "gpg": 0.5,
+        "five_gpg": 0.05,
+        "hgpg": 0.0,
+        "tgpg": 0.05,
+        "otga": 0.25,
+        "hppg_otshga": 0.0,
+        "is_home": 0.15,
+    }
+    experimental_probabilities = c_predict(c_players, min_max, weights)
+    for i, player in enumerate(players):
+        player["experimental_stat"] = experimental_probabilities[i]
 
     return players
 
