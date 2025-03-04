@@ -159,13 +159,13 @@ def make_predictions_teams(players):
 
     # experimental weights
     weights = {
-        "gpg": 0.5,
-        "five_gpg": 0.05,
+        "gpg": 0.6,
+        "five_gpg": 0.06,
         "hgpg": 0.0,
-        "tgpg": 0.05,
-        "otga": 0.25,
-        "hppg_otshga": 0.0,
-        "is_home": 0.15,
+        "tgpg": 0.02,
+        "otga": 0.16,
+        "hppg_otshga": 0.02,
+        "is_home": 0.14,
     }
     experimental_probabilities = c_predict(c_players, min_max, weights)
     for i, player in enumerate(players):

@@ -168,6 +168,15 @@ void test_weights(TestingPlayerInfo *players, int num_players, MinMax min_max, f
                             weights.hppg_otshga = hppg_otshga_weight / 100.0;
                             weights.is_home = is_home_weight / 100.0;
 
+                            // force weights for single run
+                            // weights.gpg = 0.3;
+                            // weights.five_gpg = 0.4;
+                            // weights.hgpg = 0.3;
+                            // weights.tgpg = 0.0;
+                            // weights.otga = 0.0;
+                            // weights.hppg_otshga = 0.0;
+                            // weights.is_home = 0.0;
+
                             for (int i = 0; i < num_players; i++)
                             {
                                 probabilities[i] = (players[i].gpg * weights.gpg) +
@@ -185,6 +194,9 @@ void test_weights(TestingPlayerInfo *players, int num_players, MinMax min_max, f
                                 max_correct = correct;
                                 max_weights = weights;
                             }
+
+                            // for single run
+                            // break;
                         }
                     }
                 }

@@ -181,17 +181,12 @@ def create_cron_schedule(date_string):
 
 
 def delete_expired_rules():
-    # Create a CloudWatch Events client
     client = boto3.client("events")
-
-    # List all rules
     response = client.list_rules()
 
     for rule in response.get("Rules", []):
-        # Check if the rule name matches the desired format
-        # The format is TriggerStateMachineAt_YYYYMMDDHHMM
+        # Remove if the rule name matches TriggerStateMachineAt_YYYYMMDDHHMM
         if rule["Name"].startswith("TriggerStateMachineAt_"):
-            # List and remove all targets associated with the rule
             targets = client.list_targets_by_rule(Rule=rule["Name"]).get("Targets", [])
             if targets:
                 target_ids = [target["Id"] for target in targets]
@@ -250,5 +245,4 @@ def remove_last_game(time_set):
 
     time_objects.discard(max(time_objects))
 
-    # Return the updated set
     return {time.isoformat() for time in time_objects}
