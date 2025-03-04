@@ -144,9 +144,32 @@ def make_predictions_teams(players):
             }
         )
 
-    probabilities = c_predict(c_players, min_max)
+    weights = {
+        "gpg": 0.3,
+        "five_gpg": 0.4,
+        "hgpg": 0.3,
+        "tgpg": 0.0,
+        "otga": 0.0,
+        "hppg_otshga": 0.0,
+        "is_home": 0.0,
+    }
+    probabilities = c_predict(c_players, min_max, weights)
     for i, player in enumerate(players):
         player["stat"] = probabilities[i]
+
+    # experimental weights
+    weights = {
+        "gpg": 0.6,
+        "five_gpg": 0.06,
+        "hgpg": 0.0,
+        "tgpg": 0.02,
+        "otga": 0.16,
+        "hppg_otshga": 0.02,
+        "is_home": 0.14,
+    }
+    experimental_probabilities = c_predict(c_players, min_max, weights)
+    for i, player in enumerate(players):
+        player["experimental_stat"] = experimental_probabilities[i]
 
     return players
 
@@ -178,7 +201,7 @@ def backfill_dates():
     dates_no_scored = json.loads(body.get("dates", "[]"))
 
     # remove dates that are in the future (shouldn't happen, except maybe today's date)
-    dates_no_scored = [date for date in dates_no_scored if date < today]
+    dates_no_scored = [date for date in dates_no_scored if date and date < today]
     logger.info(f"Dates to backfill: {dates_no_scored}")
     if not dates_no_scored:
         return

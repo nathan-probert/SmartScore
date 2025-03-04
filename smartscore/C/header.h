@@ -3,7 +3,7 @@
 #include <string.h>
 
 // Constants
-#define STEP_SIZE 5
+#define STEP_SIZE 2.5
 
 // Structs
 typedef struct

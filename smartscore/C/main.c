@@ -55,30 +55,22 @@ void extended_testing_normalize_stats(
 }
 
 // Function to calculate probabilities based on normalized stats
-void calculate_probabilities(PlayerInfo *players, int num_players, float *probabilities)
+void calculate_probabilities(PlayerInfo *players, int num_players, float *probabilities, Weights weights)
 {
-    const float GPG_WEIGHT = 0.3;         // Weight for goals per game
-    const float FIVE_GPG_WEIGHT = 0.4;    // Weight for last 5 games goals per game
-    const float HGPG_WEIGHT = 0.3;        // Weight for historical goals per game
-    const float TGPG_WEIGHT = 0.0;        // Weight for team goals per game
-    const float OTGA_WEIGHT = 0.0;        // Weight for other team goals average
-    const float HPPG_OTSHGA_WEIGHT = 0.0; // Weight for historical powerplay goals per game and other team short handed goals against
-    const float HOME_WEIGHT = 0.0;        // Weight for home games
-
     for (int i = 0; i < num_players; i++)
     {
-        probabilities[i] = (players[i].gpg * GPG_WEIGHT) +
-                           (players[i].five_gpg * FIVE_GPG_WEIGHT) +
-                           (players[i].hgpg * HGPG_WEIGHT) +
-                           (players[i].tgpg * TGPG_WEIGHT) +
-                           (players[i].otga * OTGA_WEIGHT) +
-                           (players[i].hppg_otshga * HPPG_OTSHGA_WEIGHT) +
-                           (players[i].is_home * HOME_WEIGHT);
+        probabilities[i] = (players[i].gpg * weights.gpg) +
+                           (players[i].five_gpg * weights.five_gpg) +
+                           (players[i].hgpg * weights.hgpg) +
+                           (players[i].tgpg * weights.tgpg) +
+                           (players[i].otga * weights.otga) +
+                           (players[i].hppg_otshga * weights.hppg_otshga) +
+                           (players[i].is_home * weights.is_home);
     }
 }
 
 // Main function to process given players and calculate probabilities
-void process_players(PlayerInfo *players, int num_players, MinMax min_max, float *probabilities)
+void process_players(PlayerInfo *players, int num_players, MinMax min_max, float *probabilities, Weights weights)
 {
     // Step 1: Normalize stats
     printf("Normalizing stats...\n");
@@ -94,7 +86,7 @@ void process_players(PlayerInfo *players, int num_players, MinMax min_max, float
 
     // Step 2: Calculate probabilities using normalized stats
     printf("Calculating probabilities...\n");
-    calculate_probabilities(players, num_players, probabilities);
+    calculate_probabilities(players, num_players, probabilities, weights);
 
     printf("Done calculating probabilities...\n");
 }
@@ -176,6 +168,15 @@ void test_weights(TestingPlayerInfo *players, int num_players, MinMax min_max, f
                             weights.hppg_otshga = hppg_otshga_weight / 100.0;
                             weights.is_home = is_home_weight / 100.0;
 
+                            // force weights for single run
+                            // weights.gpg = 0.3;
+                            // weights.five_gpg = 0.4;
+                            // weights.hgpg = 0.3;
+                            // weights.tgpg = 0.0;
+                            // weights.otga = 0.0;
+                            // weights.hppg_otshga = 0.0;
+                            // weights.is_home = 0.0;
+
                             for (int i = 0; i < num_players; i++)
                             {
                                 probabilities[i] = (players[i].gpg * weights.gpg) +
@@ -193,6 +194,9 @@ void test_weights(TestingPlayerInfo *players, int num_players, MinMax min_max, f
                                 max_correct = correct;
                                 max_weights = weights;
                             }
+
+                            // for single run
+                            // break;
                         }
                     }
                 }
