@@ -199,6 +199,8 @@ def backfill_dates():
     response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATES_NO_SCORED"})
     body = response.get("body", {})
     dates_no_scored = json.loads(body.get("dates", "[]"))
+    if not dates_no_scored:
+        return
 
     # remove dates that are in the future (shouldn't happen, except maybe today's date)
     dates_no_scored = [date for date in dates_no_scored if date < today]
