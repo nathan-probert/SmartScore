@@ -3,10 +3,10 @@ name: Deploy to AWS
 on:
   push:
     branches:
-      - include-testing-stat
+      - main
 
 env:
-  ENV: dev
+  ENV: prod
 
 jobs:
   deploy:
