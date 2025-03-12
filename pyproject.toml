@@ -22,6 +22,7 @@ pre-commit = "^4.0.1"
 ruff = "^0.5.5"
 pytest = "^8.2.2"
 pandas = "^2.2.3"
+maturin = "^1.8.2"
 
 [tool.poetry.requires-plugins]
 poetry-plugin-export = ">=1.9"
@@ -65,5 +66,5 @@ pythonpath = ["smartscore"]
 testpaths = ["tests/unit"]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["maturin>=1.2"]
+build-backend = "maturin"

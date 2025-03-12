@@ -3,6 +3,7 @@ import json
 
 import pytz
 import requests
+import make_predictions_rust
 from aws_lambda_powertools import Logger
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
@@ -130,6 +131,7 @@ def get_min_max():
 def make_predictions_teams(players):
     min_max = get_min_max()
     c_players = []
+    rust_players = []
     for player in players:
         c_players.append(
             {
@@ -143,6 +145,17 @@ def make_predictions_teams(players):
                 "is_home": player["home"],
             }
         )
+        rust_players.append(make_predictions_rust.PlayerInfo(
+            gpg=player["gpg"],
+            hgpg=player["hgpg"],
+            five_gpg=player["five_gpg"],
+            tgpg=player["tgpg"],
+            otga=player["otga"],
+            otshga=player["otshga"],
+            hppg=player["hppg"],
+            is_home=player["home"],
+            hppg_otshga=0.0,
+        ))
 
     weights = {
         "gpg": 0.3,
@@ -170,6 +183,40 @@ def make_predictions_teams(players):
     experimental_probabilities = c_predict(c_players, min_max, weights)
     for i, player in enumerate(players):
         player["experimental_stat"] = experimental_probabilities[i]
+
+
+    # rust weights
+    weights = make_predictions_rust.Weights(
+        gpg=0.3,
+        five_gpg=0.4,
+        hgpg=0.3,
+        tgpg=0.0,
+        otga=0.0,
+        hppg_otshga=0.0,
+        is_home=0.0,
+    )
+    min_max_vals = get_min_max()
+    min_max = make_predictions_rust.MinMax(
+        min_gpg=min_max_vals["gpg"]["min"],
+        max_gpg=min_max_vals["gpg"]["max"],
+        min_hgpg=min_max_vals["hgpg"]["min"],
+        max_hgpg=min_max_vals["hgpg"]["max"],
+        min_five_gpg=min_max_vals["five_gpg"]["min"],
+        max_five_gpg=min_max_vals["five_gpg"]["max"],
+        min_tgpg=min_max_vals["tgpg"]["min"],
+        max_tgpg=min_max_vals["tgpg"]["max"],
+        min_otga=min_max_vals["otga"]["min"],
+        max_otga=min_max_vals["otga"]["max"],
+        min_hppg=min_max_vals["hppg"]["min"],
+        max_hppg=min_max_vals["hppg"]["max"],
+        min_otshga=min_max_vals["otshga"]["min"],
+        max_otshga=min_max_vals["otshga"]["max"],
+    )
+    rust_probabilities = make_predictions_rust.predict(rust_players, min_max, weights)
+    print(rust_probabilities)
+    print(type(rust_probabilities))
+    for i, player in enumerate(players):
+        player["rust_stat"] = rust_probabilities[i]
 
     return players
 

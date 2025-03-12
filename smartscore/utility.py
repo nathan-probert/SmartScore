@@ -50,6 +50,7 @@ class WeightsC(ctypes.Structure):
         ("otshga", ctypes.c_float),
     ]
 
+
 def create_player_info_array(players):
     PlayerArrayC = PlayerInfoC * len(players)
     player_array = PlayerArrayC()
