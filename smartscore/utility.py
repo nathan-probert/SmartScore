@@ -7,7 +7,6 @@ import boto3
 import requests
 from aws_lambda_powertools import Logger
 from dateutil import parser
-from smartscore_info_client.schemas.player_info import PlayerInfoC
 
 from config import ENV
 from constants import DB_URL
@@ -17,78 +16,6 @@ lambda_client = boto3.client("lambda")
 sts_client = boto3.client("sts")
 events_client = boto3.client("events")
 ssm_client = boto3.client("ssm")
-
-
-class MinMaxC(ctypes.Structure):
-    _fields_ = [
-        ("min_gpg", ctypes.c_float),
-        ("max_gpg", ctypes.c_float),
-        ("min_hgpg", ctypes.c_float),
-        ("max_hgpg", ctypes.c_float),
-        ("min_five_gpg", ctypes.c_float),
-        ("max_five_gpg", ctypes.c_float),
-        ("min_tgpg", ctypes.c_float),
-        ("max_tgpg", ctypes.c_float),
-        ("min_otga", ctypes.c_float),
-        ("max_otga", ctypes.c_float),
-        ("min_hppg", ctypes.c_float),
-        ("max_hppg", ctypes.c_float),
-        ("min_otshga", ctypes.c_float),
-        ("max_otshga", ctypes.c_float),
-    ]
-
-
-def create_player_info_array(players):
-    PlayerArrayC = PlayerInfoC * len(players)
-    player_array = PlayerArrayC()
-
-    for i, player in enumerate(players):
-        player_array[i].gpg = player.get("gpg")
-        player_array[i].hgpg = player.get("hgpg")
-        player_array[i].five_gpg = player.get("five_gpg")
-        player_array[i].tgpg = player.get("tgpg")
-        player_array[i].otga = player.get("otga")
-        player_array[i].is_home = player.get("is_home")
-        player_array[i].hppg = player.get("hppg")
-        player_array[i].otshga = player.get("otshga")
-        player_array[i].hppg_otshga = 0.0
-
-    return player_array
-
-
-def create_min_max(min_max):
-    min_max_c = MinMaxC()
-    min_max_c.min_gpg = min_max.get("gpg", {}).get("min")
-    min_max_c.max_gpg = min_max.get("gpg", {}).get("max")
-    min_max_c.min_hgpg = min_max.get("hgpg", {}).get("min")
-    min_max_c.max_hgpg = min_max.get("hgpg", {}).get("max")
-    min_max_c.min_five_gpg = min_max.get("five_gpg", {}).get("min")
-    min_max_c.max_five_gpg = min_max.get("five_gpg", {}).get("max")
-    min_max_c.min_tgpg = min_max.get("tgpg", {}).get("min")
-    min_max_c.max_tgpg = min_max.get("tgpg", {}).get("max")
-    min_max_c.min_otga = min_max.get("otga", {}).get("min")
-    min_max_c.max_otga = min_max.get("otga", {}).get("max")
-    min_max_c.min_hppg = min_max.get("hppg", {}).get("min")
-    min_max_c.max_hppg = min_max.get("hppg", {}).get("max")
-    min_max_c.min_otshga = min_max.get("otshga", {}).get("min")
-    min_max_c.max_otshga = min_max.get("otshga", {}).get("max")
-
-    return min_max_c
-
-
-def c_predict(c_players, min_max):
-    player_array = create_player_info_array(c_players)
-    size = len(c_players)
-
-    ProbabilitiesC = ctypes.c_float * size
-    probabilities = ProbabilitiesC()
-
-    min_max_c = create_min_max(min_max)
-    players_lib = ctypes.CDLL("./compiled_code.so")
-
-    players_lib.process_players(player_array, size, min_max_c, probabilities)
-
-    return list(probabilities)
 
 
 def invoke_lambda(function_name, payload, wait=True):
@@ -155,17 +82,12 @@ def create_cron_schedule(date_string):
 
 
 def delete_expired_rules():
-    # Create a CloudWatch Events client
     client = boto3.client("events")
-
-    # List all rules
     response = client.list_rules()
 
     for rule in response.get("Rules", []):
-        # Check if the rule name matches the desired format
-        # The format is TriggerStateMachineAt_YYYYMMDDHHMM
+        # Remove if the rule name matches TriggerStateMachineAt_YYYYMMDDHHMM
         if rule["Name"].startswith("TriggerStateMachineAt_"):
-            # List and remove all targets associated with the rule
             targets = client.list_targets_by_rule(Rule=rule["Name"]).get("Targets", [])
             if targets:
                 target_ids = [target["Id"] for target in targets]
@@ -224,5 +146,4 @@ def remove_last_game(time_set):
 
     time_objects.discard(max(time_objects))
 
-    # Return the updated set
     return {time.isoformat() for time in time_objects}

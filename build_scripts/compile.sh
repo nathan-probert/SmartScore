@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Define the absolute path to the project in windows format
-PROJECT_PATH="D:\code\smartScore"
+SCRIPT_DIR=$(dirname "$(realpath "$0")")
+PROJECT_PATH=$(dirname "$SCRIPT_DIR")
+PROJECT_PATH="$(cygpath.exe -C ANSI -w -p "${PROJECT_PATH}")"
 
 # Run the Docker container with volume mounting
 if ! docker run -it --rm -v "$PROJECT_PATH:/project" amazonlinux:2 sh -c "

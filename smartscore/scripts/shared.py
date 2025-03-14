@@ -11,7 +11,7 @@ PATH = "smartscore\\lib"
 DATA_PATH = f"{PATH}\\data.csv"
 
 # FEATURES = ["gpg", "hgpg", "five_gpg", "tgpg", "otga"]
-FEATURES = ["gpg", "hgpg", "five_gpg", "tgpg", "otga", "hppg", "otshga", "home"]
+FEATURES = ["gpg", "hgpg", "five_gpg", "tgpg", "otga", "hppg", "otshga", "is_home"]
 
 
 def invoke_lambda(function_name, payload, wait=True):
@@ -40,8 +40,7 @@ def unpack_response(body):
 
 
 def create_csv():
-    # update this to prod once api pr is merged
-    response = invoke_lambda("Api-dev", {"method": "GET_ALL"})
+    response = invoke_lambda("Api-prod", {"method": "GET_ALL"})
     data = unpack_response(response.get("entries"))
 
     # Get the fields from the last entry (which should have all fields), set missing fields to None

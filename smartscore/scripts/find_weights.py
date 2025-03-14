@@ -9,7 +9,45 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from shared import get_data
 
 from service import get_min_max  # noqa: E402
-from utility import create_min_max  # noqa: E402
+
+
+class MinMaxC(ctypes.Structure):
+    _fields_ = [
+        ("min_gpg", ctypes.c_float),
+        ("max_gpg", ctypes.c_float),
+        ("min_hgpg", ctypes.c_float),
+        ("max_hgpg", ctypes.c_float),
+        ("min_five_gpg", ctypes.c_float),
+        ("max_five_gpg", ctypes.c_float),
+        ("min_tgpg", ctypes.c_float),
+        ("max_tgpg", ctypes.c_float),
+        ("min_otga", ctypes.c_float),
+        ("max_otga", ctypes.c_float),
+        ("min_hppg", ctypes.c_float),
+        ("max_hppg", ctypes.c_float),
+        ("min_otshga", ctypes.c_float),
+        ("max_otshga", ctypes.c_float),
+    ]
+
+
+def create_min_max(min_max):
+    min_max_c = MinMaxC()
+    min_max_c.min_gpg = min_max.get("gpg", {}).get("min")
+    min_max_c.max_gpg = min_max.get("gpg", {}).get("max")
+    min_max_c.min_hgpg = min_max.get("hgpg", {}).get("min")
+    min_max_c.max_hgpg = min_max.get("hgpg", {}).get("max")
+    min_max_c.min_five_gpg = min_max.get("five_gpg", {}).get("min")
+    min_max_c.max_five_gpg = min_max.get("five_gpg", {}).get("max")
+    min_max_c.min_tgpg = min_max.get("tgpg", {}).get("min")
+    min_max_c.max_tgpg = min_max.get("tgpg", {}).get("max")
+    min_max_c.min_otga = min_max.get("otga", {}).get("min")
+    min_max_c.max_otga = min_max.get("otga", {}).get("max")
+    min_max_c.min_hppg = min_max.get("hppg", {}).get("min")
+    min_max_c.max_hppg = min_max.get("hppg", {}).get("max")
+    min_max_c.min_otshga = min_max.get("otshga", {}).get("min")
+    min_max_c.max_otshga = min_max.get("otshga", {}).get("max")
+
+    return min_max_c
 
 
 def get_players():
