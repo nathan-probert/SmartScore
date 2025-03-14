@@ -1,9 +1,7 @@
+use pyo3::Bound;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
-use std::cmp::Ordering;
-use pyo3::types::PyDict;
 use pyo3::types::PyType;
-use std::convert::TryInto;
 
 
 #[pyclass]
@@ -48,7 +46,7 @@ impl PlayerInfo {
     }
 
     #[classmethod]
-    fn default(_cls: &PyType) -> Self {
+    fn default(_cls: &Bound<'_, PyType>) -> Self {
         Self {
             gpg: 0.0, hgpg: 0.0, five_gpg: 0.0, tgpg: 0.0,
             otga: 0.0, hppg: 0.0, otshga: 0.0, is_home: 0.0,
@@ -114,7 +112,7 @@ impl MinMax {
     }
     
     #[classmethod]
-    fn default(_cls: &PyType) -> Self {
+    fn default(_cls: &Bound<'_, PyType>) -> Self {
         Self {
             min_gpg: f32::MAX, max_gpg: f32::MIN,
             min_hgpg: f32::MAX, max_hgpg: f32::MIN,
@@ -163,7 +161,7 @@ impl Weights {
     }
     
     #[classmethod]
-    fn default(_cls: &PyType) -> Self {
+    fn default(_cls: &Bound<'_, PyType>) -> Self {
         Self {
             gpg: 1.0,
             hgpg: 1.0,
@@ -220,7 +218,7 @@ fn predict(py: Python, mut players: Vec<PlayerInfo>, min_max: MinMax, weights: W
 
 // A Python module implemented in Rust.
 #[pymodule]
-fn make_predictions_rust(_py: Python, m: &PyModule) -> PyResult<()> {
+fn make_predictions_rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PlayerInfo>()?;
     m.add_class::<MinMax>()?;
     m.add_class::<Weights>()?;

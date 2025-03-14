@@ -11,7 +11,6 @@ from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 from config import ENV
 from constants import LAMBDA_API_NAME
 from utility import (
-    c_predict,
     get_tims_players,
     get_today_db,
     invoke_lambda,
@@ -129,22 +128,8 @@ def get_min_max():
 
 
 def make_predictions_teams(players):
-    min_max = get_min_max()
-    c_players = []
     rust_players = []
     for player in players:
-        c_players.append(
-            {
-                "gpg": player["gpg"],
-                "hgpg": player["hgpg"],
-                "five_gpg": player["five_gpg"],
-                "tgpg": player["tgpg"],
-                "otga": player["otga"],
-                "otshga": player["otshga"],
-                "hppg": player["hppg"],
-                "is_home": player["home"],
-            }
-        )
         rust_players.append(make_predictions_rust.PlayerInfo(
             gpg=player["gpg"],
             hgpg=player["hgpg"],
@@ -157,19 +142,6 @@ def make_predictions_teams(players):
             hppg_otshga=0.0,
         ))
 
-    weights = {
-        "gpg": 0.3,
-        "five_gpg": 0.4,
-        "hgpg": 0.3,
-        "tgpg": 0.0,
-        "otga": 0.0,
-        "hppg_otshga": 0.0,
-        "is_home": 0.0,
-    }
-    probabilities = c_predict(c_players, min_max, weights)
-    for i, player in enumerate(players):
-        player["stat"] = probabilities[i]
-
     # experimental weights
     weights = {
         "gpg": 0.6,
@@ -180,10 +152,6 @@ def make_predictions_teams(players):
         "hppg_otshga": 0.02,
         "is_home": 0.14,
     }
-    experimental_probabilities = c_predict(c_players, min_max, weights)
-    for i, player in enumerate(players):
-        player["experimental_stat"] = experimental_probabilities[i]
-
 
     # rust weights
     weights = make_predictions_rust.Weights(
@@ -214,7 +182,7 @@ def make_predictions_teams(players):
     )
     rust_probabilities = make_predictions_rust.predict(rust_players, min_max, weights)
     for i, player in enumerate(players):
-        player["rust_stat"] = rust_probabilities[i]
+        player["stat"] = rust_probabilities[i]
 
     return players
 
