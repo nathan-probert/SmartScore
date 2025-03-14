@@ -19,13 +19,7 @@ if ! docker run -it --rm -v "$PROJECT_PATH:/project" quay.io/pypa/manylinux_2_28
 "; then
     echo "Running for linux environment."
     echo "If you are on windows, ensure docker is running."
-    ls
-    cd smartscore
-    ls
-    cd Rust
-    ls
-    cd make_predictions
-    ls
+    cd smartscore/Rust/make_predictions
 
     cargo build --release --target x86_64-unknown-linux-gnu
 fi
