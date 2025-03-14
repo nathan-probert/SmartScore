@@ -213,8 +213,6 @@ def make_predictions_teams(players):
         max_otshga=min_max_vals["otshga"]["max"],
     )
     rust_probabilities = make_predictions_rust.predict(rust_players, min_max, weights)
-    print(rust_probabilities)
-    print(type(rust_probabilities))
     for i, player in enumerate(players):
         player["rust_stat"] = rust_probabilities[i]
 
