@@ -106,15 +106,18 @@ update_lambda_code() {
 # main
 
 # create empty output directory
+echo "Creating output directory..."
 rm -rf $OUTPUT_DIR
 mkdir -p $OUTPUT_DIR
 
 # update dependencies
+echo "Updating dependencies..."
 poetry export -f requirements.txt --output $OUTPUT_DIR/requirements.txt --without-hashes
 poetry run pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
 rm -f $OUTPUT_DIR/requirements.txt
 
 # compile C code
+echo "Compiling C code..."
 sh build_scripts/compile.sh
 if [ $? -ne 0 ]; then
   echo "Error: Compilation failed. Ensure docker is running."
@@ -122,6 +125,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # compile Rust code
+echo "Compiling Rust code..."
 sh build_scripts/rust_compile.sh
 if [ $? -ne 0 ]; then
   echo "Error: Compilation failed. Ensure docker is running."
@@ -129,6 +133,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # update the code
+echo "Updating the code..."
 cp -r $SOURCE_DIR/* $OUTPUT_DIR
 cp -r $OUTPUT_DIR/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so $OUTPUT_DIR/make_predictions_rust.so
 rm -rf $OUTPUT_DIR/C

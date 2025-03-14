@@ -19,7 +19,7 @@ test:
 	@poetry run pytest -v
 
 .PHONY: compile
-compile_c:
+compile:
 	@echo "Compiling C code"
 	@gcc -Wall -std=c99 -shared -o smartscore/compiled_code.so -fPIC smartscore/C/main.c
 

@@ -11,10 +11,8 @@ if ! docker run -it --rm -v "$PROJECT_PATH:/project" quay.io/pypa/manylinux_2_28
     yum install -y rust-toolset
 
     # Navigate to the Rust project directory
-    cd /project/smartscore
-    ls
-    cd Rust/make_predictions
-    ls
+    cd /project
+    cd /smartscore/Rust/make_predictions
 
     # Compile the Rust code (assuming it's using Cargo)
     cargo build --release --target x86_64-unknown-linux-gnu
@@ -22,8 +20,9 @@ if ! docker run -it --rm -v "$PROJECT_PATH:/project" quay.io/pypa/manylinux_2_28
     echo "Running for linux environment."
     echo "If you are on windows, ensure docker is running."
 
-    # Run Cargo locally if not in Docker
-    cargo build --release
+    cd /smartscore/Rust/make_predictions
+
+    cargo build --release --target x86_64-unknown-linux-gnu
 fi
 
 # Print a message upon successful completion
