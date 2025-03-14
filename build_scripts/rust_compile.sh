@@ -20,11 +20,11 @@ if ! docker run -it --rm -v "$PROJECT_PATH:/project" quay.io/pypa/manylinux_2_28
     echo "Running for linux environment."
     echo "If you are on windows, ensure docker is running."
     ls
-    cd /smartscore
+    cd smartscore
     ls
-    cd /Rust
+    cd Rust
     ls
-    cd /make_predictions
+    cd make_predictions
     ls
 
     cargo build --release --target x86_64-unknown-linux-gnu
@@ -32,4 +32,3 @@ fi
 
 # Print a message upon successful completion
 echo "Compilation completed. Check the target/release directory in $PROJECT_PATH/smartscore/"
-exit 1
