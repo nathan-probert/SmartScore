@@ -19,11 +19,14 @@ test:
 	@poetry run pytest -v
 
 .PHONY: compile
-compile:
-	@echo "Compiling Rust code"
-	@poetry run maturin develop --manifest-path smartscore/Rust/make_predictions/Cargo.toml
+compile_c:
 	@echo "Compiling C code"
 	@gcc -Wall -std=c99 -shared -o smartscore/compiled_code.so -fPIC smartscore/C/main.c
+
+.PHONE: compile_rust
+compile_rust:
+	@echo "Compiling Rust code"
+	@poetry run maturin develop -r --manifest-path smartscore/Rust/make_predictions/Cargo.toml
 
 .PHONY: get_odds
 get_odds:

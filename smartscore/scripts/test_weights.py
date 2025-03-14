@@ -1,20 +1,18 @@
-import ctypes
 import os
 import sys
 import time
 
-from smartscore_info_client.schemas.player_info import PlayerInfo, TestingPlayerInfoC
+import make_predictions_rust  # noqa: E402
+from smartscore_info_client.schemas.player_info import PlayerInfo  # adjust as needed
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from shared import get_data
 
 from service import get_min_max  # noqa: E402
-from utility import create_min_max  # noqa: E402
 
 
 def get_players():
     data, labels = get_data()
-
     all_players = []
     for index, row in data.iterrows():
         if row["tims"] not in {0, 1, 2, 3}:
@@ -39,49 +37,57 @@ def get_players():
     return all_players
 
 
-def create_player_info_array(players):
-    # remove players who don't have scoring data or weren't a tims pick
-    players = [player for player in players if player.scored not in {" ", "null"} and player.tims in {1, 2, 3}]
-
-    ExtendedTestingPlayerArrayC = TestingPlayerInfoC * len(players)
-    player_array = ExtendedTestingPlayerArrayC()
-
-    for i, player in enumerate(players):
-        if player.scored not in {" ", "null"}:
-            player_array[i].gpg = float(player.gpg)
-            player_array[i].hgpg = float(player.hgpg)
-            player_array[i].five_gpg = float(player.five_gpg)
-            player_array[i].tgpg = float(player.tgpg)
-            player_array[i].otga = float(player.otga)
-            player_array[i].is_home = float(player.is_home)
-            player_array[i].hppg = float(player.hppg)
-            player_array[i].otshga = float(player.otshga)
-            player_array[i].hppg_otshga = 0.0
-
-            player_array[i].scored = float(player.scored)
-            player_array[i].tims = float(player.tims)
-            player_array[i].date = player.date.encode("utf-8")
-
-    return player_array
+def create_testing_player_list(players):
+    # Filter out players with no scoring data or not a tims pick.
+    filtered = [p for p in players if p.scored not in {" ", "null"} and p.tims in {1, 2, 3}]
+    testing_players = []
+    for player in filtered:
+        testing_players.append(
+            make_predictions_rust.TestingPlayerInfo(
+                gpg=float(player.gpg),
+                hgpg=float(player.hgpg),
+                five_gpg=float(player.five_gpg),
+                tgpg=float(player.tgpg),
+                otga=float(player.otga),
+                hppg=float(player.hppg),
+                otshga=float(player.otshga),
+                is_home=float(player.is_home),
+                hppg_otshga=0.0,
+                scored=float(player.scored),
+                tims=float(player.tims),
+                date=player.date,  # pass the date as a string
+            )
+        )
+    return testing_players
 
 
-# call C function
-def call_c_function(all_players):
-    player_array = create_player_info_array(all_players)
-    size = len(player_array)
-    probabilities = (ctypes.c_float * size)()
-    print(f"Size: {size}")
+def call_rust_function(all_players):
+    testing_players = create_testing_player_list(all_players)
+    min_max_vals = get_min_max()
+    min_max = make_predictions_rust.MinMax(
+        min_gpg=min_max_vals["gpg"]["min"],
+        max_gpg=min_max_vals["gpg"]["max"],
+        min_hgpg=min_max_vals["hgpg"]["min"],
+        max_hgpg=min_max_vals["hgpg"]["max"],
+        min_five_gpg=min_max_vals["five_gpg"]["min"],
+        max_five_gpg=min_max_vals["five_gpg"]["max"],
+        min_tgpg=min_max_vals["tgpg"]["min"],
+        max_tgpg=min_max_vals["tgpg"]["max"],
+        min_otga=min_max_vals["otga"]["min"],
+        max_otga=min_max_vals["otga"]["max"],
+        min_hppg=min_max_vals["hppg"]["min"],
+        max_hppg=min_max_vals["hppg"]["max"],
+        min_otshga=min_max_vals["otshga"]["min"],
+        max_otshga=min_max_vals["otshga"]["max"],
+    )
 
-    min_max_c = create_min_max(get_min_max())
-
-    num_tims_dates = len(set(player.date for player in player_array))                
-    players_lib = ctypes.CDLL("./smartscore/compiled_code.so")
-
+    print(f"Number of players: {len(testing_players)}")
     start_time = time.time()
-    players_lib.test_weights(player_array, size, min_max_c, probabilities, num_tims_dates)
-    print(f"C function took {time.time() - start_time:.2f} seconds")
+    result = make_predictions_rust.test_weights(testing_players, min_max)
+    print(f"Rust function took {time.time() - start_time:.2f} seconds")
+    print("Result from Rust function:", result)
 
 
 if __name__ == "__main__":
-    all_players = get_players()
-    probabilities = call_c_function(all_players)
+    players = get_players()
+    call_rust_function(players)

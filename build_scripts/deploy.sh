@@ -105,7 +105,8 @@ update_lambda_code() {
 
 # main
 
-# create the output directory
+# create empty output directory
+rm -rf $OUTPUT_DIR
 mkdir -p $OUTPUT_DIR
 
 # update dependencies
@@ -120,8 +121,18 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
+# compile Rust code
+sh build_scripts/rust_compile.sh
+if [ $? -ne 0 ]; then
+  echo "Error: Compilation failed. Ensure docker is running."
+  exit 1
+fi
+
 # update the code
-cp -r $SOURCE_DIR/* $OUTPUT_DIR/
+cp -r $SOURCE_DIR/* $OUTPUT_DIR
+cp -r $OUTPUT_DIR/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so $OUTPUT_DIR/make_predictions_rust.so
+rm -rf $OUTPUT_DIR/C
+rm -rf $OUTPUT_DIR/Rust
 
 # generate the ZIP file
 generate_zip_file
