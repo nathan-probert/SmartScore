@@ -59,7 +59,7 @@ Resources:
       Handler: event_handler.handle_get_teams
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 10
+      Timeout: 30
       MemorySize: 128
       Code:
         ZipFile: |
@@ -76,7 +76,7 @@ Resources:
       Handler: event_handler.handle_get_players_from_team
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 20
+      Timeout: 30
       MemorySize: 128
       Code:
         ZipFile: |
@@ -90,7 +90,7 @@ Resources:
       Handler: event_handler.handle_make_predictions
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 10
+      Timeout: 30
       MemorySize: 512
       Code:
         ZipFile: |
@@ -104,7 +104,7 @@ Resources:
       Handler: event_handler.handle_get_tims
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 5
+      Timeout: 30
       MemorySize: 128
       Code:
         ZipFile: |
@@ -118,7 +118,7 @@ Resources:
       Handler: event_handler.handle_backfill
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 10
+      Timeout: 30
       MemorySize: 128
       Environment:
         Variables:
@@ -135,7 +135,7 @@ Resources:
       Handler: event_handler.handle_publish_db
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 10
+      Timeout: 30
       MemorySize: 128
       Environment:
         Variables:
@@ -152,7 +152,7 @@ Resources:
       Handler: event_handler.handle_check_completed
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 10
+      Timeout: 30
       MemorySize: 128
       Environment:
         Variables:
@@ -169,7 +169,7 @@ Resources:
       Handler: event_handler.handle_parse_teams
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 10
+      Timeout: 30
       MemorySize: 128
       Environment:
         Variables:
