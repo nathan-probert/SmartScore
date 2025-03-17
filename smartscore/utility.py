@@ -2,6 +2,7 @@ import ctypes
 import json
 from datetime import timedelta
 from http import HTTPStatus
+import time
 
 import boto3
 import requests
@@ -35,11 +36,8 @@ def invoke_lambda(function_name, payload, wait=True):
 
 
 def get_tims_players():
-    response = requests.get("https://api.hockeychallengehelper.com/api/picks?", timeout=5)
-    if response.status_code != HTTPStatus.OK:
-        logger.info(f"Request failed with status code: {response.status_code}")
-        return []
-    allPlayers = response.json()["playerLists"]
+    response = exponential_backoff_request("https://api.hockeychallengehelper.com/api/picks?")
+    allPlayers = response["playerLists"]
 
     ids = []
     for groupNum in range(3):
@@ -50,27 +48,12 @@ def get_tims_players():
 
 def save_to_db(players):
     data = {"items": players}
-    response = requests.post(DB_URL, timeout=5, json=data)
+    exponential_backoff_request(DB_URL, method="post", json_data=data)
 
-    if response.status_code == HTTPStatus.OK:
-        logger.info(
-            "Successfully updated the database",
-        )
-    else:
-        logger.info(f"Request failed with status code: {response.status_code}")
-        raise ValueError(f"Failed to update the database: {response.text}")
-
-    return response.status_code
 
 
 def get_today_db():
-    response = requests.get(DB_URL, timeout=5)
-
-    if response.status_code != HTTPStatus.OK:
-        logger.info(f"Request failed with status code: {response.status_code}")
-        raise ValueError(f"Failed to access the database: {response.text}")
-
-    return response.json()
+    return exponential_backoff_request(DB_URL)
 
 
 def create_cron_schedule(date_string):
@@ -147,3 +130,37 @@ def remove_last_game(time_set):
     time_objects.discard(max(time_objects))
 
     return {time.isoformat() for time in time_objects}
+
+
+def exponential_backoff_request(url, method="get", data=None, json_data=None, max_retries=5, base_delay=1):
+    """
+    Makes HTTP requests with exponential backoff retry strategy.
+    
+    Args:
+        url: URL to send the request to
+        method: HTTP method ("get" or "post")
+        data: Form data for POST requests
+        json_data: JSON data for POST requests
+        max_retries: Maximum number of retry attempts
+        base_delay: Base delay between retries in seconds
+    
+    Returns:
+        Parsed JSON response
+    """
+    method = method.lower()
+    for attempt in range(max_retries):
+        try:
+            if method == "get":
+                response = requests.get(url, timeout=5)
+            elif method == "post":
+                response = requests.post(url, data=data, json=json_data, timeout=5)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+                
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            wait_time = base_delay * (2 ** attempt)
+            print(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time} seconds...")
+            time.sleep(wait_time)
+    raise Exception("Max retries reached. Request failed.")

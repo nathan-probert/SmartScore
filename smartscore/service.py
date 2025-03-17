@@ -17,6 +17,7 @@ from utility import (
     remove_last_game,
     save_to_db,
     schedule_run,
+    exponential_backoff_request,
 )
 
 logger = Logger()
@@ -40,7 +41,7 @@ def get_todays_schedule():
     logger.info(f"Getting players for date: {date}")
 
     URL = f"https://api-web.nhle.com/v1/schedule/{date}"
-    return requests.get(URL, timeout=5).json()
+    return exponential_backoff_request(URL)
 
 
 def get_teams(data):
@@ -92,7 +93,7 @@ def get_players_from_team(team):
     players = []
 
     URL = f"https://api-web.nhle.com/v1/roster/{team.team_abbr}/current"
-    data = requests.get(URL, timeout=10).json()
+    data = exponential_backoff_request(URL)
 
     types = ["forwards", "defensemen"]
     for player_type in types:
@@ -221,7 +222,7 @@ def backfill_dates():
 
     scorers_dict = {}
     for date in dates_no_scored:
-        data = requests.get(f"https://api-web.nhle.com/v1/score/{date}", timeout=5).json()
+        data = exponential_backoff_request(f"https://api-web.nhle.com/v1/score/{date}")
 
         # get players who actually played
         players = []
