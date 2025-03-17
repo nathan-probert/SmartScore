@@ -40,7 +40,7 @@ Deploy to AWS using:<br />
 - **Historic Power Play Goals (HPPG)**: A player's power play goals over the last three seasons (since these are relatively rare, one season alone might be misleading). Can be combined with **Other Team's Shorthanded Goals Against Per Game** for a more comprehensive stat.  
 - **Other Team's Shorthanded Goals Against Per Game (OTSHGA)**: Measures how many shorthanded goals a team allows per game. Can be combined with **HPPG** for a more meaningful composite stat. Also implicitly considers other team's penalty minutes, penalty kill percentage, etc.  
 
-### **Stats Already Covered by Others:**  
+### Stats Already Covered by Others:  
 - **Time on Ice** → Covered by GPG.  
 - **Shots Per Game** → Covered by GPG.  
 - **Shot Percentage** → Covered by GPG.  
