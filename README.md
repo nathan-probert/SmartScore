@@ -27,4 +27,22 @@ Deploy to AWS using:<br />
 
 *Note: This program is intended for informational purposes only and does not facilitate actual betting. Users should exercise their own judgment and discretion when using the provided suggestions for betting purposes.*
 
+<br/>
+
+# ALL CONSIDERED STATISTICS  
+
+- **Goals Per Game (GPG)**: The most telling stat when determining if a player will score a goal. It implicitly considers factors like time on ice, shots per game, shot-to-goal ratio, etc.  
+- **Goals Per Game in Last 5 Games (5GPG)**: Captures hot streaks (and cold streaks).  
+- **Historic Goals Per Game (HGPG)**: A player's GPG over the last three seasons. Especially useful at the beginning of a new season when current GPG may be skewed.  
+- **Team's Goals Per Game (TGPG)**: Useful if a player is traded to a new team.  
+- **Other Team's Goals Against (OTGA)**: Captures the opposing team's defensive strength, factoring in defense quality, goalie performance, etc. This is independent of a player's GPG, which reflects their scoring average, whereas OTGA varies with each game.  
+- **Home or Away**: Helps identify patterns in a player's goal-scoring performance based on location.  
+- **Historic Power Play Goals (HPPG)**: A player's power play goals over the last three seasons (since these are relatively rare, one season alone might be misleading). Can be combined with **Other Team's Shorthanded Goals Against Per Game** for a more comprehensive stat.  
+- **Other Team's Shorthanded Goals Against Per Game (OTSHGA)**: Measures how many shorthanded goals a team allows per game. Can be combined with **HPPG** for a more meaningful composite stat. Also implicitly considers other team's penalty minutes, penalty kill percentage, etc.  
+
+### Stats Already Covered by Others:  
+- **Time on Ice** → Covered by GPG.  
+- **Shots Per Game** → Covered by GPG.  
+- **Shot Percentage** → Covered by GPG.  
+- **Other Team's Penalty Minutes** → Covered by OTSHGA.  
 
