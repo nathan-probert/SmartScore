@@ -10,7 +10,7 @@ from aws_lambda_powertools import Logger
 from dateutil import parser
 
 from config import ENV
-from constants import DB_URL
+from constants import HISTORY_API_URL, PREDICTIONS_API_URL
 
 logger = Logger()
 lambda_client = boto3.client("lambda")
@@ -48,12 +48,21 @@ def get_tims_players():
 
 def save_to_db(players):
     data = {"items": players}
-    exponential_backoff_request(DB_URL, method="post", json_data=data)
-
+    exponential_backoff_request(PREDICTIONS_API_URL, method="post", json_data=data)
 
 
 def get_today_db():
-    return exponential_backoff_request(DB_URL)
+    return exponential_backoff_request(PREDICTIONS_API_URL)
+
+
+def get_historical_data():
+    return exponential_backoff_request(HISTORY_API_URL)
+
+
+def update_historical_data(players):
+    data = {"items": players}
+    print(data)
+    exponential_backoff_request(HISTORY_API_URL, method="post", json_data=data)
 
 
 def create_cron_schedule(date_string):

@@ -138,6 +138,7 @@ cp -r $SOURCE_DIR/* $OUTPUT_DIR
 cp -r $OUTPUT_DIR/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so $OUTPUT_DIR/make_predictions_rust.so
 rm -rf $OUTPUT_DIR/C
 rm -rf $OUTPUT_DIR/Rust
+rm -rf $OUTPUT_DIR/__pycache__
 
 # generate the ZIP file
 generate_zip_file
