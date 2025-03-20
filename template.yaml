@@ -179,6 +179,20 @@ Resources:
           def lambda_handler(event, context):
               return {"status": "Lambda function placeholder"}
 
+  UpdateHistoryFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "UpdateHistory-${ENV}"
+      Handler: event_handler.handle_save_historic_db
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
+
   # Lambda Log Groups
   GetTeamsLogGroup:
     Type: AWS::Logs::LogGroup
@@ -228,6 +242,12 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/ParseData-${ENV}"
       RetentionInDays: 1
 
+  UpdateHistoryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/UpdateHistory-${ENV}"
+      RetentionInDays: 1
+
   # State Machine Execution Role
   StateMachineExecutionRole:
     Type: AWS::IAM::Role
@@ -256,6 +276,7 @@ Resources:
                   - !GetAtt PublishDbFunction.Arn
                   - !GetAtt CheckCompletedFunction.Arn
                   - !GetAtt ParseData.Arn
+                  - !GetAtt UpdateHistoryFunction.Arn
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
 
   # State Machine
@@ -364,6 +385,11 @@ Resources:
                 "date.$": "$.date",
                 "method": "POST_BATCH"
               },
+              "Next": "UpdateHistory"
+            },
+            "UpdateHistory": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:UpdateHistory-${ENV}",
               "Next": "PublishToDb"
             },
             "PublishToDb": {
