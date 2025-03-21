@@ -209,4 +209,4 @@ def handle_save_historic_db(event, context):
 
     write_historic_db(picks)
 
-    return {"statusCode": 200}
+    return {"statusCode": 200, "players": players}
