@@ -14,6 +14,8 @@ from service import (
     make_predictions_teams,
     publish_public_db,
     separate_players,
+    choose_picks,
+    write_historic_db,
 )
 
 logger = Logger()
@@ -190,3 +192,17 @@ def handle_parse_teams(event, context):
         "statusCode": 200,
         "players": all_players,
     }
+
+
+@lambda_handler_error_responder
+def handle_save_historic_db(event, context):
+    """
+    Saves the player data to the historic database.
+    """
+
+    players = event.get("players")
+    picks = choose_picks(players)
+
+    write_historic_db(picks)
+
+    return {"statusCode": 200, "players": players}

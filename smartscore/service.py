@@ -11,6 +11,7 @@ from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 from config import ENV
 from constants import LAMBDA_API_NAME
 from utility import (
+    get_historical_data,
     get_tims_players,
     get_today_db,
     invoke_lambda,
@@ -18,6 +19,7 @@ from utility import (
     save_to_db,
     schedule_run,
     exponential_backoff_request,
+    update_historical_data,
 )
 
 logger = Logger()
@@ -208,14 +210,13 @@ def get_tims(players):
 
 
 def backfill_dates():
-    today = get_date(subtract_days=1)
-    logger.info(f"Checking for existence of date: {today}")
+    yesterday = get_date(subtract_days=1)
     response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATES_NO_SCORED"})
     body = response.get("body", {})
     dates_no_scored = json.loads(body.get("dates", "[]"))
 
     # remove dates that are in the future (shouldn't happen, except maybe today's date)
-    dates_no_scored = [date for date in dates_no_scored if date and date < today]
+    dates_no_scored = [date for date in dates_no_scored if date and date <= yesterday]
     logger.info(f"Dates to backfill: {dates_no_scored}")
     if not dates_no_scored:
         return
@@ -262,7 +263,8 @@ def publish_public_db(players):
     date = get_date()
     for player in players:
         player["date"] = date
-        player["player_id"] = player.pop("id")
+        if not player.get("player_id"):
+            player["player_id"] = player.pop("id")
 
     save_to_db(players)
 
@@ -298,3 +300,59 @@ def separate_players(players, teams):
         entries.append({**player_info_filtered, **team_info_filtered})
 
     return entries
+
+
+def choose_picks(players):
+    # get the top pick from each tims {1,2,3}
+    tims_picks = {}
+    for player in players:
+        tims = player["tims"]
+        if tims not in tims_picks:
+            tims_picks[tims] = player
+        else:
+            if player["stat"] > tims_picks[tims]["stat"]:
+                tims_picks[tims] = player
+
+    tims_picks.pop(0, None)
+    return list(tims_picks.values())
+    
+
+def write_historic_db(picks):
+    today = get_date()
+    for player in picks:
+        player["date"] = today
+        player["player_id"] = player.pop("id")
+
+    old_entries = get_historical_data()
+    if not old_entries:
+        return
+    
+    table = {}
+    for entry in old_entries:
+        table.setdefault(entry["date"], []).append(entry["player_id"])
+
+    if today in table.keys():
+        return
+
+    if len(table.keys()) >= 7:
+        last_date = min(table.keys())
+        table.pop(last_date)
+
+    # update scored column for old entries
+    dates_no_scored = [date for date in table.keys() if date and date < today]
+
+    for date in dates_no_scored:
+        response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATE", "date": date})
+        body = response.get("body", [])
+        players = json.loads(body)
+
+        player_table = {player["id"]: player for player in players}
+
+        for entry in old_entries:
+            if entry["date"] == date:
+                player = player_table.get(entry["player_id"])
+                if player:
+                    entry["scored"] = player["scored"]
+
+    update_historical_data(old_entries + picks)
+    return
