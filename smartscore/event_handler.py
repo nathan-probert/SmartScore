@@ -200,10 +200,6 @@ def handle_save_historic_db(event, context):
     Saves the player data to the historic database.
     """
 
-    # we have all of today's players + stats, so we could save that to historic
-    # then the next day we can use those stats/id to check if they scored and update
-
-
     players = event.get("players")
     picks = choose_picks(players)
 

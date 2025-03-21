@@ -61,7 +61,6 @@ def get_historical_data():
 
 def update_historical_data(players):
     data = {"items": players}
-    print(data)
     exponential_backoff_request(HISTORY_API_URL, method="post", json_data=data)
 
 
