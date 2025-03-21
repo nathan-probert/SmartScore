@@ -314,6 +314,7 @@ def choose_picks(players):
                 tims_picks[tims] = player
 
     tims_picks.pop(0, None)
+    logger.info(f"Tim's picks: {tims_picks}")
     return list(tims_picks.values())
     
 
@@ -324,23 +325,21 @@ def write_historic_db(picks):
         player["player_id"] = player.pop("id")
 
     old_entries = get_historical_data()
-    if not old_entries:
-        return
     
     table = {}
     for entry in old_entries:
         table.setdefault(entry["date"], []).append(entry["player_id"])
-
     if today in table.keys():
         return
 
-    if len(table.keys()) >= 7:
+    if len(table.keys()) > 7:
         last_date = min(table.keys())
         table.pop(last_date)
 
     # update scored column for old entries
     dates_no_scored = [date for date in table.keys() if date and date < today]
 
+    logger.info(f"Updating scored column for dates: {dates_no_scored}")
     for date in dates_no_scored:
         response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATE", "date": date})
         body = response.get("body", [])
@@ -352,7 +351,7 @@ def write_historic_db(picks):
             if entry["date"] == date:
                 player = player_table.get(entry["player_id"])
                 if player:
-                    entry["scored"] = player["scored"]
+                    entry["Scored"] = player["scored"]
 
     update_historical_data(old_entries + picks)
     return
