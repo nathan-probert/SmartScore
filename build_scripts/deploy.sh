@@ -22,6 +22,7 @@ LAMBDA_FUNCTIONS=(
   "PublishDb-$ENV"
   "CheckCompleted-$ENV"
   "ParseData-$ENV"
+  "UpdateHistory-$ENV"
 )
 
 
