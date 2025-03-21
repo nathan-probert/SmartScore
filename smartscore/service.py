@@ -263,7 +263,8 @@ def publish_public_db(players):
     date = get_date()
     for player in players:
         player["date"] = date
-        player["player_id"] = player.pop("id")
+        if not player.get("player_id"):
+            player["player_id"] = player.pop("id")
 
     save_to_db(players)
 
