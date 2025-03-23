@@ -36,7 +36,7 @@ def invoke_lambda(function_name, payload, wait=True):
 
 
 def get_tims_players():
-    response = exponential_backoff_request("https://api.hockeychallengehelper.com/api/picks?")
+    response = exponential_backoff_request("https://api.hockeychallenger.com/api/picks?")
     allPlayers = response["playerLists"]
 
     ids = []
