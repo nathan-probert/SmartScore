@@ -296,7 +296,15 @@ Resources:
             "GetDate": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:CheckCompleted-${ENV}",
-              "Next": "CheckCompletion"
+              "Next": "CheckCompletion",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 300,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 1.0
+                }
+              ]
             },
             "CheckCompletion": {
               "Type": "Choice",
@@ -316,12 +324,28 @@ Resources:
             "Backfill": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PerformBackfilling-${ENV}",
-              "Next": "GetTeams"
+              "Next": "GetTeams",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 300,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 1.0
+                }
+              ]
             },
             "GetTeams": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTeams-${ENV}",
-              "Next": "MapGetPlayersFromTeam"
+              "Next": "MapGetPlayersFromTeam",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 300,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 1.0
+                }
+              ]
             },
             "MapGetPlayersFromTeam": {
               "Type": "Map",
@@ -339,9 +363,9 @@ Resources:
                         "ErrorEquals": [
                           "States.ALL"
                         ],
-                        "IntervalSeconds": 2,
+                        "IntervalSeconds": 300,
                         "MaxAttempts": 3,
-                        "BackoffRate": 2.0
+                        "BackoffRate": 1.0
                       }
                     ],
                     "End": true
@@ -353,17 +377,41 @@ Resources:
             "ParseData": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:ParseData-${ENV}",
-              "Next": "MakePredictions"
+              "Next": "MakePredictions",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 300,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 1.0
+                }
+              ]
             },
             "MakePredictions": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions-${ENV}",
-              "Next": "GetTims"
+              "Next": "GetTims",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 300,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 1.0
+                }
+              ]
             },
             "GetTims": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims-${ENV}",
-              "Next": "CheckInitialRun"
+              "Next": "CheckInitialRun",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 300,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 1.0
+                }
+              ]
             },
             "CheckInitialRun": {
               "Type": "Choice",
@@ -388,17 +436,41 @@ Resources:
                 "date.$": "$.date",
                 "method": "POST_BATCH"
               },
-              "Next": "UpdateHistory"
+              "Next": "UpdateHistory",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 300,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 1.0
+                }
+              ]
             },
             "UpdateHistory": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:UpdateHistory-${ENV}",
-              "Next": "PublishToDb"
+              "Next": "PublishToDb",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 300,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 1.0
+                }
+              ]
             },
             "PublishToDb": {
               "Type": "Task",
               "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PublishDb-${ENV}",
-              "End": true
+              "End": true,
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 300,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 1.0
+                }
+              ]
             }
           }
         }

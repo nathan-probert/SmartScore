@@ -3,10 +3,10 @@ name: Deploy to AWS
 on:
   push:
     branches:
-      - main
+      - add-retry
 
 env:
-  ENV: prod
+  ENV: dev
 
 jobs:
   deploy:
