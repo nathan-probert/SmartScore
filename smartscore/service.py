@@ -356,7 +356,3 @@ def write_historic_db(picks):
 
     update_historical_data(old_entries + picks)
     return
-
-
-if __name__ == "__main__":
-    write_historic_db([])
