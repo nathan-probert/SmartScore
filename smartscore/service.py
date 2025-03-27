@@ -325,20 +325,21 @@ def write_historic_db(picks):
         player["player_id"] = player.pop("id")
 
     old_entries = get_historical_data()
-    
     table = {}
     for entry in old_entries:
-        table.setdefault(entry["date"], []).append(entry["player_id"])
+        if entry["date"] not in table:
+            table[entry["date"]] = []
+        table[entry["date"]].append((entry["player_id"], entry["Scored"]))
     if today in table.keys():
+        logger.info(f"Today already in table: {table[today]}")
         return
 
-    if len(table.keys()) > 7:
-        last_date = min(table.keys())
+    while len(table) > 8:
+        last_date = min(table.keys())  
         table.pop(last_date)
+    old_entries = [entry for entry in old_entries if entry["date"] in table.keys()]
 
-    # update scored column for old entries
-    dates_no_scored = [date for date in table.keys() if date and date < today]
-
+    dates_no_scored = [date for date in table.keys() if date and any(scored is None for _, scored in table[date]) and date < today]
     logger.info(f"Updating scored column for dates: {dates_no_scored}")
     for date in dates_no_scored:
         response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATE", "date": date})
