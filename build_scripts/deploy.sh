@@ -31,6 +31,9 @@ generate_smartscore_stack() {
     echo "Error: SUPABASE_URL or SUPABASE_API_KEY environment variables are not set."
     exit 1
   fi
+  echo "Supabase URL: ${SUPABASE_URL:0:5}..."
+  echo "Supabase API Key: ${SUPABASE_API_KEY:0:5}..."
+  exit 0
 
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
