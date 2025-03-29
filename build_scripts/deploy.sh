@@ -27,12 +27,21 @@ LAMBDA_FUNCTIONS=(
 
 
 generate_smartscore_stack() {
+  if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_API_KEY" ]; then
+    echo "Error: SUPABASE_URL or SUPABASE_API_KEY environment variables are not set."
+    exit 1
+  fi
+  echo "Supabase URL: ${SUPABASE_URL:0:5}..."
+  echo "Supabase API Key: ${SUPABASE_API_KEY:0:5}..."
+
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
     UPDATE_OUTPUT=$(aws cloudformation update-stack \
       --stack-name "$STACK_NAME" \
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
+        ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
+        ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -47,6 +56,8 @@ generate_smartscore_stack() {
       --stack-name "$STACK_NAME" \
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
+        ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
+        ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
