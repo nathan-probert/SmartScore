@@ -74,6 +74,8 @@ Resources:
       Environment:
         Variables:
           ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
 
   GetPlayersFromTeamFunction:
     Type: AWS::Lambda::Function
@@ -88,6 +90,11 @@ Resources:
         ZipFile: |
           def lambda_handler(event, context):
               return {"status": "Lambda function placeholder"}
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
 
   MakePredictionsFunction:
     Type: AWS::Lambda::Function
@@ -102,6 +109,11 @@ Resources:
         ZipFile: |
           def lambda_handler(event, context):
               return {"status": "Lambda function placeholder"}
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
 
   GetTimsFunction:
     Type: AWS::Lambda::Function
@@ -116,6 +128,11 @@ Resources:
         ZipFile: |
           def lambda_handler(event, context):
               return {"status": "Lambda function placeholder"}
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
 
   PerformBackfillingFunction:
     Type: AWS::Lambda::Function
@@ -186,6 +203,8 @@ Resources:
       Environment:
         Variables:
           ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -207,6 +226,8 @@ Resources:
       Environment:
         Variables:
           ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
           
   # Lambda Log Groups
   GetTeamsLogGroup:
