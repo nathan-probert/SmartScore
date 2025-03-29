@@ -129,6 +129,8 @@ Resources:
       Environment:
         Variables:
           ENV: !Ref ENV
+          SUPABASE_URL: !Ref SUPABASE_URL
+          SUPABASE_KEY: !Ref SUPABASE_KEY
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -146,6 +148,8 @@ Resources:
       Environment:
         Variables:
           ENV: !Ref ENV
+          SUPABASE_URL: !Ref SUPABASE_URL
+          SUPABASE_KEY: !Ref SUPABASE_KEY
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -163,6 +167,8 @@ Resources:
       Environment:
         Variables:
           ENV: !Ref ENV
+          SUPABASE_URL: !Ref SUPABASE_URL
+          SUPABASE_KEY: !Ref SUPABASE_KEY
       Code:
         ZipFile: |
           def lambda_handler(event, context):
