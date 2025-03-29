@@ -360,8 +360,3 @@ def write_historic_db(picks):
     data = old_entries + picks
     update_historical_data(data)
     return
-
-
-if __name__ == "__main__":
-    tims_picks = choose_picks(None)
-    write_historic_db(tims_picks)
