@@ -312,19 +312,10 @@ def choose_picks(players):
             tims_picks[tims] = player
         elif player["stat"] > tims_picks[tims]["stat"]:
             tims_picks[tims] = player
-
-    # tims_picks.pop(0, None)
-
-
-
-    tims_picks = {1: {'name': 'Artemi Panarin', 'id': 8478550, 'gpg': 0.44285714285714284, 'hgpg': 0.44357976653696496, 'five_gpg': 0.4, 'hppg': 0.11284046692607004, 'team_name': 'New York', 'tgpg': 2.95833, 'otga': 3.11267, 'otshga': 0.7887323943661971, 'home': False, 'stat': 0.21296554803848267, 'tims': 1}, 2: {'name': 'Logan Cooley', 'id': 8483431, 'gpg': 0.3230769230769231, 'hgpg': 0.2789115646258503, 'five_gpg': 0.6, 'hppg': 0.06802721088435375, 'team_name': 'Utah', 'tgpg': 2.80555, 'otga': 2.7183, 'otshga': 0.5633802816901409, 'home': False, 'stat': 0.21029828488826752, 'tims': 2}, 3: {'name': 'Jonny Brodzinski', 'id': 8477380, 'gpg': 0.21951219512195122, 'hgpg': 0.13559322033898305, 'five_gpg': 0.4, 'hppg': 0.00847457627118644, 'team_name': 'New York', 'tgpg': 2.95833, 'otga': 3.11267, 'otshga': 0.7887323943661971, 'home': False, 'stat': 0.13326582312583923, 'tims': 3}}
-
-
-
+    tims_picks.pop(0, None)
 
     for i in range(1, 4):
         tims_picks[i]["Scored"] = None
-    logger.info(f"Tim's picks: {tims_picks}")
     return list(tims_picks.values())
 
 
@@ -366,7 +357,8 @@ def write_historic_db(picks):
                 if player:
                     entry["Scored"] = int(player["scored"])
 
-    update_historical_data(old_entries + picks)
+    data = old_entries + picks
+    update_historical_data(data)
     return
 
 

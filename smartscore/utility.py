@@ -63,6 +63,12 @@ def get_historical_data():
 
 
 def update_historical_data(players):
+    # remove fields that aren't currently show in frontend
+    for i, player in enumerate(players):
+        player.pop("home", None)
+        player.pop("hppg", None)
+        player.pop("otshga", None)
+        player["id"] = i + 1
     exponential_backoff_supabase_request(f"Historic-Picks-{ENV}", method="post", json_data=players)
 
 
