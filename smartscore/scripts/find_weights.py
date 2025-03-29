@@ -112,7 +112,7 @@ def call_c_function(all_players):
 
     min_max_c = create_min_max(get_min_max())
 
-    num_tims_dates = len(set(player.date for player in player_array))                
+    num_tims_dates = len(set(player.date for player in player_array))
     players_lib = ctypes.CDLL("./smartscore/compiled_code.so")
 
     start_time = time.time()

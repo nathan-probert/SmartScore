@@ -1,4 +1,6 @@
-from config import ENV
+from supabase import Client, create_client
+
+from config import ENV, SUPABASE_API_KEY, SUPABASE_URL
 
 DRAFTKINGS_NHL_ID = 42133
 DRAFTKINGS_GOAL_SCORER_CATEGORY = 1190
@@ -15,6 +17,9 @@ HISTORY_API_URL = (
     if ENV == "prod"
     else "https://x8ki-letl-twmt.n7.xano.io/api:OvqrJ0Ps/historic_picks_dev"
 )
+
+# supabase
+SUPABASE_CLIENT: Client = create_client(SUPABASE_URL, SUPABASE_API_KEY)
 
 
 LAMBDA_API_NAME = f"Api-{ENV}"

@@ -1,8 +1,6 @@
-import ctypes
 import json
-from datetime import timedelta
-from http import HTTPStatus
 import time
+from datetime import timedelta
 
 import boto3
 import requests
@@ -10,7 +8,7 @@ from aws_lambda_powertools import Logger
 from dateutil import parser
 
 from config import ENV
-from constants import HISTORY_API_URL, PREDICTIONS_API_URL
+from constants import SUPABASE_CLIENT
 
 logger = Logger()
 lambda_client = boto3.client("lambda")
@@ -47,21 +45,31 @@ def get_tims_players():
 
 
 def save_to_db(players):
-    data = {"items": players}
-    exponential_backoff_request(PREDICTIONS_API_URL, method="post", json_data=data)
+    # remove fields that aren't currently show in frontend
+    for i, player in enumerate(players):
+        player.pop("home", None)
+        player.pop("hppg", None)
+        player.pop("otshga", None)
+        player["id"] = i + 1
+    exponential_backoff_supabase_request(f"Picks-{ENV}", method="post", json_data=players)
 
 
 def get_today_db():
-    return exponential_backoff_request(PREDICTIONS_API_URL)
+    return exponential_backoff_supabase_request(f"Picks-{ENV}")
 
 
 def get_historical_data():
-    return exponential_backoff_request(HISTORY_API_URL)
+    return exponential_backoff_supabase_request(f"Historic-Picks-{ENV}")
 
 
 def update_historical_data(players):
-    data = {"items": players}
-    exponential_backoff_request(HISTORY_API_URL, method="post", json_data=data)
+    # remove fields that aren't currently show in frontend
+    for i, player in enumerate(players):
+        player.pop("home", None)
+        player.pop("hppg", None)
+        player.pop("otshga", None)
+        player["id"] = i + 1
+    exponential_backoff_supabase_request(f"Historic-Picks-{ENV}", method="post", json_data=players)
 
 
 def create_cron_schedule(date_string):
@@ -143,7 +151,7 @@ def remove_last_game(time_set):
 def exponential_backoff_request(url, method="get", data=None, json_data=None, max_retries=5, base_delay=1):
     """
     Makes HTTP requests with exponential backoff retry strategy.
-    
+
     Args:
         url: URL to send the request to
         method: HTTP method ("get" or "post")
@@ -151,7 +159,7 @@ def exponential_backoff_request(url, method="get", data=None, json_data=None, ma
         json_data: JSON data for POST requests
         max_retries: Maximum number of retry attempts
         base_delay: Base delay between retries in seconds
-    
+
     Returns:
         Parsed JSON response
     """
@@ -164,11 +172,52 @@ def exponential_backoff_request(url, method="get", data=None, json_data=None, ma
                 response = requests.post(url, data=data, json=json_data, timeout=5)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
-                
+
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            wait_time = base_delay * (2 ** attempt)
+            wait_time = base_delay * (2**attempt)
             print(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time} seconds...")
             time.sleep(wait_time)
     raise Exception("Max retries reached. Request failed.")
+
+
+def exponential_backoff_supabase_request(
+    table_name, method="get", data=None, json_data=None, max_retries=5, base_delay=1
+):
+    """
+    Makes Supabase requests with exponential backoff retry strategy.
+
+    Args:
+        table_name: Name of the Supabase table to query
+        data: Form data for POST requests
+        json_data: JSON data for POST requests
+        max_retries: Maximum number of retry attempts
+        base_delay: Base delay between retries in seconds
+
+    Returns:
+        Parsed JSON response
+    """
+    method = method.lower()
+    for attempt in range(max_retries):
+        try:
+            if method == "get":
+                response = (SUPABASE_CLIENT.table(table_name).select("*").execute()).data
+            elif method == "post":
+                # Clear the table before inserting new data
+                SUPABASE_CLIENT.table(table_name).delete().neq("id", 0).execute()
+                response = SUPABASE_CLIENT.table(table_name).upsert(json_data).execute()
+                print(response)
+            else:
+                raise ValueError(f"Unsupported method: {method}")
+
+            return response
+        except Exception as e:
+            wait_time = base_delay * (2**attempt)
+            print(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time} seconds...")
+            time.sleep(wait_time)
+    raise Exception("Max retries reached. Request failed.")
+
+
+if __name__ == "__main__":
+    print(get_today_db())
