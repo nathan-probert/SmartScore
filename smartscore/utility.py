@@ -50,6 +50,7 @@ def save_to_db(players):
         player.pop("home", None)
         player.pop("hppg", None)
         player.pop("otshga", None)
+        player.pop("Scored", None)
         player["id"] = i + 1
     exponential_backoff_supabase_request(f"Picks-{ENV}", method="post", json_data=players)
 
