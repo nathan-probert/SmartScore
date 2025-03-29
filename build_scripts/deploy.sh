@@ -33,6 +33,8 @@ generate_smartscore_stack() {
       --stack-name "$STACK_NAME" \
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
+        ParameterKey=SUPABASE_URL,ParameterValue="$SUPABASE_URL" \
+        ParameterKey=SUPABASE_API_KEY,ParameterValue="$SUPABASE_API_KEY" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -47,6 +49,8 @@ generate_smartscore_stack() {
       --stack-name "$STACK_NAME" \
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
+        ParameterKey=SUPABASE_URL,ParameterValue="$SUPABASE_URL" \
+        ParameterKey=SUPABASE_API_KEY,ParameterValue="$SUPABASE_API_KEY" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."

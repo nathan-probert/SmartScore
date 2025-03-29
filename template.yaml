@@ -9,7 +9,7 @@ Parameters:
   SUPABASE_URL:
     Type: String
     Description: The URL for the Supabase API
-  SUPABASE_KEY:
+  SUPABASE_API_KEY:
     Type: String
     Description: The API key for Supabase
 
@@ -130,7 +130,7 @@ Resources:
         Variables:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SUPABASE_URL
-          SUPABASE_KEY: !Ref SUPABASE_KEY
+          SUPABASE_API_KEY: !Ref SUPABASE_API_KEY
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -149,7 +149,7 @@ Resources:
         Variables:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SUPABASE_URL
-          SUPABASE_KEY: !Ref SUPABASE_KEY
+          SUPABASE_API_KEY: !Ref SUPABASE_API_KEY
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -168,7 +168,7 @@ Resources:
         Variables:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SUPABASE_URL
-          SUPABASE_KEY: !Ref SUPABASE_KEY
+          SUPABASE_API_KEY: !Ref SUPABASE_API_KEY
       Code:
         ZipFile: |
           def lambda_handler(event, context):
