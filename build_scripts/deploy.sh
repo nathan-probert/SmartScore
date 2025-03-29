@@ -40,8 +40,8 @@ generate_smartscore_stack() {
       --stack-name "$STACK_NAME" \
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
-        ParameterKey=SUPABASE-URL,ParameterValue="$SUPABASE_URL" \
-        ParameterKey=SUPABASE-API-KEY,ParameterValue="$SUPABASE_API_KEY" \
+        ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
+        ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
