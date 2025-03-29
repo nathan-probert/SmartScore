@@ -27,6 +27,11 @@ LAMBDA_FUNCTIONS=(
 
 
 generate_smartscore_stack() {
+  if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_API_KEY" ]; then
+    echo "Error: SUPABASE_URL or SUPABASE_API_KEY environment variables are not set."
+    exit 1
+  fi
+
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
     UPDATE_OUTPUT=$(aws cloudformation update-stack \
