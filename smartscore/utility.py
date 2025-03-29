@@ -50,6 +50,7 @@ def save_to_db(players):
         player.pop("home", None)
         player.pop("hppg", None)
         player.pop("otshga", None)
+        player.pop("Scored", None)
         player["id"] = i + 1
     exponential_backoff_supabase_request(f"Picks-{ENV}", method="post", json_data=players)
 
@@ -207,13 +208,12 @@ def exponential_backoff_supabase_request(
                 # Clear the table before inserting new data
                 SUPABASE_CLIENT.table(table_name).delete().neq("id", 0).execute()
                 response = SUPABASE_CLIENT.table(table_name).upsert(json_data).execute()
-                print(response)
             else:
                 raise ValueError(f"Unsupported method: {method}")
 
             return response
         except Exception as e:
             wait_time = base_delay * (2**attempt)
-            print(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time} seconds...")
+            logger.info(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time} seconds...")
             time.sleep(wait_time)
     raise Exception("Max retries reached. Request failed.")
