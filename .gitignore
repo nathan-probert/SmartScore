@@ -6,3 +6,4 @@ output/*
 smartscore/lib/*
 .vscode/*
 smartscore/Rust/make_predictions/target/*
+.env

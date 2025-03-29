@@ -6,6 +6,7 @@ from decorators import lambda_handler_error_responder
 from service import (
     backfill_dates,
     check_db_for_date,
+    choose_picks,
     get_date,
     get_players_from_team,
     get_teams,
@@ -14,7 +15,6 @@ from service import (
     make_predictions_teams,
     publish_public_db,
     separate_players,
-    choose_picks,
     write_historic_db,
 )
 

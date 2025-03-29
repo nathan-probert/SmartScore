@@ -1,9 +1,8 @@
 import datetime
 import json
 
-import pytz
-import requests
 import make_predictions_rust
+import pytz
 from aws_lambda_powertools import Logger
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
@@ -11,6 +10,7 @@ from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 from config import ENV
 from constants import LAMBDA_API_NAME
 from utility import (
+    exponential_backoff_request,
     get_historical_data,
     get_tims_players,
     get_today_db,
@@ -18,7 +18,6 @@ from utility import (
     remove_last_game,
     save_to_db,
     schedule_run,
-    exponential_backoff_request,
     update_historical_data,
 )
 
@@ -133,17 +132,19 @@ def get_min_max():
 def make_predictions_teams(players):
     rust_players = []
     for player in players:
-        rust_players.append(make_predictions_rust.PlayerInfo(
-            gpg=player["gpg"],
-            hgpg=player["hgpg"],
-            five_gpg=player["five_gpg"],
-            tgpg=player["tgpg"],
-            otga=player["otga"],
-            otshga=player["otshga"],
-            hppg=player["hppg"],
-            is_home=player["home"],
-            hppg_otshga=0.0,
-        ))
+        rust_players.append(
+            make_predictions_rust.PlayerInfo(
+                gpg=player["gpg"],
+                hgpg=player["hgpg"],
+                five_gpg=player["five_gpg"],
+                tgpg=player["tgpg"],
+                otga=player["otga"],
+                otshga=player["otshga"],
+                hppg=player["hppg"],
+                is_home=player["home"],
+                hppg_otshga=0.0,
+            )
+        )
 
     # experimental weights
     weights = {
@@ -304,14 +305,13 @@ def separate_players(players, teams):
 
 def choose_picks(players):
     # get the top pick from each tims {1,2,3}
-    # tims_picks = {}
-    # for player in players:
-    #     tims = player["tims"]
-    #     if tims not in tims_picks:
-    #         tims_picks[tims] = player
-    #     else:
-    #         if player["stat"] > tims_picks[tims]["stat"]:
-    #             tims_picks[tims] = player
+    tims_picks = {}
+    for player in players:
+        tims = player["tims"]
+        if tims not in tims_picks:
+            tims_picks[tims] = player
+        elif player["stat"] > tims_picks[tims]["stat"]:
+            tims_picks[tims] = player
 
     # tims_picks.pop(0, None)
 
@@ -326,7 +326,7 @@ def choose_picks(players):
         tims_picks[i]["Scored"] = None
     logger.info(f"Tim's picks: {tims_picks}")
     return list(tims_picks.values())
-    
+
 
 def write_historic_db(picks):
     today = get_date()
@@ -345,11 +345,13 @@ def write_historic_db(picks):
         return
 
     while len(table) > 8:
-        last_date = min(table.keys())  
+        last_date = min(table.keys())
         table.pop(last_date)
     old_entries = [entry for entry in old_entries if entry["date"] in table.keys()]
 
-    dates_no_scored = [date for date in table.keys() if date and any(scored is None for _, scored in table[date]) and date < today]
+    dates_no_scored = [
+        date for date in table.keys() if date and any(scored is None for _, scored in table[date]) and date < today
+    ]
     logger.info(f"Updating scored column for dates: {dates_no_scored}")
     for date in dates_no_scored:
         response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATE", "date": date})
