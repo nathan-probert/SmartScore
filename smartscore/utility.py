@@ -217,7 +217,3 @@ def exponential_backoff_supabase_request(
             print(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time} seconds...")
             time.sleep(wait_time)
     raise Exception("Max retries reached. Request failed.")
-
-
-if __name__ == "__main__":
-    print(get_today_db())
