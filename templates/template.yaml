@@ -320,7 +320,7 @@ Resources:
                 Action:
                   - states:StartExecution
                 Resource: 
-                  - !GetAtt GetPlayersStateMachine.Arn # ARN of the new GetPlayersStateMachine
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetPlayersStateMachine-${ENV}" # ARN of the new GetPlayersStateMachine
 
   # State Machines
   GetAllPlayersStateMachine: # Renamed for clarity
@@ -365,7 +365,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - states:StartExecution
-                Resource: !GetAtt GetAllPlayersStateMachine.Arn
+                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetAllPlayersStateMachine-${ENV}"
 
   EventBridgeRoleParameter:
     Type: AWS::SSM::Parameter
