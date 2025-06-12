@@ -9,7 +9,8 @@ SOURCE_DIR="smartscore"
 OUTPUT_DIR="output"
 
 STACK_NAME="SmartScore-$ENV"
-TEMPLATE_FILE="./template.yaml"
+TEMPLATE_FILE="templates/template.yaml" # Corrected path
+ASL_JSON_FILE="templates/get_all_players.asl.json" # Path to the ASL JSON file
 
 KEY="$STACK_NAME.zip"
 
@@ -34,6 +35,16 @@ generate_smartscore_stack() {
   echo "Supabase URL: ${SUPABASE_URL:0:5}..."
   echo "Supabase API Key: ${SUPABASE_API_KEY:0:5}..."
 
+  # Read the ASL JSON content
+  StateMachineAslJsonValue=$(cat "$ASL_JSON_FILE")
+  if [ $? -ne 0 ]; then
+    echo "Error: Failed to read ASL JSON file at $ASL_JSON_FILE"
+    exit 1
+  fi
+  # Escape double quotes in JSON string for AWS CLI parameters
+  StateMachineAslJsonValue=$(echo "$StateMachineAslJsonValue" | sed 's/"/\\"/g')
+
+
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
     UPDATE_OUTPUT=$(aws cloudformation update-stack \
@@ -42,6 +53,7 @@ generate_smartscore_stack() {
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
+        ParameterKey=StateMachineAslJson,ParameterValue="$StateMachineAslJsonValue" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -58,6 +70,7 @@ generate_smartscore_stack() {
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
+        ParameterKey=StateMachineAslJson,ParameterValue="$StateMachineAslJsonValue" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
