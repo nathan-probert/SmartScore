@@ -77,9 +77,6 @@ generate_preprocessed_template() {
   
   # Clean up temp files
   rm -f "$TEMP_ALL_PLAYERS_FILE" "$TEMP_PLAYERS_FILE"
-
-  cat output/template.processed.yaml
-  exit
 }
 
 generate_smartscore_stack() {
