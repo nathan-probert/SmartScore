@@ -34,32 +34,41 @@ generate_smartscore_stack() {
     exit 1
   fi
 
-  # Read the ASL JSON content for GetAllPlayersStateMachine
-  GetAllPlayersStateMachineAslJsonValue=$(cat "$GET_ALL_PLAYERS_ASL_JSON_FILE")
+  # Read the ASL JSON content for GetAllPlayersStateMachine, make it compact, then escape quotes
+  RawGetAllPlayersJson=$(jq -c . "$GET_ALL_PLAYERS_ASL_JSON_FILE")
   if [ $? -ne 0 ]; then
-    echo "Error: Failed to read ASL JSON file at $GET_ALL_PLAYERS_ASL_JSON_FILE"
+    echo "Error: Failed to process ASL JSON file with jq: $GET_ALL_PLAYERS_ASL_JSON_FILE"
     exit 1
   fi
-  GetAllPlayersStateMachineAslJsonValue=$(echo "$GetAllPlayersStateMachineAslJsonValue" | sed 's/"/\\"/g') # Corrected escaping
+  GetAllPlayersStateMachineAslJsonValue=$(echo "$RawGetAllPlayersJson" | sed 's/"/\\\\"/g')
 
-  # Read the ASL JSON content for GetPlayersStateMachine
-  GetPlayersStateMachineAslJsonValue=$(cat "$GET_PLAYERS_ASL_JSON_FILE")
+  # Read the ASL JSON content for GetPlayersStateMachine, make it compact, then escape quotes
+  RawGetPlayersJson=$(jq -c . "$GET_PLAYERS_ASL_JSON_FILE")
   if [ $? -ne 0 ]; then
-    echo "Error: Failed to read ASL JSON file at $GET_PLAYERS_ASL_JSON_FILE"
+    echo "Error: Failed to process ASL JSON file with jq: $GET_PLAYERS_ASL_JSON_FILE"
     exit 1
   fi
-  GetPlayersStateMachineAslJsonValue=$(echo "$GetPlayersStateMachineAslJsonValue" | sed 's/"/\\"/g') # Corrected escaping
+  GetPlayersStateMachineAslJsonValue=$(echo "$RawGetPlayersJson" | sed 's/"/\\\\"/g')
+
+  # For debugging - see what's being passed
+  # echo "--- DEBUG: GetAllPlayersStateMachineAslJsonValue ---"
+  # echo "$GetAllPlayersStateMachineAslJsonValue"
+  # echo "--- END DEBUG ---"
+  # echo "--- DEBUG: GetPlayersStateMachineAslJsonValue ---"
+  # echo "$GetPlayersStateMachineAslJsonValue"
+  # echo "--- END DEBUG ---"
 
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
-    UPDATE_OUTPUT=$(aws cloudformation update-stack \
-      --stack-name "$STACK_NAME" \
-      --template-body file://"$TEMPLATE_FILE" \
-      --parameters ParameterKey=ENV,ParameterValue="$ENV" \
-        ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
-        ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
-        ParameterKey=GetAllPlayersStateMachineAslJson,ParameterValue="$GetAllPlayersStateMachineAslJsonValue" \
-        ParameterKey=GetPlayersStateMachineAslJson,ParameterValue="$GetPlayersStateMachineAslJsonValue" \
+    UPDATE_OUTPUT=$(aws cloudformation update-stack \\
+      --stack-name "$STACK_NAME" \\
+      --template-body file://"$TEMPLATE_FILE" \\
+      --parameters \\
+        ParameterKey=ENV,ParameterValue="$ENV" \\
+        ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \\
+        ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \\
+        ParameterKey=GetAllPlayersStateMachineAslJson,ParameterValue="$GetAllPlayersStateMachineAslJsonValue" \\
+        ParameterKey=GetPlayersStateMachineAslJson,ParameterValue="$GetPlayersStateMachineAslJsonValue" \\
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -70,14 +79,15 @@ generate_smartscore_stack() {
     fi
   else
     echo "Creating CloudFormation stack $STACK_NAME..."
-    aws cloudformation create-stack \
-      --stack-name "$STACK_NAME" \
-      --template-body file://"$TEMPLATE_FILE" \
-      --parameters ParameterKey=ENV,ParameterValue="$ENV" \
-        ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
-        ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
-        ParameterKey=GetAllPlayersStateMachineAslJson,ParameterValue="$GetAllPlayersStateMachineAslJsonValue" \
-        ParameterKey=GetPlayersStateMachineAslJson,ParameterValue="$GetPlayersStateMachineAslJsonValue" \
+    aws cloudformation create-stack \\
+      --stack-name "$STACK_NAME" \\
+      --template-body file://"$TEMPLATE_FILE" \\
+      --parameters \\
+        ParameterKey=ENV,ParameterValue="$ENV" \\
+        ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \\
+        ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \\
+        ParameterKey=GetAllPlayersStateMachineAslJson,ParameterValue="$GetAllPlayersStateMachineAslJsonValue" \\
+        ParameterKey=GetPlayersStateMachineAslJson,ParameterValue="$GetPlayersStateMachineAslJsonValue" \\
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
