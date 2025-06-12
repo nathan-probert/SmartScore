@@ -1,7 +1,9 @@
 #!/bin/bash
 
+set -e  # Exit on error
+
 # one of {dev, prod}
-ENV=${ENV:-dev}  # If ENV is not set, default to "dev"
+ENV=${ENV:-dev}
 
 MAX_ZIP_SIZE_MB=25
 
@@ -10,8 +12,9 @@ OUTPUT_DIR="output"
 
 STACK_NAME="SmartScore-$ENV"
 TEMPLATE_FILE="templates/template.yaml"
-GET_ALL_PLAYERS_ASL_JSON_FILE="templates/get_all_players.asl.json" # Renamed
-GET_PLAYERS_ASL_JSON_FILE="templates/get_players.asl.json" # New ASL file
+PROCESSED_TEMPLATE_FILE="$OUTPUT_DIR/template.processed.yaml"
+GET_ALL_PLAYERS_ASL_JSON_FILE="templates/get_all_players.asl.json"
+GET_PLAYERS_ASL_JSON_FILE="templates/get_players.asl.json"
 
 KEY="$STACK_NAME.zip"
 
@@ -27,36 +30,32 @@ LAMBDA_FUNCTIONS=(
   "UpdateHistory-$ENV"
 )
 
+generate_preprocessed_template() {
+  echo "Generating preprocessed CloudFormation template..."
 
-generate_smartscore_stack() {
   if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_API_KEY" ]; then
     echo "Error: SUPABASE_URL or SUPABASE_API_KEY environment variables are not set."
     exit 1
   fi
 
-  GetAllPlayersStateMachineAslJsonValue=$(jq -c . "$GET_ALL_PLAYERS_ASL_JSON_FILE")
-  if [ $? -ne 0 ]; then
-    echo "Error: Failed to process ASL JSON file with jq: $GET_ALL_PLAYERS_ASL_JSON_FILE"
-    exit 1
-  fi
+  ALL_PLAYERS_JSON=$(jq -c . "$GET_ALL_PLAYERS_ASL_JSON_FILE" | sed 's/"/\\"/g')
+  PLAYERS_JSON=$(jq -c . "$GET_PLAYERS_ASL_JSON_FILE" | sed 's/"/\\"/g')
 
-  GetPlayersStateMachineAslJsonValue=$(jq -c . "$GET_PLAYERS_ASL_JSON_FILE")
-  if [ $? -ne 0 ]; then
-    echo "Error: Failed to process ASL JSON file with jq: $GET_PLAYERS_ASL_JSON_FILE"
-    exit 1
-  fi
+  cp "$TEMPLATE_FILE" "$PROCESSED_TEMPLATE_FILE"
+  sed -i "s|__GET_ALL_PLAYERS_JSON__|\"$ALL_PLAYERS_JSON\"|" "$PROCESSED_TEMPLATE_FILE"
+  sed -i "s|__GET_PLAYERS_JSON__|\"$PLAYERS_JSON\"|" "$PROCESSED_TEMPLATE_FILE"
+}
 
+generate_smartscore_stack() {
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
     UPDATE_OUTPUT=$(aws cloudformation update-stack \
       --stack-name "$STACK_NAME" \
-      --template-body file://"$TEMPLATE_FILE" \
+      --template-body file://"$PROCESSED_TEMPLATE_FILE" \
       --parameters \
         ParameterKey=ENV,ParameterValue="$ENV" \
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
-        ParameterKey=GetAllPlayersStateMachineAslJson,ParameterValue="$GetAllPlayersStateMachineAslJsonValue" \
-        ParameterKey=GetPlayersStateMachineAslJson,ParameterValue="$GetPlayersStateMachineAslJsonValue" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -69,43 +68,34 @@ generate_smartscore_stack() {
     echo "Creating CloudFormation stack $STACK_NAME..."
     aws cloudformation create-stack \
       --stack-name "$STACK_NAME" \
-      --template-body file://"$TEMPLATE_FILE" \
+      --template-body file://"$PROCESSED_TEMPLATE_FILE" \
       --parameters \
         ParameterKey=ENV,ParameterValue="$ENV" \
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
-        ParameterKey=GetAllPlayersStateMachineAslJson,ParameterValue="$GetAllPlayersStateMachineAslJsonValue" \
-        ParameterKey=GetPlayersStateMachineAslJson,ParameterValue="$GetPlayersStateMachineAslJsonValue" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
     aws cloudformation wait stack-create-complete --stack-name "$STACK_NAME"
   fi
 
-  # Check the final status of the stack
   STACK_STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].StackStatus" --output text)
 
   if [[ "$STACK_STATUS" != "CREATE_COMPLETE" && "$STACK_STATUS" != "UPDATE_COMPLETE" ]]; then
     echo "CloudFormation stack operation failed with status: $STACK_STATUS."
-    exit 1  # Exit with error
+    exit 1
   fi
 
   echo "CloudFormation stack $STACK_NAME completed successfully with status: $STACK_STATUS."
 }
 
-
 generate_zip_file() {
   echo "Creating ZIP package for Lambda..."
   cd $OUTPUT_DIR
-
-  # Exclude any .zip files from the ZIP package
   zip -r $KEY . -x "*.zip" > /dev/null
-
   cd ..
-
   ZIP_FILE_SIZE=$(stat -c%s "$OUTPUT_DIR/$KEY")
   ZIP_FILE_SIZE_MB=$((ZIP_FILE_SIZE / 1024 / 1024))
-
   echo "Size of ZIP file: $ZIP_FILE_SIZE_MB MB"
 
   if [ $ZIP_FILE_SIZE_MB -gt $MAX_ZIP_SIZE_MB ]; then
@@ -114,14 +104,12 @@ generate_zip_file() {
   fi
 }
 
-
 update_lambda_code() {
   for FUNCTION in "${LAMBDA_FUNCTIONS[@]}"; do
     echo "Updating Lambda function code: $FUNCTION..."
-
     aws lambda update-function-code \
       --function-name "$FUNCTION" \
-      --zip-file fileb://$OUTPUT_DIR/$KEY &>/dev/null  # Suppress all output
+      --zip-file fileb://$OUTPUT_DIR/$KEY &>/dev/null
 
     if [ $? -ne 0 ]; then
       echo "Error: Failed to update Lambda function code: $FUNCTION."
@@ -132,48 +120,29 @@ update_lambda_code() {
   done
 }
 
-
 # main
 
-# create empty output directory
 echo "Creating output directory..."
 rm -rf $OUTPUT_DIR
 mkdir -p $OUTPUT_DIR
 
-# update dependencies
 echo "Updating dependencies..."
 poetry export -f requirements.txt --output $OUTPUT_DIR/requirements.txt --without-hashes
 poetry run pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
 rm -f $OUTPUT_DIR/requirements.txt
 
-# compile C code
 echo "Compiling C code..."
-sh build_scripts/compile.sh
-if [ $? -ne 0 ]; then
-  echo "Error: Compilation failed. Ensure docker is running."
-  exit 1
-fi
+sh build_scripts/compile.sh || { echo "C compilation failed."; exit 1; }
 
-# compile Rust code
 echo "Compiling Rust code..."
-sh build_scripts/rust_compile.sh
-if [ $? -ne 0 ]; then
-  echo "Error: Compilation failed. Ensure docker is running."
-  exit 1
-fi
+sh build_scripts/rust_compile.sh || { echo "Rust compilation failed."; exit 1; }
 
-# update the code
 echo "Updating the code..."
 cp -r $SOURCE_DIR/* $OUTPUT_DIR
 cp -r $OUTPUT_DIR/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so $OUTPUT_DIR/make_predictions_rust.so
-rm -rf $OUTPUT_DIR/C
-rm -rf $OUTPUT_DIR/Rust
+rm -rf $OUTPUT_DIR/C $OUTPUT_DIR/Rust
 
-# generate the ZIP file
 generate_zip_file
-
-# create the CloudFormation stack for smartscore
+generate_preprocessed_template
 generate_smartscore_stack
-
-# update the Lambda function code
 update_lambda_code
