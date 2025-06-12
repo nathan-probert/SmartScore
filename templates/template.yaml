@@ -12,12 +12,6 @@ Parameters:
   SupabaseApiKey:
     Type: String
     Description: The API key for Supabase
-  GetAllPlayersStateMachineAslJson: # Renamed for clarity
-    Type: String
-    Description: "The JSON string for the Step Functions state machine definition from get_all_players.asl.json"
-  GetPlayersStateMachineAslJson: # New parameter for the new state machine
-    Type: String
-    Description: "The JSON string for the Step Functions state machine definition from get_players.asl.json"
 
 Resources:
   # IAM Role for Lambda Execution
