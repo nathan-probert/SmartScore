@@ -1,0 +1,83 @@
+{
+  "Comment": "State machine to get teams and their players",
+  "StartAt": "GetTeams",
+  "States": {
+    "GetTeams": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTeams-${ENV}",
+      "ResultPath": "$.get_teams_lambda_output",
+      "Next": "ExtractActualTeamsList",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 300,
+          "MaxAttempts": 3,
+          "BackoffRate": 1.0
+        }
+      ]
+    },
+    "ExtractActualTeamsList": {
+      "Type": "Pass",
+      "InputPath": "$.get_teams_lambda_output.teams",
+      "ResultPath": "$.teams",
+      "Next": "AreTeamsAvailable"
+    },
+    "AreTeamsAvailable": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.teams[0]",
+          "IsPresent": false,
+          "Next": "ReturnEmptyListAsResult"
+        }
+      ],
+      "Default": "MapToAddPlayersToTeams"
+    },
+    "ReturnEmptyListAsResult": {
+      "Type": "Pass",
+      "Result": [],
+      "End": true
+    },
+    "MapToAddPlayersToTeams": {
+      "Type": "Map",
+      "ItemsPath": "$.teams",
+      "MaxConcurrency": 8,
+      "Iterator": {
+        "StartAt": "GetPlayersForThisTeam",
+        "States": {
+          "GetPlayersForThisTeam": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetPlayersFromTeam-${ENV}",
+            "InputPath": "$",
+            "ResultPath": "$.retrieved_players_list",
+            "Next": "MergeTeamAndPlayers",
+            "Retry": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "IntervalSeconds": 300,
+                "MaxAttempts": 3,
+                "BackoffRate": 1.0
+              }
+            ]
+          },
+          "MergeTeamAndPlayers": {
+            "Type": "Pass",
+            "Parameters": {
+              "team_name.$": "$.team_name",
+              "team_abbr.$": "$.team_abbr",
+              "season.$": "$.season",
+              "team_id.$": "$.team_id",
+              "opponent_id.$": "$.opponent_id",
+              "home.$": "$.home",
+              "players.$": "$.retrieved_players_list"
+            },
+            "OutputPath": "$",
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$",
+      "End": true
+    }
+  }
+}
