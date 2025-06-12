@@ -36,12 +36,10 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
-              - Effect: Allow # This allows Lambdas to start the main state machine if needed (though not typical for this flow)
+              - Effect: Allow
                 Action:
                   - states:StartExecution
-                Resource: 
-                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetAllPlayersStateMachine-${ENV}"
-                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetPlayersStateMachine-${ENV}" # Added permission for new SM
+                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetAllPlayersStateMachine"
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
@@ -318,37 +316,291 @@ Resources:
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
 
   # State Machines
-  GetAllPlayersStateMachine: # Renamed for clarity
+  GetAllPlayersStateMachine:
     Type: AWS::StepFunctions::StateMachine
-    DependsOn: GetPlayersStateMachine # Ensures GetPlayersStateMachine is created first
     Properties:
       StateMachineName: !Sub "GetAllPlayersStateMachine-${ENV}"
       RoleArn: !GetAtt StateMachineExecutionRole.Arn
-      DefinitionString: "__GET_ALL_PLAYERS_JSON__"
-      DefinitionSubstitutions:
-        GetPlayersStateMachineArn: !GetAtt GetPlayersStateMachine.Arn
+      DefinitionString: !Sub |
+        {
+            "Comment": "A state machine to handle getting players and making predictions",
+            "StartAt": "GetDate",
+            "States": {
+                "GetDate": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:CheckCompleted-${ENV}",
+                    "Next": "CheckCompletion",
+                    "Retry": [
+                        {
+                            "ErrorEquals": [
+                                "States.ALL"
+                            ],
+                            "IntervalSeconds": 300,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 1
+                        }
+                    ]
+                },
+                "CheckCompletion": {
+                    "Type": "Choice",
+                    "Choices": [
+                        {
+                            "Variable": "$.completed",
+                            "BooleanEquals": true,
+                            "Next": "GetTims"
+                        },
+                        {
+                            "Variable": "$.completed",
+                            "BooleanEquals": false,
+                            "Next": "Backfill"
+                        }
+                    ]
+                },
+                "Backfill": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PerformBackfilling-${ENV}",
+                    "Next": "GetPlayersStateMachine",
+                    "Retry": [
+                        {
+                            "ErrorEquals": [
+                                "States.ALL"
+                            ],
+                            "IntervalSeconds": 300,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 1
+                        }
+                    ]
+                },
+                "GetPlayersStateMachine": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetPlayersStateMachine-${ENV}",
+                    "ResultPath": "$.players_output",
+                    "Next": "CheckIfPlayersOutputIsEmpty",
+                    "Retry": [
+                        {
+                            "ErrorEquals": [
+                                "States.ALL"
+                            ],
+                            "IntervalSeconds": 300,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 1
+                        }
+                    ]
+                },
+                "CheckIfPlayersOutputIsEmpty": {
+                    "Type": "Choice",
+                    "Choices": [
+                        {
+                            "Variable": "$.players_output[0]",
+                            "IsPresent": false,
+                            "Next": "PublishToDb"
+                        }
+                    ],
+                    "Default": "ParseData"
+                },
+                "ParseData": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:ParseData-${ENV}",
+                    "InputPath": "$.players_output",
+                    "Next": "MakePredictions",
+                    "Retry": [
+                        {
+                            "ErrorEquals": [
+                                "States.ALL"
+                            ],
+                            "IntervalSeconds": 300,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 1
+                        }
+                    ]
+                },
+                "MakePredictions": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:MakePredictions-${ENV}",
+                    "Next": "GetTims",
+                    "Retry": [
+                        {
+                            "ErrorEquals": [
+                                "States.ALL"
+                            ],
+                            "IntervalSeconds": 300,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 1
+                        }
+                    ]
+                },
+                "GetTims": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTims-${ENV}",
+                    "Next": "CheckInitialRun",
+                    "Retry": [
+                        {
+                            "ErrorEquals": [
+                                "States.ALL"
+                            ],
+                            "IntervalSeconds": 300,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 1
+                        }
+                    ]
+                },
+                "CheckInitialRun": {
+                    "Type": "Choice",
+                    "Choices": [
+                        {
+                            "Variable": "$.is_initial_run",
+                            "BooleanEquals": true,
+                            "Next": "SaveToDb"
+                        },
+                        {
+                            "Variable": "$.is_initial_run",
+                            "BooleanEquals": false,
+                            "Next": "PublishToDb"
+                        }
+                    ]
+                },
+                "SaveToDb": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}",
+                    "Parameters": {
+                        "players.$": "$.players",
+                        "date.$": "$.date",
+                        "method": "POST_BATCH"
+                    },
+                    "Next": "UpdateHistory",
+                    "Retry": [
+                        {
+                            "ErrorEquals": [
+                                "States.ALL"
+                            ],
+                            "IntervalSeconds": 300,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 1
+                        }
+                    ]
+                },
+                "UpdateHistory": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:UpdateHistory-${ENV}",
+                    "Next": "PublishToDb",
+                    "Retry": [
+                        {
+                            "ErrorEquals": [
+                                "States.ALL"
+                            ],
+                            "IntervalSeconds": 300,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 1
+                        }
+                    ]
+                },
+                "PublishToDb": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:PublishDb-${ENV}",
+                    "End": true,
+                    "Retry": [
+                        {
+                            "ErrorEquals": [
+                                "States.ALL"
+                            ],
+                            "IntervalSeconds": 300,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 1
+                        }
+                    ]
+                }
+            }
+        }
 
-  GetPlayersStateMachine: # New State Machine resource
+  GetPlayersStateMachine:
     Type: AWS::StepFunctions::StateMachine
     Properties:
-      StateMachineName: !Sub "GetPlayersStateMachine-${ENV}" # Unique name for the new SM
-      RoleArn: !GetAtt StateMachineExecutionRole.Arn # Can reuse the same role if permissions are sufficient
-      DefinitionString: "__GET_PLAYERS_JSON__"
-
-  StateMachineStartGetPlayersPolicy:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyName: !Sub "StateMachineStartGetPlayersPolicy-${ENV}"
-      Roles:
-        - !Ref StateMachineExecutionRole
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Action:
-              - states:StartExecution
-            Resource:
-              - !GetAtt GetPlayersStateMachine.Arn
+      StateMachineName: !Sub "GetPlayersStateMachine-${ENV}"
+      RoleArn: !GetAtt StateMachineExecutionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "State machine to get teams and their players",
+          "StartAt": "GetTeams",
+          "States": {
+            "GetTeams": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTeams-${ENV}",
+              "ResultPath": "$.get_teams_lambda_output",
+              "Next": "ExtractActualTeamsList",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 300,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 1.0
+                }
+              ]
+            },
+            "ExtractActualTeamsList": {
+              "Type": "Pass",
+              "InputPath": "$.get_teams_lambda_output.teams",
+              "ResultPath": "$.teams",
+              "Next": "AreTeamsAvailable"
+            },
+            "AreTeamsAvailable": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.teams[0]",
+                  "IsPresent": false,
+                  "Next": "ReturnEmptyListAsResult"
+                }
+              ],
+              "Default": "MapToAddPlayersToTeams"
+            },
+            "ReturnEmptyListAsResult": {
+              "Type": "Pass",
+              "Result": [],
+              "End": true
+            },
+            "MapToAddPlayersToTeams": {
+              "Type": "Map",
+              "ItemsPath": "$.teams",
+              "MaxConcurrency": 8,
+              "Iterator": {
+                "StartAt": "GetPlayersForThisTeam",
+                "States": {
+                  "GetPlayersForThisTeam": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetPlayersFromTeam-${ENV}",
+                    "InputPath": "$",
+                    "ResultPath": "$.retrieved_players_list",
+                    "Next": "MergeTeamAndPlayers",
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "IntervalSeconds": 300,
+                        "MaxAttempts": 3,
+                        "BackoffRate": 1.0
+                      }
+                    ]
+                  },
+                  "MergeTeamAndPlayers": {
+                    "Type": "Pass",
+                    "Parameters": {
+                      "team_name.$": "$.team_name",
+                      "team_abbr.$": "$.team_abbr",
+                      "season.$": "$.season",
+                      "team_id.$": "$.team_id",
+                      "opponent_id.$": "$.opponent_id",
+                      "home.$": "$.home",
+                      "players.$": "$.retrieved_players_list"
+                    },
+                    "OutputPath": "$",
+                    "End": true
+                  }
+                }
+              },
+              "ResultPath": "$",
+              "End": true
+            }
+          }
+        }
 
   DailyStepFunctionTrigger:
     Type: AWS::Events::Rule
@@ -356,7 +608,7 @@ Resources:
       ScheduleExpression: "cron(0 8 * * ? *)"  # 8 AM UTC, which is 3 AM EST
       State: ENABLED
       Targets:
-        - Arn: !GetAtt GetAllPlayersStateMachine.Arn # Target the main state machine
+        - Arn: !GetAtt GetAllPlayersStateMachine.Arn
           RoleArn: !GetAtt EventBridgeInvokeRole.Arn
           Id: GetAllPlayersStateMachineTarget
 
