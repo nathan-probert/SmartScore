@@ -325,6 +325,7 @@ Resources:
   # State Machines
   GetAllPlayersStateMachine: # Renamed for clarity
     Type: AWS::StepFunctions::StateMachine
+    DependsOn: GetPlayersStateMachine # Ensures GetPlayersStateMachine is created first
     Properties:
       StateMachineName: !Sub "GetAllPlayersStateMachine-${ENV}"
       RoleArn: !GetAtt StateMachineExecutionRole.Arn
