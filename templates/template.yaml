@@ -39,7 +39,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - states:StartExecution
-                Resource: !Ref GetAllPlayersStateMachine # Corrected this line
+                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*" # Changed to wildcard
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
