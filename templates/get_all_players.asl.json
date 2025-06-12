@@ -49,7 +49,7 @@
         },
         "GetPlayersStateMachine": {
             "Type": "Task",
-            "Resource": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetPlayersStateMachine-${ENV}",
+            "Resource": "arn:aws:lambda:us-east-1:123456789012:function:GetPlayersFromTeam-dev",
             "ResultPath": "$.players_output",
             "Next": "CheckIfPlayersOutputIsEmpty",
             "Retry": [
