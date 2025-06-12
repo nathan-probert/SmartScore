@@ -40,7 +40,7 @@ generate_smartscore_stack() {
     echo "Error: Failed to read ASL JSON file at $GET_ALL_PLAYERS_ASL_JSON_FILE"
     exit 1
   fi
-  GetAllPlayersStateMachineAslJsonValue=$(echo "$GetAllPlayersStateMachineAslJsonValue" | sed 's/"/\\\\\\"/g') # Corrected escaping for nested quotes
+  GetAllPlayersStateMachineAslJsonValue=$(echo "$GetAllPlayersStateMachineAslJsonValue" | sed 's/"/\\"/g') # Corrected escaping
 
   # Read the ASL JSON content for GetPlayersStateMachine
   GetPlayersStateMachineAslJsonValue=$(cat "$GET_PLAYERS_ASL_JSON_FILE")
@@ -48,8 +48,7 @@ generate_smartscore_stack() {
     echo "Error: Failed to read ASL JSON file at $GET_PLAYERS_ASL_JSON_FILE"
     exit 1
   fi
-  GetPlayersStateMachineAslJsonValue=$(echo "$GetPlayersStateMachineAslJsonValue" | sed 's/"/\\\\\\"/g') # Corrected escaping for nested quotes
-
+  GetPlayersStateMachineAslJsonValue=$(echo "$GetPlayersStateMachineAslJsonValue" | sed 's/"/\\"/g') # Corrected escaping
 
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
