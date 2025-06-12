@@ -7,8 +7,7 @@ import requests
 from aws_lambda_powertools import Logger
 from dateutil import parser
 
-from config import ENV
-from constants import SUPABASE_CLIENT
+from config import ENV, SUPABASE_CLIENT
 
 logger = Logger()
 lambda_client = boto3.client("lambda")
@@ -212,7 +211,7 @@ def exponential_backoff_supabase_request(
                 raise ValueError(f"Unsupported method: {method}")
 
             return response
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             wait_time = base_delay * (2**attempt)
             logger.info(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time} seconds...")
             time.sleep(wait_time)

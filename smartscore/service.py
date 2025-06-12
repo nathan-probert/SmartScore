@@ -8,7 +8,7 @@ from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, Playe
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
 from config import ENV
-from constants import LAMBDA_API_NAME
+from constants import DAYS_TO_KEEP_HISTORIC_DATA, LAMBDA_API_NAME
 from utility import (
     exponential_backoff_request,
     get_historical_data,
@@ -81,10 +81,10 @@ def get_teams(data):
         teams.append(home_team)
         teams.append(away_team)
 
-    start_times = remove_last_game(start_times)
     if not start_times:
         logger.info("No start times found")
     else:
+        start_times = remove_last_game(start_times)
         schedule_run(start_times)
 
     return teams
@@ -335,7 +335,7 @@ def write_historic_db(picks):
         logger.info(f"Today already in table: {table[today]}")
         return
 
-    while len(table) > 8:
+    while len(table) >= DAYS_TO_KEEP_HISTORIC_DATA:
         last_date = min(table.keys())
         table.pop(last_date)
     old_entries = [entry for entry in old_entries if entry["date"] in table.keys()]

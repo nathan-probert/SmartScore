@@ -2,10 +2,6 @@ import make_predictions_rust
 from smartscore.service import get_min_max
 
 
-def test_predict():
-    assert 1 == 1
-
-
 def get_rust_weights():
     return make_predictions_rust.Weights(
         gpg=0.3,
