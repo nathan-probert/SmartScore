@@ -318,7 +318,7 @@ Resources:
                 Action:
                   - states:StartExecution
                 Resource:
-                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetPlayersStateMachine-${ENV}" # This allows starting the other SM by name
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*" # Changed to wildcard to break circular dependency
 
   # State Machines
   GetAllPlayersStateMachine:
