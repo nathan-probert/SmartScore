@@ -334,14 +334,14 @@ Resources:
     Properties:
       StateMachineName: !Sub "GetAllPlayersStateMachine-${ENV}"
       RoleArn: !GetAtt StateMachineExecutionRole.Arn
-      DefinitionString: __GET_ALL_PLAYERS_JSON__
+      DefinitionString: "__GET_ALL_PLAYERS_JSON__"
 
   GetPlayersStateMachine: # New State Machine resource
     Type: AWS::StepFunctions::StateMachine
     Properties:
       StateMachineName: !Sub "GetPlayersStateMachine-${ENV}" # Unique name for the new SM
       RoleArn: !GetAtt StateMachineExecutionRole.Arn # Can reuse the same role if permissions are sufficient
-      DefinitionString: __GET_PLAYERS_JSON__
+      DefinitionString: "__GET_PLAYERS_JSON__"
 
   DailyStepFunctionTrigger:
     Type: AWS::Events::Rule
@@ -371,7 +371,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - states:StartExecution
-                Resource: !GetAtt StateMachine.Arn
+                Resource: !GetAtt GetAllPlayersStateMachine.Arn
 
   EventBridgeRoleParameter:
     Type: AWS::SSM::Parameter
