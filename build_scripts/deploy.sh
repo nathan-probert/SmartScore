@@ -9,8 +9,9 @@ SOURCE_DIR="smartscore"
 OUTPUT_DIR="output"
 
 STACK_NAME="SmartScore-$ENV"
-TEMPLATE_FILE="templates/template.yaml" # Corrected path
-ASL_JSON_FILE="templates/get_all_players.asl.json" # Path to the ASL JSON file
+TEMPLATE_FILE="templates/template.yaml"
+GET_ALL_PLAYERS_ASL_JSON_FILE="templates/get_all_players.asl.json" # Renamed
+GET_PLAYERS_ASL_JSON_FILE="templates/get_players.asl.json" # New ASL file
 
 KEY="$STACK_NAME.zip"
 
@@ -33,14 +34,21 @@ generate_smartscore_stack() {
     exit 1
   fi
 
-  # Read the ASL JSON content
-  StateMachineAslJsonValue=$(cat "$ASL_JSON_FILE")
+  # Read the ASL JSON content for GetAllPlayersStateMachine
+  GetAllPlayersStateMachineAslJsonValue=$(cat "$GET_ALL_PLAYERS_ASL_JSON_FILE")
   if [ $? -ne 0 ]; then
-    echo "Error: Failed to read ASL JSON file at $ASL_JSON_FILE"
+    echo "Error: Failed to read ASL JSON file at $GET_ALL_PLAYERS_ASL_JSON_FILE"
     exit 1
   fi
-  # Escape double quotes in JSON string for AWS CLI parameters
-  StateMachineAslJsonValue=$(echo "$StateMachineAslJsonValue" | sed 's/"/\\"/g')
+  GetAllPlayersStateMachineAslJsonValue=$(echo "$GetAllPlayersStateMachineAslJsonValue" | sed 's/"/\\\\\\"/g') # Corrected escaping for nested quotes
+
+  # Read the ASL JSON content for GetPlayersStateMachine
+  GetPlayersStateMachineAslJsonValue=$(cat "$GET_PLAYERS_ASL_JSON_FILE")
+  if [ $? -ne 0 ]; then
+    echo "Error: Failed to read ASL JSON file at $GET_PLAYERS_ASL_JSON_FILE"
+    exit 1
+  fi
+  GetPlayersStateMachineAslJsonValue=$(echo "$GetPlayersStateMachineAslJsonValue" | sed 's/"/\\\\\\"/g') # Corrected escaping for nested quotes
 
 
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
@@ -51,7 +59,8 @@ generate_smartscore_stack() {
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
-        ParameterKey=StateMachineAslJson,ParameterValue="$StateMachineAslJsonValue" \
+        ParameterKey=GetAllPlayersStateMachineAslJson,ParameterValue="$GetAllPlayersStateMachineAslJsonValue" \
+        ParameterKey=GetPlayersStateMachineAslJson,ParameterValue="$GetPlayersStateMachineAslJsonValue" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -68,7 +77,8 @@ generate_smartscore_stack() {
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
-        ParameterKey=StateMachineAslJson,ParameterValue="$StateMachineAslJsonValue" \
+        ParameterKey=GetAllPlayersStateMachineAslJson,ParameterValue="$GetAllPlayersStateMachineAslJsonValue" \
+        ParameterKey=GetPlayersStateMachineAslJson,ParameterValue="$GetPlayersStateMachineAslJsonValue" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."

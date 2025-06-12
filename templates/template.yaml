@@ -12,9 +12,12 @@ Parameters:
   SupabaseApiKey:
     Type: String
     Description: The API key for Supabase
-  StateMachineAslJson:
+  GetAllPlayersStateMachineAslJson: # Renamed for clarity
     Type: String
     Description: "The JSON string for the Step Functions state machine definition from get_all_players.asl.json"
+  GetPlayersStateMachineAslJson: # New parameter for the new state machine
+    Type: String
+    Description: "The JSON string for the Step Functions state machine definition from get_players.asl.json"
 
 Resources:
   # IAM Role for Lambda Execution
@@ -39,10 +42,12 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
-              - Effect: Allow
+              - Effect: Allow # This allows Lambdas to start the main state machine if needed (though not typical for this flow)
                 Action:
                   - states:StartExecution
-                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetAllPlayersStateMachine"
+                Resource: 
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetAllPlayersStateMachine-${ENV}"
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetPlayersStateMachine-${ENV}" # Added permission for new SM
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
@@ -317,14 +322,26 @@ Resources:
                   - !GetAtt ParseData.Arn
                   - !GetAtt UpdateHistoryFunction.Arn
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
+              - Effect: Allow # Added permission for the main SM to start the GetPlayers SM
+                Action:
+                  - states:StartExecution
+                Resource: 
+                  - !GetAtt GetPlayersStateMachine.Arn # ARN of the new GetPlayersStateMachine
 
-  # State Machine
-  StateMachine:
+  # State Machines
+  GetAllPlayersStateMachine: # Renamed for clarity
     Type: AWS::StepFunctions::StateMachine
     Properties:
       StateMachineName: !Sub "GetAllPlayersStateMachine-${ENV}"
       RoleArn: !GetAtt StateMachineExecutionRole.Arn
-      DefinitionString: !Sub ${StateMachineAslJson}
+      DefinitionString: !Sub ${GetAllPlayersStateMachineAslJson} # Use renamed parameter
+
+  GetPlayersStateMachine: # New State Machine resource
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "GetPlayersStateMachine-${ENV}" # Unique name for the new SM
+      RoleArn: !GetAtt StateMachineExecutionRole.Arn # Can reuse the same role if permissions are sufficient
+      DefinitionString: !Sub ${GetPlayersStateMachineAslJson} # Use new parameter
 
   DailyStepFunctionTrigger:
     Type: AWS::Events::Rule
@@ -332,7 +349,7 @@ Resources:
       ScheduleExpression: "cron(0 8 * * ? *)"  # 8 AM UTC, which is 3 AM EST
       State: ENABLED
       Targets:
-        - Arn: !GetAtt StateMachine.Arn
+        - Arn: !GetAtt GetAllPlayersStateMachine.Arn # Target the main state machine
           RoleArn: !GetAtt EventBridgeInvokeRole.Arn
           Id: GetAllPlayersStateMachineTarget
 

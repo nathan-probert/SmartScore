@@ -14,7 +14,6 @@ def mock_get_todays_schedule():
 @patch("smartscore_info_client.schemas.team_info.requests.get")
 @patch("service.schedule_run")
 def test_handle_get_1_game(mock_schedule_run, mock_team_info_requests_get, mock_get_todays_schedule):
-    # Arrange
     TeamInfo._class_data_summary = None
     TeamInfo._class_data_penalties = None
 
@@ -75,10 +74,8 @@ def test_handle_get_1_game(mock_schedule_run, mock_team_info_requests_get, mock_
     ]
     expected_response = {"statusCode": 200, "teams": expected_teams_data}
 
-    # Act
     response = handle_get_teams({}, {})
 
-    # Assert
     mock_get_todays_schedule.assert_called_once()
     mock_schedule_run.assert_called_once_with(set())
     assert response == expected_response
@@ -87,7 +84,6 @@ def test_handle_get_1_game(mock_schedule_run, mock_team_info_requests_get, mock_
 @patch("smartscore_info_client.schemas.team_info.requests.get")
 @patch("service.schedule_run")
 def test_handle_get_2_games(mock_schedule_run, mock_team_info_requests_get, mock_get_todays_schedule):
-    # Arrange
     TeamInfo._class_data_summary = None
     TeamInfo._class_data_penalties = None
 
@@ -186,10 +182,8 @@ def test_handle_get_2_games(mock_schedule_run, mock_team_info_requests_get, mock
     ]
     expected_response = {"statusCode": 200, "teams": expected_teams_data}
 
-    # Act
     response = handle_get_teams({}, {})
 
-    # Assert
     mock_get_todays_schedule.assert_called_once()
     mock_schedule_run.assert_called_once_with({"2025-06-11T01:00:00+00:00"})
     assert response == expected_response
@@ -197,28 +191,21 @@ def test_handle_get_2_games(mock_schedule_run, mock_team_info_requests_get, mock
 
 @patch("service.schedule_run")
 def test_handle_get_teams_no_teams(mock_schedule_run, mock_get_todays_schedule):
-    # Arrange
     mock_schedule_data = {"gameWeek": [{"games": []}]}  # No games scheduled
     mock_get_todays_schedule.return_value = mock_schedule_data
 
     expected_response = {"statusCode": 200, "teams": []}
 
-    # Act
     response = handle_get_teams({}, {})
 
-    # Assert
     mock_get_todays_schedule.assert_called_once()
     assert response == expected_response
 
 
 @patch("service.schedule_run")
 def test_handle_get_teams_exception_in_get_teams(mock_schedule_run, mock_get_todays_schedule):
-    # Arrange
-    # Malformed data that will cause an error in get_teams (e.g., missing 'gameWeek')
     mock_malformed_schedule_data = {"some_unexpected_key": []}
     mock_get_todays_schedule.return_value = mock_malformed_schedule_data
 
-    # Act & Assert
-    # Expecting a KeyError or similar due to malformed data when get_teams tries to access it
-    with pytest.raises(KeyError):  # Or TypeError, depending on how get_teams fails
+    with pytest.raises(KeyError):
         handle_get_teams({}, {})
