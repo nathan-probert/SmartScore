@@ -43,10 +43,10 @@ generate_preprocessed_template() {
   TEMP_PLAYERS_FILE=$(mktemp)
   
   # Get pretty JSON and write to temp files with proper indentation
-  echo "      !Sub |" > "$TEMP_ALL_PLAYERS_FILE"
+  echo "DefinitionString: !Sub |" > "$TEMP_ALL_PLAYERS_FILE"
   jq . "$GET_ALL_PLAYERS_ASL_JSON_FILE" | sed 's/^/        /' >> "$TEMP_ALL_PLAYERS_FILE"
   
-  echo "      !Sub |" > "$TEMP_PLAYERS_FILE"
+  echo "DefinitionString: !Sub |" > "$TEMP_PLAYERS_FILE"
   jq . "$GET_PLAYERS_ASL_JSON_FILE" | sed 's/^/        /' >> "$TEMP_PLAYERS_FILE"
 
   cp "$TEMPLATE_FILE" "$PROCESSED_TEMPLATE_FILE"
@@ -66,9 +66,11 @@ generate_preprocessed_template() {
   }
   {
     if ($0 ~ /__GET_ALL_PLAYERS_JSON__/) {
-      printf "%s", all_players_content
+      gsub(/"__GET_ALL_PLAYERS_JSON__"/, "")
+      printf "%s%s", $0, all_players_content
     } else if ($0 ~ /__GET_PLAYERS_JSON__/) {
-      printf "%s", players_content
+      gsub(/"__GET_PLAYERS_JSON__"/, "")
+      printf "%s%s", $0, players_content
     } else {
       print $0
     }
