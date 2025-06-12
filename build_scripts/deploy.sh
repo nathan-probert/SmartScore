@@ -38,15 +38,48 @@ generate_preprocessed_template() {
     exit 1
   fi
 
-  ALL_PLAYERS_JSON=$(jq -c . "$GET_ALL_PLAYERS_ASL_JSON_FILE" | sed 's/"/\\"/g')
-  PLAYERS_JSON=$(jq -c . "$GET_PLAYERS_ASL_JSON_FILE" | sed 's/"/\\"/g')
+  # Create temporary files for the JSON content
+  TEMP_ALL_PLAYERS_FILE=$(mktemp)
+  TEMP_PLAYERS_FILE=$(mktemp)
+  
+  # Get pretty JSON and write to temp files with proper indentation
+  echo "      !Sub |" > "$TEMP_ALL_PLAYERS_FILE"
+  jq . "$GET_ALL_PLAYERS_ASL_JSON_FILE" | sed 's/^/        /' >> "$TEMP_ALL_PLAYERS_FILE"
+  
+  echo "      !Sub |" > "$TEMP_PLAYERS_FILE"
+  jq . "$GET_PLAYERS_ASL_JSON_FILE" | sed 's/^/        /' >> "$TEMP_PLAYERS_FILE"
 
   cp "$TEMPLATE_FILE" "$PROCESSED_TEMPLATE_FILE"
-  sed -i "s|__GET_ALL_PLAYERS_JSON__|\"$ALL_PLAYERS_JSON\"|" "$PROCESSED_TEMPLATE_FILE"
-  sed -i "s|__GET_PLAYERS_JSON__|\"$PLAYERS_JSON\"|" "$PROCESSED_TEMPLATE_FILE"
+  
+  # Use awk for safer replacement that doesn't have delimiter issues
+  awk '
+  BEGIN { 
+    while ((getline line < "'$TEMP_ALL_PLAYERS_FILE'") > 0) {
+      all_players_content = all_players_content line "\n"
+    }
+    close("'$TEMP_ALL_PLAYERS_FILE'")
+    
+    while ((getline line < "'$TEMP_PLAYERS_FILE'") > 0) {
+      players_content = players_content line "\n"
+    }
+    close("'$TEMP_PLAYERS_FILE'")
+  }
+  {
+    if ($0 ~ /__GET_ALL_PLAYERS_JSON__/) {
+      printf "%s", all_players_content
+    } else if ($0 ~ /__GET_PLAYERS_JSON__/) {
+      printf "%s", players_content
+    } else {
+      print $0
+    }
+  }
+  ' "$PROCESSED_TEMPLATE_FILE" > "$PROCESSED_TEMPLATE_FILE.tmp" && mv "$PROCESSED_TEMPLATE_FILE.tmp" "$PROCESSED_TEMPLATE_FILE"
+  
+  # Clean up temp files
+  rm -f "$TEMP_ALL_PLAYERS_FILE" "$TEMP_PLAYERS_FILE"
 
-  cat output/template.processed.yaml | grep GetAllPlayersStateMachineAslJson
-
+  cat output/template.processed.yaml
+  exit
 }
 
 generate_smartscore_stack() {
