@@ -66,11 +66,9 @@ generate_preprocessed_template() {
   }
   {
     if ($0 ~ /__GET_ALL_PLAYERS_JSON__/) {
-      gsub(/"__GET_ALL_PLAYERS_JSON__"/, "")
-      printf "%s%s", $0, all_players_content
+      printf "%s", all_players_content
     } else if ($0 ~ /__GET_PLAYERS_JSON__/) {
-      gsub(/"__GET_PLAYERS_JSON__"/, "")
-      printf "%s%s", $0, players_content
+      printf "%s", players_content
     } else {
       print $0
     }
