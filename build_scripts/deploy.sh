@@ -44,6 +44,9 @@ generate_preprocessed_template() {
   cp "$TEMPLATE_FILE" "$PROCESSED_TEMPLATE_FILE"
   sed -i "s|__GET_ALL_PLAYERS_JSON__|\"$ALL_PLAYERS_JSON\"|" "$PROCESSED_TEMPLATE_FILE"
   sed -i "s|__GET_PLAYERS_JSON__|\"$PLAYERS_JSON\"|" "$PROCESSED_TEMPLATE_FILE"
+
+  cat output/template.processed.yaml | grep GetAllPlayersStateMachineAslJson
+
 }
 
 generate_smartscore_stack() {
