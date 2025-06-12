@@ -3,6 +3,9 @@
 # one of {dev, prod}
 ENV=${ENV:-dev}  # If ENV is not set, default to "dev"
 
+AWS_REGION=${AWS_REGION:-us-east-1}
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
 MAX_ZIP_SIZE_MB=25
 
 SOURCE_DIR="smartscore"
@@ -113,6 +116,35 @@ update_lambda_code() {
 }
 
 
+deploy_state_machine() {
+  local NAME=$1
+  local DEFINITION_FILE=$2
+
+  local STATE_MACHINE_NAME="$NAME-$ENV"
+  local ROLE_ARN=$(aws cloudformation describe-stacks \
+    --stack-name "$STACK_NAME" \
+    --query "Stacks[0].Outputs[?OutputKey=='StepFunctionExecutionRoleArn'].OutputValue" \
+    --output text)
+
+  if aws stepfunctions describe-state-machine --state-machine-arn "arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME" &>/dev/null; then
+    echo "Updating Step Function: $STATE_MACHINE_NAME..."
+    aws stepfunctions update-state-machine \
+      --state-machine-arn "arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME" \
+      --definition file://"$DEFINITION_FILE" \
+      --role-arn "$ROLE_ARN"
+  else
+    echo "Creating Step Function: $STATE_MACHINE_NAME..."
+    aws stepfunctions create-state-machine \
+      --name "$STATE_MACHINE_NAME" \
+      --definition file://"$DEFINITION_FILE" \
+      --role-arn "$ROLE_ARN" \
+      --type STANDARD
+  fi
+
+  echo "Step Function '$STATE_MACHINE_NAME' deployed successfully."
+}
+
+
 # main
 
 # create empty output directory
@@ -157,3 +189,8 @@ generate_smartscore_stack
 
 # update the Lambda function code
 update_lambda_code
+
+# deploy Step Functions
+echo "Deploying Step Functions..."
+deploy_state_machine "GetAllPlayers" "templates/get_all_players.asl.json"
+deploy_state_machine "GetPlayers" "templates/get_players.asl.json"
