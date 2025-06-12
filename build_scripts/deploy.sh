@@ -90,14 +90,6 @@ generate_smartscore_stack() {
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
-    
-    UPDATE_EXIT_CODE=$? # Capture exit code of the update-stack command
-
-    if [ $UPDATE_EXIT_CODE -ne 0 ]; then
-      echo "Error updating CloudFormation stack. Output:"
-      echo "$UPDATE_OUTPUT"
-      exit $UPDATE_EXIT_CODE
-    fi
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
       echo "No updates needed. Skipping wait."
@@ -115,14 +107,6 @@ generate_smartscore_stack() {
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
       --capabilities CAPABILITY_NAMED_IAM
-    
-    CREATE_EXIT_CODE=$? # Capture exit code of the create-stack command
-    if [ $CREATE_EXIT_CODE -ne 0 ]; then
-        echo "Error creating CloudFormation stack. Investigate the AWS CloudFormation console for more details."
-        # Attempt to describe the stack events to get more info, as create-stack itself might not output much on immediate failure
-        aws cloudformation describe-stack-events --stack-name "$STACK_NAME" --query "StackEvents[?ResourceStatus=='CREATE_FAILED'].ResourceStatusReason" --output text | head -n 5
-        exit $CREATE_EXIT_CODE
-    fi
 
     echo "Waiting for CloudFormation stack creation to complete..."
     aws cloudformation wait stack-create-complete --stack-name "$STACK_NAME"
