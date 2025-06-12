@@ -34,29 +34,17 @@ generate_smartscore_stack() {
     exit 1
   fi
 
-  # Read the ASL JSON content for GetAllPlayersStateMachine, make it compact, then escape quotes
-  RawGetAllPlayersJson=$(jq -c . "$GET_ALL_PLAYERS_ASL_JSON_FILE")
+  GetAllPlayersStateMachineAslJsonValue=$(jq -c . "$GET_ALL_PLAYERS_ASL_JSON_FILE")
   if [ $? -ne 0 ]; then
     echo "Error: Failed to process ASL JSON file with jq: $GET_ALL_PLAYERS_ASL_JSON_FILE"
     exit 1
   fi
-  GetAllPlayersStateMachineAslJsonValue=$(echo "$RawGetAllPlayersJson" | sed 's/"/\\\\"/g')
 
-  # Read the ASL JSON content for GetPlayersStateMachine, make it compact, then escape quotes
-  RawGetPlayersJson=$(jq -c . "$GET_PLAYERS_ASL_JSON_FILE")
+  GetPlayersStateMachineAslJsonValue=$(jq -c . "$GET_PLAYERS_ASL_JSON_FILE")
   if [ $? -ne 0 ]; then
     echo "Error: Failed to process ASL JSON file with jq: $GET_PLAYERS_ASL_JSON_FILE"
     exit 1
   fi
-  GetPlayersStateMachineAslJsonValue=$(echo "$RawGetPlayersJson" | sed 's/"/\\\\"/g')
-
-  # For debugging - see what's being passed
-  # echo "--- DEBUG: GetAllPlayersStateMachineAslJsonValue ---"
-  # echo "$GetAllPlayersStateMachineAslJsonValue"
-  # echo "--- END DEBUG ---"
-  # echo "--- DEBUG: GetPlayersStateMachineAslJsonValue ---"
-  # echo "$GetPlayersStateMachineAslJsonValue"
-  # echo "--- END DEBUG ---"
 
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
