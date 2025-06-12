@@ -325,6 +325,8 @@ Resources:
       StateMachineName: !Sub "GetAllPlayersStateMachine-${ENV}"
       RoleArn: !GetAtt StateMachineExecutionRole.Arn
       DefinitionString: "__GET_ALL_PLAYERS_JSON__"
+      DefinitionSubstitutions:
+        GetPlayersStateMachineArn: !GetAtt GetPlayersStateMachine.Arn
 
   GetPlayersStateMachine: # New State Machine resource
     Type: AWS::StepFunctions::StateMachine
