@@ -121,22 +121,36 @@ deploy_state_machine() {
   local DEFINITION_FILE=$2
 
   local STATE_MACHINE_NAME="$NAME-$ENV"
+  local PATCHED_FILE="/tmp/${STATE_MACHINE_NAME}.json"
+
+  # Ensure required env vars exist
+  if [ -z "$AWS_REGION" ] || [ -z "$AWS_ACCOUNT_ID" ]; then
+    echo "Missing AWS_REGION or AWS_ACCOUNT_ID"
+    exit 1
+  fi
+
+  # Patch the definition file
+  envsubst < "$DEFINITION_FILE" > "$PATCHED_FILE"
+
+  # Get the role ARN from CloudFormation outputs
   local ROLE_ARN=$(aws cloudformation describe-stacks \
     --stack-name "$STACK_NAME" \
     --query "Stacks[0].Outputs[?OutputKey=='StepFunctionExecutionRoleArn'].OutputValue" \
     --output text)
 
-  if aws stepfunctions describe-state-machine --state-machine-arn "arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME" &>/dev/null; then
+  # Deploy the state machine
+  if aws stepfunctions describe-state-machine \
+      --state-machine-arn "arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME" &>/dev/null; then
     echo "Updating Step Function: $STATE_MACHINE_NAME..."
     aws stepfunctions update-state-machine \
       --state-machine-arn "arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME" \
-      --definition file://"$DEFINITION_FILE" \
+      --definition file://"$PATCHED_FILE" \
       --role-arn "$ROLE_ARN"
   else
     echo "Creating Step Function: $STATE_MACHINE_NAME..."
     aws stepfunctions create-state-machine \
       --name "$STATE_MACHINE_NAME" \
-      --definition file://"$DEFINITION_FILE" \
+      --definition file://"$PATCHED_FILE" \
       --role-arn "$ROLE_ARN" \
       --type STANDARD
   fi

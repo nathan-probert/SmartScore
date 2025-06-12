@@ -4,7 +4,7 @@
   "States": {
     "GetTeams": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetTeams-${ENV}",
+      "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTeams-${ENV}",
       "ResultPath": "$.get_teams_lambda_output",
       "Next": "ExtractActualTeamsList",
       "Retry": [
@@ -47,7 +47,7 @@
         "States": {
           "GetPlayersForThisTeam": {
             "Type": "Task",
-            "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:GetPlayersFromTeam-${ENV}",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetPlayersFromTeam-${ENV}",
             "InputPath": "$",
             "ResultPath": "$.retrieved_players_list",
             "Next": "MergeTeamAndPlayers",
