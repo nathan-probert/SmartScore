@@ -39,7 +39,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - states:StartExecution
-                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetAllPlayersStateMachine"
+                Resource: !Ref GetAllPlayersStateMachine # Corrected this line
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
@@ -318,7 +318,7 @@ Resources:
                 Action:
                   - states:StartExecution
                 Resource:
-                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetPlayersStateMachine-${ENV}"
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetPlayersStateMachine-${ENV}" # This allows starting the other SM by name
 
   # State Machines
   GetAllPlayersStateMachine:
@@ -338,9 +338,7 @@ Resources:
                       "Next": "CheckCompletion",
                       "Retry": [
                           {
-                              "ErrorEquals": [
-                                  "States.ALL"
-                              ],
+                              "ErrorEquals": [ "States.ALL" ],
                               "IntervalSeconds": 300,
                               "MaxAttempts": 3,
                               "BackoffRate": 1
@@ -368,9 +366,7 @@ Resources:
                       "Next": "GetPlayersStateMachine",
                       "Retry": [
                           {
-                              "ErrorEquals": [
-                                  "States.ALL"
-                              ],
+                              "ErrorEquals": [ "States.ALL" ],
                               "IntervalSeconds": 300,
                               "MaxAttempts": 3,
                               "BackoffRate": 1
@@ -384,9 +380,7 @@ Resources:
                       "Next": "CheckIfPlayersOutputIsEmpty",
                       "Retry": [
                           {
-                              "ErrorEquals": [
-                                  "States.ALL"
-                              ],
+                              "ErrorEquals": [ "States.ALL" ],
                               "IntervalSeconds": 300,
                               "MaxAttempts": 3,
                               "BackoffRate": 1
@@ -411,9 +405,7 @@ Resources:
                       "Next": "MakePredictions",
                       "Retry": [
                           {
-                              "ErrorEquals": [
-                                  "States.ALL"
-                              ],
+                              "ErrorEquals": [ "States.ALL" ],
                               "IntervalSeconds": 300,
                               "MaxAttempts": 3,
                               "BackoffRate": 1
@@ -426,9 +418,7 @@ Resources:
                       "Next": "GetTims",
                       "Retry": [
                           {
-                              "ErrorEquals": [
-                                  "States.ALL"
-                              ],
+                              "ErrorEquals": [ "States.ALL" ],
                               "IntervalSeconds": 300,
                               "MaxAttempts": 3,
                               "BackoffRate": 1
@@ -441,9 +431,7 @@ Resources:
                       "Next": "CheckInitialRun",
                       "Retry": [
                           {
-                              "ErrorEquals": [
-                                  "States.ALL"
-                              ],
+                              "ErrorEquals": [ "States.ALL" ],
                               "IntervalSeconds": 300,
                               "MaxAttempts": 3,
                               "BackoffRate": 1
@@ -476,9 +464,7 @@ Resources:
                       "Next": "UpdateHistory",
                       "Retry": [
                           {
-                              "ErrorEquals": [
-                                  "States.ALL"
-                              ],
+                              "ErrorEquals": [ "States.ALL" ],
                               "IntervalSeconds": 300,
                               "MaxAttempts": 3,
                               "BackoffRate": 1
@@ -491,9 +477,7 @@ Resources:
                       "Next": "PublishToDb",
                       "Retry": [
                           {
-                              "ErrorEquals": [
-                                  "States.ALL"
-                              ],
+                              "ErrorEquals": [ "States.ALL" ],
                               "IntervalSeconds": 300,
                               "MaxAttempts": 3,
                               "BackoffRate": 1
@@ -506,9 +490,7 @@ Resources:
                       "End": true,
                       "Retry": [
                           {
-                              "ErrorEquals": [
-                                  "States.ALL"
-                              ],
+                              "ErrorEquals": [ "States.ALL" ],
                               "IntervalSeconds": 300,
                               "MaxAttempts": 3,
                               "BackoffRate": 1
@@ -517,6 +499,7 @@ Resources:
                   }
               }
           }
+        - GetPlayersStateMachine: !GetAtt GetPlayersStateMachine.Arn
 
   GetPlayersStateMachine:
     Type: AWS::StepFunctions::StateMachine
