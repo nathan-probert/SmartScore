@@ -316,11 +316,6 @@ Resources:
                   - !GetAtt ParseData.Arn
                   - !GetAtt UpdateHistoryFunction.Arn
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
-              - Effect: Allow # Added permission for the main SM to start the GetPlayers SM
-                Action:
-                  - states:StartExecution
-                Resource: 
-                  - !GetAtt GetPlayersStateMachine.Arn
 
   # State Machines
   GetAllPlayersStateMachine: # Renamed for clarity
@@ -337,6 +332,21 @@ Resources:
       StateMachineName: !Sub "GetPlayersStateMachine-${ENV}" # Unique name for the new SM
       RoleArn: !GetAtt StateMachineExecutionRole.Arn # Can reuse the same role if permissions are sufficient
       DefinitionString: "__GET_PLAYERS_JSON__"
+
+  StateMachineStartGetPlayersPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "StateMachineStartGetPlayersPolicy-${ENV}"
+      Roles:
+        - !Ref StateMachineExecutionRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - states:StartExecution
+            Resource:
+              - !GetAtt GetPlayersStateMachine.Arn
 
   DailyStepFunctionTrigger:
     Type: AWS::Events::Rule
