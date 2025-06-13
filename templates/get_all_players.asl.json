@@ -45,15 +45,24 @@
         },
         "GetPlayersStateMachine": {
             "Type": "Task",
-            "Resource": "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:stateMachine:GetPlayersStateMachine-${ENV}",
+            "Resource": "arn:aws:states:::states:startExecution.sync",
+            "Parameters": {
+                "StateMachineArn": "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:stateMachine:GetPlayersStateMachine-${ENV}",
+                "Input": {
+                "input.$": "$"
+                }
+            },
+            "ResultSelector": {
+                "players_output.$": "$.output"
+            },
             "ResultPath": "$.players_output",
             "Next": "CheckIfPlayersOutputIsEmpty",
             "Retry": [
                 {
-                    "ErrorEquals": ["States.ALL"],
-                    "IntervalSeconds": 300,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 1
+                "ErrorEquals": ["States.ALL"],
+                "IntervalSeconds": 300,
+                "MaxAttempts": 3,
+                "BackoffRate": 1
                 }
             ]
         },
