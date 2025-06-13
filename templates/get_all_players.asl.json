@@ -53,7 +53,7 @@
                 }
             },
             "ResultSelector": {
-                "players_output.$": "States.StringToJson($.Output)"
+                "$": "States.StringToJson($.Output)"
             },
             "ResultPath": "$.players_output",
             "Next": "CheckIfPlayersOutputIsEmpty",

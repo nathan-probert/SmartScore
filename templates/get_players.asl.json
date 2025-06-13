@@ -49,7 +49,7 @@
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetPlayersFromTeam-${ENV}",
             "InputPath": "$",
-            "ResultPath": "$.retrieved_players_list",
+            "ResultPath": "$.players",
             "Next": "MergeTeamAndPlayers",
             "Retry": [
               {
