@@ -121,10 +121,11 @@ deploy_state_machine() {
 
   local STATE_MACHINE_NAME="$NAME-$ENV"
   local PATCHED_FILE="/tmp/${STATE_MACHINE_NAME}.json"
+  local STATE_MACHINE_ARN="arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME"
 
   # Ensure required env vars exist
-  if [ -z "$AWS_REGION" ] || [ -z "$AWS_ACCOUNT_ID" ]; then
-    echo "Missing AWS_REGION or AWS_ACCOUNT_ID"
+  if [ -z "$AWS_REGION" ] || [ -z "$AWS_ACCOUNT_ID" ] || [ -z "$ENV" ] || [ -z "$STACK_NAME" ]; then
+    echo "Missing one or more required env vars: AWS_REGION, AWS_ACCOUNT_ID, ENV, STACK_NAME"
     exit 1
   fi
 
@@ -137,12 +138,17 @@ deploy_state_machine() {
     --query "Stacks[0].Outputs[?OutputKey=='StepFunctionExecutionRoleArn'].OutputValue" \
     --output text)
 
+  if [ -z "$ROLE_ARN" ]; then
+    echo "Could not find StepFunctionExecutionRoleArn in stack outputs"
+    exit 1
+  fi
+
   # Deploy the state machine
   if aws stepfunctions describe-state-machine \
-      --state-machine-arn "arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:$STATE_MACHINE_NAME" &>/dev/null; then
+      --state-machine-arn "$STATE_MACHINE_ARN" &>/dev/null; then
     echo "Updating Step Function: $STATE_MACHINE_NAME..."
     aws stepfunctions update-state-machine \
-      --state-machine-arn "arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:$STATE_MACHINE_NAME" \
+      --state-machine-arn "$STATE_MACHINE_ARN" \
       --definition file://"$PATCHED_FILE" \
       --role-arn "$ROLE_ARN"
   else
