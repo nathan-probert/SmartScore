@@ -77,6 +77,19 @@
         }
       },
       "ResultPath": "$",
+      "Next": "ParseData"
+    },
+    "ParseData": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:ParseData-${ENV}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 300,
+          "MaxAttempts": 3,
+          "BackoffRate": 1
+        }
+      ],
       "End": true
     }
   }

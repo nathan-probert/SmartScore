@@ -53,7 +53,7 @@
                 }
             },
             "ResultSelector": {
-                "players_output.$": "$.output"
+                "players_output.$": "States.StringToJson($.Output)"
             },
             "ResultPath": "$.players_output",
             "Next": "CheckIfPlayersOutputIsEmpty",
@@ -75,25 +75,12 @@
                     "Next": "PublishToDb"
                 }
             ],
-            "Default": "ParseData"
-        },
-        "ParseData": {
-            "Type": "Task",
-            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:ParseData-${ENV}",
-            "InputPath": "$.players_output",
-            "Next": "MakePredictions",
-            "Retry": [
-                {
-                    "ErrorEquals": ["States.ALL"],
-                    "IntervalSeconds": 300,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 1
-                }
-            ]
+            "Default": "MakePredictions"
         },
         "MakePredictions": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:MakePredictions-${ENV}",
+            "InputPath": "$.players_output",
             "Next": "GetTims",
             "Retry": [
                 {
