@@ -85,6 +85,11 @@ Resources:
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
               - Effect: Allow
                 Action:
+                  - states:StartExecution
+                Resource:
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:GetPlayersStateMachine-${ENV}"
+              - Effect: Allow
+                Action:
                   - events:PutRule
                   - events:PutTargets
                   - events:DescribeRule
