@@ -139,10 +139,10 @@ deploy_state_machine() {
 
   # Deploy the state machine
   if aws stepfunctions describe-state-machine \
-      --state-machine-arn "arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME" &>/dev/null; then
+      --state-machine-arn "arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:$STATE_MACHINE_NAME" &>/dev/null; then
     echo "Updating Step Function: $STATE_MACHINE_NAME..."
     aws stepfunctions update-state-machine \
-      --state-machine-arn "arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME" \
+      --state-machine-arn "arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:$STATE_MACHINE_NAME" \
       --definition file://"$PATCHED_FILE" \
       --role-arn "$ROLE_ARN"
   else

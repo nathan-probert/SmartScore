@@ -47,7 +47,7 @@
             "Type": "Task",
             "Resource": "arn:aws:states:::states:startExecution.sync",
             "Parameters": {
-                "StateMachineArn": "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:stateMachine:GetPlayersStateMachine-${ENV}",
+                "StateMachineArn": "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:GetPlayers-${ENV}",
                 "Input": {
                 "input.$": "$"
                 }
