@@ -55,7 +55,7 @@
             "ResultSelector": {
                 "$": "States.StringToJson($.Output)"
             },
-            "ResultPath": "$.players_output",
+            "ResultPath": "$",
             "Next": "CheckIfPlayersOutputIsEmpty",
             "Retry": [
                 {
@@ -70,7 +70,7 @@
             "Type": "Choice",
             "Choices": [
                 {
-                    "Variable": "$.players_output[0]",
+                    "Variable": "$.players[0]",
                     "IsPresent": false,
                     "Next": "PublishToDb"
                 }
