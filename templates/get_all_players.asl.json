@@ -49,11 +49,11 @@
             "Parameters": {
                 "StateMachineArn": "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:stateMachine:GetPlayers-${ENV}",
                 "Input": {
-                "input.$": "$"
+                    "input.$": "$"
                 }
             },
             "ResultSelector": {
-                "$": "States.StringToJson($.Output)"
+            "players.$": "States.StringToJson($.Output)"
             },
             "ResultPath": "$",
             "Next": "CheckIfPlayersOutputIsEmpty",
@@ -80,7 +80,6 @@
         "MakePredictions": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:MakePredictions-${ENV}",
-            "InputPath": "$.players_output",
             "Next": "GetTims",
             "Retry": [
                 {
@@ -104,7 +103,7 @@
                 }
             ]
         },
-        "CheckInitialRun": {
+    "CheckInitialRun": {
             "Type": "Choice",
             "Choices": [
                 {

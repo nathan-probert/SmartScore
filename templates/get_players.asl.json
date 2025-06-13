@@ -5,8 +5,8 @@
     "GetTeams": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTeams-${ENV}",
-      "ResultPath": "$.get_teams_lambda_output",
-      "Next": "ExtractActualTeamsList",
+      "ResultPath": "$",
+      "Next": "AreTeamsAvailable",
       "Retry": [
         {
           "ErrorEquals": ["States.ALL"],
@@ -15,12 +15,6 @@
           "BackoffRate": 1.0
         }
       ]
-    },
-    "ExtractActualTeamsList": {
-      "Type": "Pass",
-      "InputPath": "$.get_teams_lambda_output.teams",
-      "ResultPath": "$.teams",
-      "Next": "AreTeamsAvailable"
     },
     "AreTeamsAvailable": {
       "Type": "Choice",
@@ -69,7 +63,7 @@
               "team_id.$": "$.team_id",
               "opponent_id.$": "$.opponent_id",
               "home.$": "$.home",
-              "players.$": "$.retrieved_players_list"
+              "players.$": "$.players"
             },
             "OutputPath": "$",
             "End": true
@@ -78,17 +72,18 @@
       },
       "ResultPath": "$",
       "Next": "ParseData"
-    },
+    },    
     "ParseData": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:ParseData-${ENV}",
+      "ResultPath": "$",
       "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 300,
-          "MaxAttempts": 3,
-          "BackoffRate": 1
-        }
+      {
+        "ErrorEquals": ["States.ALL"],
+        "IntervalSeconds": 300,
+        "MaxAttempts": 3,
+        "BackoffRate": 1
+      }
       ],
       "End": true
     }
