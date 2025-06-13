@@ -53,6 +53,38 @@ Resources:
                   - ssm:GetParameters
                 Resource: "*"
 
+  # State Machine Execution Role
+  StateMachineExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StateMachineExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt GetTeamsFunction.Arn
+                  - !GetAtt GetPlayersFromTeamFunction.Arn
+                  - !GetAtt MakePredictionsFunction.Arn
+                  - !GetAtt GetTimsFunction.Arn
+                  - !GetAtt PerformBackfillingFunction.Arn
+                  - !GetAtt PublishDbFunction.Arn
+                  - !GetAtt CheckCompletedFunction.Arn
+                  - !GetAtt ParseData.Arn
+                  - !GetAtt UpdateHistoryFunction.Arn
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
+
+
   # Lambda Functions
   GetTeamsFunction:
     Type: AWS::Lambda::Function
@@ -283,4 +315,4 @@ Resources:
 Outputs:
   StepFunctionExecutionRoleArn:
     Description: IAM role ARN to be used by Step Functions
-    Value: !GetAtt LambdaExecutionRole.Arn
+    Value: !GetAtt StateMachineExecutionRole.Arn
