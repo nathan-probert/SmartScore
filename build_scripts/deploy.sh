@@ -4,7 +4,7 @@
 ENV=${ENV:-dev}  # If ENV is not set, default to "dev"
 
 AWS_REGION=${AWS_REGION:-us-east-1}
-AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
 
 MAX_ZIP_SIZE_MB=25
 
