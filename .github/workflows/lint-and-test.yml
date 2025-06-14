@@ -2,8 +2,6 @@ name: Run Lint and Test
 
 on:
   push:
-    branches:
-      - '**'
     branches-ignore:
       - main
 
