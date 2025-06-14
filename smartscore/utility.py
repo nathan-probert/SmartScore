@@ -225,7 +225,9 @@ def exponential_backoff_supabase_request(
             logger.error(f"APIError encountered: {api_error}. Not retrying.")
             raise api_error
         except Exception as e:  # noqa: BLE001
-            logger.error(f"Exception type: {type(e)}, Exception: {e}")  # Log the type and the exception itself
+            logger.error(
+                f"Exception type: {type(e)}, Exception: {e}"
+            )  # temporary logging, once we see a retryable error, we can remove this
             wait_time = base_delay * (2**attempt)
             logger.info(f"Attempt {attempt + 1} failed. Retrying in {wait_time} seconds...")
             time.sleep(wait_time)
