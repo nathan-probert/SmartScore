@@ -149,7 +149,7 @@ def remove_last_game(time_set):
     return {time.isoformat() for time in time_objects}
 
 
-def exponential_backoff_request(url, method="get", data=None, json_data=None, max_retries=5, base_delay=5):
+def exponential_backoff_request(url, method="get", data=None, json_data=None, max_retries=5, base_delay=1):
     """
     Makes HTTP requests with exponential backoff retry strategy.
 
