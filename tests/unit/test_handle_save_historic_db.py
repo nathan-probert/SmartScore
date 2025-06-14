@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
-from smartscore.event_handler import handle_save_historic_db
-from smartscore.service import choose_picks, get_date
+from event_handler import handle_save_historic_db
+from service import choose_picks, get_date
 
 
 @patch("service.invoke_lambda")

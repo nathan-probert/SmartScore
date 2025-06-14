@@ -1,13 +1,14 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from smartscore.event_handler import handle_get_teams
 from smartscore_info_client.schemas.team_info import TeamInfo
+
+from event_handler import handle_get_teams
 
 
 @pytest.fixture
 def mock_get_todays_schedule():
-    with patch("smartscore.event_handler.get_todays_schedule") as mock:
+    with patch("event_handler.get_todays_schedule") as mock:
         yield mock
 
 

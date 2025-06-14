@@ -1,5 +1,6 @@
 import make_predictions_rust
-from smartscore.service import get_min_max
+
+from service import get_min_max
 
 
 def get_rust_weights():
