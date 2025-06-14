@@ -6,15 +6,7 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTeams-${ENV}",
       "ResultPath": "$",
-      "Next": "AreTeamsAvailable",
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 300,
-          "MaxAttempts": 3,
-          "BackoffRate": 1.0
-        }
-      ]
+      "Next": "AreTeamsAvailable"
     },
     "AreTeamsAvailable": {
       "Type": "Choice",
@@ -44,15 +36,7 @@
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetPlayersFromTeam-${ENV}",
             "InputPath": "$",
             "ResultPath": "$.players",
-            "Next": "MergeTeamAndPlayers",
-            "Retry": [
-              {
-                "ErrorEquals": ["States.ALL"],
-                "IntervalSeconds": 300,
-                "MaxAttempts": 3,
-                "BackoffRate": 1.0
-              }
-            ]
+            "Next": "MergeTeamAndPlayers"
           },
           "MergeTeamAndPlayers": {
             "Type": "Pass",
@@ -77,14 +61,6 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:ParseData-${ENV}",
       "ResultPath": "$",
-      "Retry": [
-      {
-        "ErrorEquals": ["States.ALL"],
-        "IntervalSeconds": 300,
-        "MaxAttempts": 3,
-        "BackoffRate": 1
-      }
-      ],
       "End": true
     }
   }

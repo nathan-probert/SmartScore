@@ -211,5 +211,5 @@ update_lambda_code
 
 # deploy Step Functions
 echo "Deploying Step Functions..."
-deploy_state_machine "GetAllPlayers" "templates/get_all_players.asl.json"
+deploy_state_machine "PlayerProcessingPipeline" "templates/player_processing_pipeline.asl.json"
 deploy_state_machine "GetPlayers" "templates/get_players.asl.json"

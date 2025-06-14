@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudFormation stack for the GetAllPlayers Step Function and Lambda functions.
+Description: CloudFormation stack for the PlayerProcessingPipeline Step Function and Lambda functions.
 
 Parameters:
   ENV:
@@ -270,6 +270,38 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           
+  # IAM Role for EventBridge to invoke Step Function
+  EventBridgeInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AllowStepFunctionStartExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
+
+  # EventBridge Rule to trigger Step Function daily at 8 AM UTC
+  DailyStepFunctionTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(0 8 * * ? *)"  # 8 AM UTC
+      State: ENABLED
+      Targets:
+        - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
+          RoleArn: !GetAtt EventBridgeInvokeRole.Arn
+          Id: PlayerProcessingPipelineStateMachineTarget
+
   # Lambda Log Groups
   GetTeamsLogGroup:
     Type: AWS::Logs::LogGroup

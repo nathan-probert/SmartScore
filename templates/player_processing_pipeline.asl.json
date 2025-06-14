@@ -1,19 +1,11 @@
 {
-    "Comment": "A state machine to handle getting players and making predictions",
+    "Comment": "A state machine to handle all player processing, predictions, and publishing.",
     "StartAt": "GetDate",
     "States": {
         "GetDate": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:CheckCompleted-${ENV}",
-            "Next": "CheckCompletion",
-            "Retry": [
-                {
-                    "ErrorEquals": ["States.ALL"],
-                    "IntervalSeconds": 300,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 1
-                }
-            ]
+            "Next": "CheckCompletion"
         },
         "CheckCompletion": {
             "Type": "Choice",
@@ -33,15 +25,7 @@
         "Backfill": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:PerformBackfilling-${ENV}",
-            "Next": "GetPlayersStateMachine",
-            "Retry": [
-                {
-                    "ErrorEquals": ["States.ALL"],
-                    "IntervalSeconds": 300,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 1
-                }
-            ]
+            "Next": "GetPlayersStateMachine"
         },
         "GetPlayersStateMachine": {
             "Type": "Task",
@@ -56,15 +40,7 @@
             "players.$": "States.StringToJson($.Output)"
             },
             "ResultPath": "$",
-            "Next": "CheckIfPlayersOutputIsEmpty",
-            "Retry": [
-                {
-                "ErrorEquals": ["States.ALL"],
-                "IntervalSeconds": 300,
-                "MaxAttempts": 3,
-                "BackoffRate": 1
-                }
-            ]
+            "Next": "CheckIfPlayersOutputIsEmpty"
         },
         "CheckIfPlayersOutputIsEmpty": {
             "Type": "Choice",
@@ -72,7 +48,7 @@
                 {
                     "Variable": "$.players[0]",
                     "IsPresent": false,
-                    "Next": "PublishToDb"
+                    "Next": "UpdateHistory"
                 }
             ],
             "Default": "MakePredictions"
@@ -80,28 +56,12 @@
         "MakePredictions": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:MakePredictions-${ENV}",
-            "Next": "GetTims",
-            "Retry": [
-                {
-                    "ErrorEquals": ["States.ALL"],
-                    "IntervalSeconds": 300,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 1
-                }
-            ]
+            "Next": "GetTims"
         },
         "GetTims": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTims-${ENV}",
-            "Next": "CheckInitialRun",
-            "Retry": [
-                {
-                    "ErrorEquals": ["States.ALL"],
-                    "IntervalSeconds": 300,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 1
-                }
-            ]
+            "Next": "CheckInitialRun"
         },
     "CheckInitialRun": {
             "Type": "Choice",
@@ -126,41 +86,17 @@
                 "date.$": "$.date",
                 "method": "POST_BATCH"
             },
-            "Next": "UpdateHistory",
-            "Retry": [
-                {
-                    "ErrorEquals": ["States.ALL"],
-                    "IntervalSeconds": 300,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 1
-                }
-            ]
+            "Next": "UpdateHistory"
         },
         "UpdateHistory": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:UpdateHistory-${ENV}",
-            "Next": "PublishToDb",
-            "Retry": [
-                {
-                    "ErrorEquals": ["States.ALL"],
-                    "IntervalSeconds": 300,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 1
-                }
-            ]
+            "Next": "PublishToDb"
         },
         "PublishToDb": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:PublishDb-${ENV}",
-            "End": true,
-            "Retry": [
-                {
-                    "ErrorEquals": ["States.ALL"],
-                    "IntervalSeconds": 300,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 1
-                }
-            ]
+            "End": true
         }
     }
 }

@@ -6,6 +6,7 @@ import boto3
 import requests
 from aws_lambda_powertools import Logger
 from dateutil import parser
+from postgrest.exceptions import APIError
 
 from config import ENV, SUPABASE_CLIENT
 
@@ -198,21 +199,35 @@ def exponential_backoff_supabase_request(
     Returns:
         Parsed JSON response
     """
-    method = method.lower()
+    method = method.upper()
+
+    logger.info(f"Making {method} request to table: {table_name} with data: {json_data}")
     for attempt in range(max_retries):
         try:
-            if method == "get":
+            if method == "GET":
                 response = (SUPABASE_CLIENT.table(table_name).select("*").execute()).data
-            elif method == "post":
+            elif method == "POST":
                 # Clear the table before inserting new data
                 SUPABASE_CLIENT.table(table_name).delete().neq("id", 0).execute()
-                response = SUPABASE_CLIENT.table(table_name).upsert(json_data).execute()
+                if json_data is not None and len(json_data) > 0:
+                    response = SUPABASE_CLIENT.table(table_name).upsert(json_data).execute()
+                else:
+                    logger.info(f"json_data is empty or None, skipping upsert for table: {table_name}")
+                    response = None
             else:
                 raise ValueError(f"Unsupported method: {method}")
 
             return response
+        except ValueError as ve:
+            logger.error(f"ValueError encountered: {ve}. Not retrying.")
+            raise ve
+        except APIError as api_error:
+            logger.error(f"APIError encountered: {api_error}. Not retrying.")
+            raise api_error
         except Exception as e:  # noqa: BLE001
+            logger.error(f"Exception type: {type(e)}, Exception: {e}")  # Log the type and the exception itself
             wait_time = base_delay * (2**attempt)
-            logger.info(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time} seconds...")
+            logger.info(f"Attempt {attempt + 1} failed. Retrying in {wait_time} seconds...")
             time.sleep(wait_time)
+
     raise Exception("Max retries reached. Request failed.")

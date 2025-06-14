@@ -1,5 +1,6 @@
 import datetime
 import json
+from collections import defaultdict
 
 import make_predictions_rust
 import pytz
@@ -304,6 +305,9 @@ def separate_players(players, teams):
 
 
 def choose_picks(players):
+    if not players:
+        logger.info("No players found, returning empty picks")
+        return []
     # get the top pick from each tims {1,2,3}
     tims_picks = {}
     for player in players:
@@ -321,24 +325,24 @@ def choose_picks(players):
 
 def write_historic_db(picks):
     today = get_date()
-    for player in picks:
-        player["date"] = today
-        player["player_id"] = player.pop("id")
+    if picks:
+        for player in picks:
+            player["date"] = today
+            player["player_id"] = player.pop("id")
 
     old_entries = get_historical_data()
-    table = {}
+    table = defaultdict(list)
     for entry in old_entries:
-        if entry["date"] not in table:
-            table[entry["date"]] = []
         table[entry["date"]].append((entry["player_id"], entry["Scored"]))
     if today in table.keys():
         logger.info(f"Today already in table: {table[today]}")
         return
 
-    while len(table) >= DAYS_TO_KEEP_HISTORIC_DATA:
-        last_date = min(table.keys())
-        table.pop(last_date)
-    old_entries = [entry for entry in old_entries if entry["date"] in table.keys()]
+    if picks:
+        while len(table) >= DAYS_TO_KEEP_HISTORIC_DATA:
+            last_date = min(table.keys())
+            table.pop(last_date)
+        old_entries = [entry for entry in old_entries if entry["date"] in table.keys()]
 
     dates_no_scored = [
         date for date in table.keys() if date and any(scored is None for _, scored in table[date]) and date < today
@@ -346,7 +350,7 @@ def write_historic_db(picks):
     logger.info(f"Updating scored column for dates: {dates_no_scored}")
     for date in dates_no_scored:
         response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATE", "date": date})
-        body = response.get("body", [])
+        body = response.get("body", "[]")
         players = json.loads(body)
 
         player_table = {player["id"]: player for player in players}
@@ -357,6 +361,6 @@ def write_historic_db(picks):
                 if player:
                     entry["Scored"] = int(player["scored"])
 
-    data = old_entries + picks
+    data = old_entries + picks if picks else old_entries
     update_historical_data(data)
     return

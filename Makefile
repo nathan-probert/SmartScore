@@ -20,6 +20,11 @@ test:
 
 .PHONY: compile
 compile:
+	@$(MAKE) compile_rust
+	@$(MAKE) compile_c
+
+.PHONY: compile_c
+compile_c:
 	@echo "Compiling C code"
 	@gcc -Wall -std=c99 -shared -o smartscore/compiled_code.so -fPIC smartscore/C/main.c
 
