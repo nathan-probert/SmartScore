@@ -11,20 +11,32 @@ from postgrest.exceptions import APIError
 from config import ENV, SUPABASE_CLIENT
 
 logger = Logger()
-lambda_client = boto3.client("lambda")
-sts_client = boto3.client("sts")
-events_client = boto3.client("events")
-ssm_client = boto3.client("ssm")
+
+
+def get_lambda_client():
+    return boto3.client("lambda")
+
+
+def get_sts_client():
+    return boto3.client("sts")
+
+
+def get_events_client():
+    return boto3.client("events")
+
+
+def get_ssm_client():
+    return boto3.client("ssm")
 
 
 def invoke_lambda(function_name, payload, wait=True):
     session = boto3.session.Session()
     region = session.region_name
-    account_id = sts_client.get_caller_identity()["Account"]
+    account_id = get_sts_client.get_caller_identity()["Account"]
     invocation_type = "RequestResponse" if wait else "Event"
 
     function_arn = f"arn:aws:lambda:{region}:{account_id}:function:{function_name}"
-    response = lambda_client.invoke(
+    response = get_lambda_client.invoke(
         FunctionName=function_arn, InvocationType=invocation_type, Payload=json.dumps(payload)
     )
     if wait:
@@ -107,7 +119,7 @@ def schedule_run(times):
 
         rule_name = f"TriggerStateMachineAt_{trigger_time.strftime('%Y%m%d%H%M')}-{ENV}"
 
-        events_client.put_rule(
+        get_events_client.put_rule(
             Name=rule_name,
             ScheduleExpression=cron_schedule,
             State="ENABLED",
@@ -115,15 +127,15 @@ def schedule_run(times):
 
         session = boto3.session.Session()
         region = session.region_name
-        account_id = sts_client.get_caller_identity()["Account"]
+        account_id = get_sts_client.get_caller_identity()["Account"]
 
         sm_name = f"GetAllPlayersStateMachine-{ENV}"
         state_machine_arn = f"arn:aws:states:{region}:{account_id}:stateMachine:{sm_name}"
 
-        parameter = ssm_client.get_parameter(Name=f"/event_bridge_role/arn/{ENV}")
+        parameter = get_ssm_client.get_parameter(Name=f"/event_bridge_role/arn/{ENV}")
         role_arn = parameter["Parameter"]["Value"]
 
-        events_client.put_targets(
+        get_events_client.put_targets(
             Rule=rule_name,
             Targets=[
                 {

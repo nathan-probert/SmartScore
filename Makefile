@@ -8,6 +8,13 @@ install:
 	@echo Installing all dev dependencies
 	@poetry install --with dev
 
+.PHONY: check-ci
+check-ci:
+	@echo "Checking CI configuration"
+	@$(MAKE) compile
+	@$(MAKE) lint
+	@$(MAKE) test
+
 .PHONY: lint
 lint:
 	@echo "Linting code"
