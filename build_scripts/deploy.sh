@@ -124,8 +124,20 @@ deploy_state_machine() {
   local STATE_MACHINE_ARN="arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME"
 
   # Ensure required env vars exist
-  if [ -z "$AWS_REGION" ] || [ -z "$AWS_ACCOUNT_ID" ] || [ -z "$ENV" ] || [ -z "$STACK_NAME" ]; then
-    echo "Missing one or more required env vars: AWS_REGION, AWS_ACCOUNT_ID, ENV, STACK_NAME"
+  if [ -z "$AWS_REGION" ]; then
+    echo "Error: AWS_REGION environment variable is not set."
+    exit 1
+  fi
+  if [ -z "$AWS_ACCOUNT_ID" ]; then
+    echo "Error: AWS_ACCOUNT_ID environment variable is not set."
+    exit 1
+  fi
+  if [ -z "$ENV" ]; then
+    echo "Error: ENV environment variable is not set."
+    exit 1
+  fi
+  if [ -z "$STACK_NAME" ]; then
+    echo "Error: STACK_NAME environment variable is not set."
     exit 1
   fi
 
