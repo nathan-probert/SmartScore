@@ -1,7 +1,14 @@
+import atexit
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# Patch supabase.create_client globally for all tests to avoid real client creation and key validation
+patcher = patch("supabase.create_client", return_value=MagicMock())
+patcher.start()
+atexit.register(patcher.stop)
+
 
 # Set dummy AWS credentials and config to prevent real AWS calls.
 os.environ["AWS_ACCESS_KEY_ID"] = "mocking_key_id"
