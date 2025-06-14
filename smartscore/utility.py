@@ -13,20 +13,31 @@ from config import ENV, SUPABASE_CLIENT
 logger = Logger()
 
 
+_boto3_clients = {}
+
+
 def get_lambda_client():
-    return boto3.client("lambda")
+    if "lambda" not in _boto3_clients:
+        _boto3_clients["lambda"] = boto3.client("lambda")
+    return _boto3_clients["lambda"]
 
 
 def get_sts_client():
-    return boto3.client("sts")
+    if "sts" not in _boto3_clients:
+        _boto3_clients["sts"] = boto3.client("sts")
+    return _boto3_clients["sts"]
 
 
 def get_events_client():
-    return boto3.client("events")
+    if "events" not in _boto3_clients:
+        _boto3_clients["events"] = boto3.client("events")
+    return _boto3_clients["events"]
 
 
 def get_ssm_client():
-    return boto3.client("ssm")
+    if "ssm" not in _boto3_clients:
+        _boto3_clients["ssm"] = boto3.client("ssm")
+    return _boto3_clients["ssm"]
 
 
 def invoke_lambda(function_name, payload, wait=True):
