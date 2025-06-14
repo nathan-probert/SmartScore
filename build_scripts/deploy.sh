@@ -3,13 +3,15 @@
 # one of {dev, prod}
 ENV=${ENV:-dev}  # If ENV is not set, default to "dev"
 
+AWS_REGION=${AWS_REGION:-us-east-1}
+
 MAX_ZIP_SIZE_MB=25
 
 SOURCE_DIR="smartscore"
 OUTPUT_DIR="output"
 
 STACK_NAME="SmartScore-$ENV"
-TEMPLATE_FILE="./template.yaml"
+TEMPLATE_FILE="./templates/template.yaml"
 
 KEY="$STACK_NAME.zip"
 
@@ -31,8 +33,6 @@ generate_smartscore_stack() {
     echo "Error: SUPABASE_URL or SUPABASE_API_KEY environment variables are not set."
     exit 1
   fi
-  echo "Supabase URL: ${SUPABASE_URL:0:5}..."
-  echo "Supabase API Key: ${SUPABASE_API_KEY:0:5}..."
 
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
@@ -115,6 +115,55 @@ update_lambda_code() {
 }
 
 
+deploy_state_machine() {
+  local NAME=$1
+  local DEFINITION_FILE=$2
+
+  local STATE_MACHINE_NAME="$NAME-$ENV"
+  local PATCHED_FILE="/tmp/${STATE_MACHINE_NAME}.json"
+  local STATE_MACHINE_ARN="arn:aws:states:$AWS_REGION:$AWS_ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME"
+
+  # Ensure required env vars exist
+  if [ -z "$AWS_REGION" ] || [ -z "$AWS_ACCOUNT_ID" ] || [ -z "$ENV" ] || [ -z "$STACK_NAME" ]; then
+    echo "Missing one or more required env vars: AWS_REGION, AWS_ACCOUNT_ID, ENV, STACK_NAME"
+    exit 1
+  fi
+
+  # Patch the definition file
+  envsubst < "$DEFINITION_FILE" > "$PATCHED_FILE"
+
+  # Get the role ARN from CloudFormation outputs
+  local ROLE_ARN=$(aws cloudformation describe-stacks \
+    --stack-name "$STACK_NAME" \
+    --query "Stacks[0].Outputs[?OutputKey=='StepFunctionExecutionRoleArn'].OutputValue" \
+    --output text)
+
+  if [ -z "$ROLE_ARN" ]; then
+    echo "Could not find StepFunctionExecutionRoleArn in stack outputs"
+    exit 1
+  fi
+
+  # Deploy the state machine
+  if aws stepfunctions describe-state-machine \
+      --state-machine-arn "$STATE_MACHINE_ARN" &>/dev/null; then
+    echo "Updating Step Function: $STATE_MACHINE_NAME..."
+    aws stepfunctions update-state-machine \
+      --state-machine-arn "$STATE_MACHINE_ARN" \
+      --definition file://"$PATCHED_FILE" \
+      --role-arn "$ROLE_ARN"
+  else
+    echo "Creating Step Function: $STATE_MACHINE_NAME..."
+    aws stepfunctions create-state-machine \
+      --name "$STATE_MACHINE_NAME" \
+      --definition file://"$PATCHED_FILE" \
+      --role-arn "$ROLE_ARN" \
+      --type STANDARD
+  fi
+
+  echo "Step Function '$STATE_MACHINE_NAME' deployed successfully."
+}
+
+
 # main
 
 # create empty output directory
@@ -159,3 +208,8 @@ generate_smartscore_stack
 
 # update the Lambda function code
 update_lambda_code
+
+# deploy Step Functions
+echo "Deploying Step Functions..."
+deploy_state_machine "PlayerProcessingPipeline" "templates/player_processing_pipeline.asl.json"
+deploy_state_machine "GetPlayers" "templates/get_players.asl.json"

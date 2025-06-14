@@ -1,9 +1,6 @@
 import make_predictions_rust
-from smartscore.service import get_min_max
 
-
-def test_predict():
-    assert 1 == 1
+from service import get_min_max
 
 
 def get_rust_weights():

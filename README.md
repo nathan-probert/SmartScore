@@ -19,10 +19,20 @@ The current method for calculating the probability takes into account a variety 
 First install all necessary packages:<br/>
 ```make local-setup```<br/>
 
-Deploy to AWS using:<br />
-```sh build_scripts/deploy.sh```<br/>
-*If you are on windows, ensure Docker is running with the image: "public.ecr.aws/amazonlinux/amazonlinux:2".*<br/>
-*Also ensure you have adjusted the path in build_scripts/compile.sh to match your local path.*
+Deploy to AWS:
+*   **On Linux/macOS:**
+    ```bash
+    bash build_scripts/deploy.sh
+    ```
+    Or make it executable (`chmod +x build_scripts/deploy.sh`) and run:
+    ```bash
+    ./build_scripts/deploy.sh
+    ```
+*   **On Windows (using Git Bash or similar):**
+    ```bash
+    sh build_scripts/deploy.sh
+    ```
+*If you are on windows, ensure Docker is running with the image: "public.ecr.aws/amazonlinux/amazonlinux:2".*
 <br/><br/>
 
 *Note: This program is intended for informational purposes only and does not facilitate actual betting. Users should exercise their own judgment and discretion when using the provided suggestions for betting purposes.*
@@ -44,5 +54,5 @@ Deploy to AWS using:<br />
 - **Time on Ice** → Covered by GPG.  
 - **Shots Per Game** → Covered by GPG.  
 - **Shot Percentage** → Covered by GPG.  
-- **Other Team's Penalty Minutes** → Covered by OTSHGA.  
+- **Other Team's Penalty Minutes** → Covered by OTSHGA.
 

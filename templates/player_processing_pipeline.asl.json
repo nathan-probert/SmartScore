@@ -1,0 +1,102 @@
+{
+    "Comment": "A state machine to handle all player processing, predictions, and publishing.",
+    "StartAt": "GetDate",
+    "States": {
+        "GetDate": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:CheckCompleted-${ENV}",
+            "Next": "CheckCompletion"
+        },
+        "CheckCompletion": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.completed",
+                    "BooleanEquals": true,
+                    "Next": "GetTims"
+                },
+                {
+                    "Variable": "$.completed",
+                    "BooleanEquals": false,
+                    "Next": "Backfill"
+                }
+            ]
+        },
+        "Backfill": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:PerformBackfilling-${ENV}",
+            "Next": "GetPlayersStateMachine"
+        },
+        "GetPlayersStateMachine": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::states:startExecution.sync",
+            "Parameters": {
+                "StateMachineArn": "arn:aws:states:${AWS_REGION}:${AWS_ACCOUNT_ID}:stateMachine:GetPlayers-${ENV}",
+                "Input": {
+                    "input.$": "$"
+                }
+            },
+            "ResultSelector": {
+            "players.$": "States.StringToJson($.Output)"
+            },
+            "ResultPath": "$",
+            "Next": "CheckIfPlayersOutputIsEmpty"
+        },
+        "CheckIfPlayersOutputIsEmpty": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.players[0]",
+                    "IsPresent": false,
+                    "Next": "UpdateHistory"
+                }
+            ],
+            "Default": "MakePredictions"
+        },
+        "MakePredictions": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:MakePredictions-${ENV}",
+            "Next": "GetTims"
+        },
+        "GetTims": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTims-${ENV}",
+            "Next": "CheckInitialRun"
+        },
+    "CheckInitialRun": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.is_initial_run",
+                    "BooleanEquals": true,
+                    "Next": "SaveToDb"
+                },
+                {
+                    "Variable": "$.is_initial_run",
+                    "BooleanEquals": false,
+                    "Next": "PublishToDb"
+                }
+            ]
+        },
+        "SaveToDb": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:Api-${ENV}",
+            "Parameters": {
+                "players.$": "$.players",
+                "date.$": "$.date",
+                "method": "POST_BATCH"
+            },
+            "Next": "UpdateHistory"
+        },
+        "UpdateHistory": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:UpdateHistory-${ENV}",
+            "Next": "PublishToDb"
+        },
+        "PublishToDb": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:PublishDb-${ENV}",
+            "End": true
+        }
+    }
+}

@@ -27,3 +27,9 @@ repos:
         args:
           - '--config=./pyproject.toml'
         pass_filenames: false
+      - id: asl-lint
+        name: asl-lint
+        entry: poetry run statelint
+        language: system
+        types: [json]
+        files: ^templates/.*\.asl\.json$

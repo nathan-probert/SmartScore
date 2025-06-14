@@ -188,10 +188,7 @@ def handle_parse_teams(event, context):
 
     all_players = separate_players(players, teams)
 
-    return {
-        "statusCode": 200,
-        "players": all_players,
-    }
+    return all_players
 
 
 @lambda_handler_error_responder
