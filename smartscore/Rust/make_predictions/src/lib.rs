@@ -212,7 +212,7 @@ fn predict(py: Python, mut players: Vec<PlayerInfo>, min_max: MinMax, weights: W
     normalize_stats(&mut players, &min_max);
     calculate_probabilities(&players, &mut probabilities, &weights);
 
-    Ok(probabilities.into_py(py))
+    Ok(probabilities.into_pyobject(py)?.into_any().unbind())
 }
 
 
