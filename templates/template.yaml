@@ -217,7 +217,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub "CheckCompleted-${ENV}"
-      Handler: event_handler.handle_check_completed
+      Handler: event_handler.handle_get_saved_players
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
       Timeout: 30

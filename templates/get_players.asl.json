@@ -56,7 +56,7 @@
       },
       "ResultPath": "$",
       "Next": "ParseData"
-    },    
+    },
     "ParseData": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:ParseData-${ENV}",

@@ -31,6 +31,7 @@ LAMBDA_FUNCTIONS=(
 generate_smartscore_stack() {
   if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_API_KEY" ]; then
     echo "Error: SUPABASE_URL or SUPABASE_API_KEY environment variables are not set."
+    echo "Run \`export \$(grep -v '^#' .env | xargs)\` to export all env variables from .env file."
     exit 1
   fi
 

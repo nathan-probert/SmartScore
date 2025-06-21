@@ -131,6 +131,10 @@ def get_min_max():
 
 
 def make_predictions_teams(players):
+    if not players:
+        logger.info("No players found, returning empty list")
+        return []
+
     rust_players = []
     for player in players:
         rust_players.append(

@@ -57,8 +57,14 @@ def invoke_lambda(function_name, payload, wait=True):
 
 
 def get_tims_players():
-    response = exponential_backoff_request("https://api.hockeychallengehelper.com/api/picks?")
-    allPlayers = response["playerLists"]
+    allPlayers = []
+    try:
+        response = exponential_backoff_request("https://api.hockeychallengehelper.com/api/picks?")
+        allPlayers = response["playerLists"]
+    except requests.exceptions.RequestException as e:
+        if e.response.status_code == requests.codes.not_found:
+            return None
+        raise e
 
     ids = []
     for groupNum in range(3):
@@ -200,6 +206,9 @@ def exponential_backoff_request(url, method="get", data=None, json_data=None, ma
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
+            if e.response is not None and e.response.status_code == requests.codes.not_found:
+                logger.error(f"Request failed with 404: {e}. Not retrying.")
+                raise e
             wait_time = base_delay * (2**attempt)
             print(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time} seconds...")
             time.sleep(wait_time)

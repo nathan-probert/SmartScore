@@ -42,9 +42,9 @@ def handle_backfill(event, context):
 
 
 @lambda_handler_error_responder
-def handle_check_completed(event, context):
+def handle_get_saved_players(event, context):
     """
-    Checks if the data has been previously retrieved for the day.
+    Checks if the data has been previously retrieved for the day and retrieves it.
 
     Args:
         event (dict): Unused event data.
@@ -52,16 +52,12 @@ def handle_check_completed(event, context):
 
     Returns:
         dict: A dictionary containing:
-            - "statusCode" (int): HTTP status code.
-            - "completed" (bool): Whether data has already been retrieved.
+            - "initial_run" (bool): Whether data has already been retrieved.
             - "players" (list | None): Retrieved player data, if available.
     """
     entries = check_db_for_date()
-    completed = False
-    if entries:
-        completed = True
 
-    return {"statusCode": 200, "completed": completed, "players": entries}
+    return {"players": entries, "initial_run": entries is None}
 
 
 @lambda_handler_error_responder
@@ -146,7 +142,8 @@ def handle_get_tims(event, context):
             - "is_initial_run" (bool): Whether this is the first run of the day.
     """
     players = event.get("players")
-    players = get_tims(players)
+    if players:
+        players = get_tims(players)
 
     # we only have completed property if this is not the first run
     initial_run = False if event.get("completed") else True
@@ -183,6 +180,16 @@ def handle_publish_db(event, context):
 
 @lambda_handler_error_responder
 def handle_parse_teams(event, context):
+    """
+    Parses the teams and players from the event data.
+
+    Args:
+        event (dict): A dictionary containing team data.
+        context (dict): Unused Lambda context.
+
+    Returns:
+        list: A list of PlayerInfo objects, each representing a player.
+    """
     players = [PlayerInfo(**player) for team in event for player in team.pop("players")]
     teams = [TeamInfo(**team) for team in event]
 
