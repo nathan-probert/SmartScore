@@ -29,6 +29,7 @@ LAMBDA_FUNCTIONS=(
 
 
 generate_smartscore_stack() {
+  export $(grep -v '^#' .env | xargs)
   if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_API_KEY" ]; then
     echo "Error: SUPABASE_URL or SUPABASE_API_KEY environment variables are not set."
     exit 1
@@ -218,10 +219,10 @@ generate_zip_file
 # create the CloudFormation stack for smartscore
 generate_smartscore_stack
 
-# update the Lambda function code
-update_lambda_code
-
 # deploy Step Functions
 echo "Deploying Step Functions..."
 deploy_state_machine "PlayerProcessingPipeline" "templates/player_processing_pipeline.asl.json"
 deploy_state_machine "GetPlayers" "templates/get_players.asl.json"
+
+# update the Lambda function code
+update_lambda_code

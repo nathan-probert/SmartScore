@@ -97,6 +97,39 @@ Resources:
                   - events:RemoveTargets
                 Resource: "*"
 
+  # Step Functions (placeholder definitions)
+  PlayerProcessingPipelineStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "PlayerProcessingPipeline-${ENV}"
+      RoleArn: !GetAtt StateMachineExecutionRole.Arn
+      DefinitionString: |
+        {
+          "StartAt": "Placeholder",
+          "States": {
+            "Placeholder": {
+              "Type": "Pass",
+              "End": true
+            }
+          }
+        }
+
+  GetPlayersStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "GetPlayers-${ENV}"
+      RoleArn: !GetAtt StateMachineExecutionRole.Arn
+      DefinitionString: |
+        {
+          "StartAt": "Placeholder",
+          "States": {
+            "Placeholder": {
+              "Type": "Pass",
+              "End": true
+            }
+          }
+        }
+
 
   # Lambda Functions
   GetTeamsFunction:
