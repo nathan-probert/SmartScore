@@ -1,7 +1,7 @@
 """
 Usage
 
-ENV=prod poetry run python smartscore/scripts/get_odds.py
+ENV=prod python smartscore/scripts/get_odds.py
 Use prod to access the product database as it will be kept up to date
 
 DOES NOT CURRENTLY TAKE INTO ACCOUNT THAT SOME GAMES MAY HAVE STARTED

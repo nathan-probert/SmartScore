@@ -1,12 +1,13 @@
+
 .PHONY: local-setup
 local-setup:
-	@echo Creating virtual environment
-	@poetry env activate
-	@$(MAKE) install
+	@echo Creating virtual environment and installing dependencies
+	@uv venv .venv
+	@uv pip install --system
 
 install:
 	@echo Installing all dev dependencies
-	@poetry install --with dev
+	@uv pip install --system
 
 .PHONY: check-ci
 check-ci:
@@ -15,15 +16,17 @@ check-ci:
 	@$(MAKE) lint
 	@$(MAKE) test
 
+
 .PHONY: lint
 lint:
 	@echo "Linting code"
-	@poetry run pre-commit run -a
+	@pre-commit run -a
+
 
 .PHONY: test
 test:
 	@echo "Running tests"
-	@poetry run pytest -v
+	@pytest -v
 
 .PHONY: compile
 compile:
@@ -35,17 +38,20 @@ compile_c:
 	@echo "Compiling C code"
 	@gcc -Wall -std=c99 -shared -o smartscore/compiled_code.so -fPIC smartscore/C/main.c
 
-.PHONE: compile_rust
+
+.PHONY: compile_rust
 compile_rust:
 	@echo "Compiling Rust code"
-	@poetry run maturin develop -r --manifest-path smartscore/Rust/make_predictions/Cargo.toml
+	@maturin develop -r --manifest-path smartscore/Rust/make_predictions/Cargo.toml
+
 
 .PHONY: get_odds
 get_odds:
 	@echo "Getting odds"
-	@ENV=prod poetry run python smartscore/scripts/get_odds.py
+	@ENV=prod python smartscore/scripts/get_odds.py
+
 
 .PHONY: watch_live
 watch_live:
 	@echo "Running live"
-	@poetry run python smartscore/scripts/live_updates.py
+	@python smartscore/scripts/live_updates.py
