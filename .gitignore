@@ -6,6 +6,7 @@ output/*
 smartscore/lib/*
 .vscode/*
 smartscore/Rust/make_predictions/target/*
+smartscore/Rust/weight_optimizer/target/*
 .env
 node_modules
 .venv
