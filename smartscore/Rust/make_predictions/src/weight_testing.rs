@@ -7,12 +7,12 @@ pub fn test_weights(_py: Python, mut players: Vec<PlayerInfo>, min_max: crate::d
     let mut max_correct = -1;
     let mut best_weights = <Weights as Default>::default();
     let mut best_total = 0;
-    let total_combinations = weight_combinations.len();
-    let mut last_progress = 0;
+    let _total_combinations = weight_combinations.len();
+    let _last_progress = 0;
 
     normalize_stats(&mut players, &min_max);
 
-    for (i, weights) in weight_combinations.iter().enumerate() {
+    for (_i, weights) in weight_combinations.iter().enumerate() {
         let mut probabilities = vec![0.0; players.len()];
         calculate_probabilities(&players, &mut probabilities, &weights);
 
@@ -56,8 +56,10 @@ pub fn evaluate_correctness_with_total(players: &[PlayerInfo], probabilities: &[
         }
 
         // Only consider TIMS picks for predictions
-        if player.tims >= 1 && player.tims <= 3 {
-            current_date_players.push(i);
+        if let Some(tims) = player.tims {
+            if tims >= 1 && tims <= 3 {
+                current_date_players.push(i);
+            }
         }
     }
 
@@ -78,15 +80,17 @@ pub fn process_date_predictions(player_indices: &[usize], players: &[PlayerInfo]
     for &player_idx in player_indices.iter() {
         let player = &players[player_idx];
         let prob = probabilities[player_idx];
-        let group_idx = (player.tims - 1) as usize;
+        if let Some(tims) = player.tims {
+            let group_idx = (tims - 1) as usize;
 
-        if group_idx < 3 {
-            match &selected_players[group_idx] {
-                None => selected_players[group_idx] = Some((player_idx, prob)),
-                Some((_, current_prob)) if prob > *current_prob => {
-                    selected_players[group_idx] = Some((player_idx, prob));
+            if group_idx < 3 {
+                match &selected_players[group_idx] {
+                    None => selected_players[group_idx] = Some((player_idx, prob)),
+                    Some((_, current_prob)) if prob > *current_prob => {
+                        selected_players[group_idx] = Some((player_idx, prob));
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
@@ -94,8 +98,10 @@ pub fn process_date_predictions(player_indices: &[usize], players: &[PlayerInfo]
     // Count correct predictions and total predictions made
     for selected in selected_players.iter() {
         if let Some((player_idx, _)) = selected {
-            if players[*player_idx].scored > 0.0 {
-                correct += 1;
+            if let Some(scored) = players[*player_idx].scored {
+                if scored > 0.0 {
+                    correct += 1;
+                }
             }
         }
     }

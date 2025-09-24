@@ -24,18 +24,34 @@ pub struct PlayerInfo {
     #[pyo3(get, set)]
     pub hppg_otshga: f32,
     #[pyo3(get, set)]
-    pub scored: f32,
+    pub scored: Option<f32>,
     #[pyo3(get, set)]
-    pub tims: i32,
+    pub tims: Option<i32>,
     #[pyo3(get, set)]
-    pub date: String,
+    pub date: Option<String>,
 }
 
 #[pymethods]
 impl PlayerInfo {
     #[new]
-    pub fn new(gpg: f32, hgpg: f32, five_gpg: f32, tgpg: f32, otga: f32, hppg: f32,
-               otshga: f32, is_home: f32, hppg_otshga: f32, scored: f32, tims: i32, date: String) -> Self {
+    #[pyo3(signature = (
+        gpg, hgpg, five_gpg, tgpg, otga, hppg, otshga, is_home, hppg_otshga,
+        scored=None, tims=None, date=None
+    ))]
+    pub fn new(
+        gpg: f32,
+        hgpg: f32,
+        five_gpg: f32,
+        tgpg: f32,
+        otga: f32,
+        hppg: f32,
+        otshga: f32,
+        is_home: f32,
+        hppg_otshga: f32,
+        scored: Option<f32>,
+        tims: Option<i32>,
+        date: Option<String>
+    ) -> Self {
         Self {
             gpg,
             hgpg,
@@ -57,7 +73,7 @@ impl PlayerInfo {
         Self {
             gpg: 0.0, hgpg: 0.0, five_gpg: 0.0, tgpg: 0.0,
             otga: 0.0, hppg: 0.0, otshga: 0.0, is_home: 0.0,
-            hppg_otshga: 0.0, scored: 0.0, tims: 0, date: "".to_string(),
+            hppg_otshga: 0.0, scored: None, tims: None, date: None,
         }
     }
 }
