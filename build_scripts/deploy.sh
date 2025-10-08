@@ -74,6 +74,15 @@ generate_smartscore_stack() {
   fi
 
   echo "CloudFormation stack $STACK_NAME completed successfully with status: $STACK_STATUS."
+
+  # Get the EventBridge Invoke Role ARN from stack outputs and store in SSM
+  EVENTBRIDGE_ROLE_ARN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='EventBridgeInvokeRoleArn'].OutputValue" --output text)
+  if [ -n "$EVENTBRIDGE_ROLE_ARN" ] && [ "$EVENTBRIDGE_ROLE_ARN" != "None" ]; then
+    aws ssm put-parameter --name "/event_bridge_role/arn/$ENV" --value "$EVENTBRIDGE_ROLE_ARN" --type String --overwrite
+    echo "Stored EventBridge Invoke Role ARN in SSM parameter /event_bridge_role/arn/$ENV"
+  else
+    echo "Warning: Could not retrieve EventBridgeInvokeRoleArn from stack outputs"
+  fi
 }
 
 
