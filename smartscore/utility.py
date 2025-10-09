@@ -140,7 +140,7 @@ def schedule_run(times):
         region = session.region_name
         account_id = get_sts_client().get_caller_identity()["Account"]
 
-        sm_name = f"GetAllPlayersStateMachine-{ENV}"
+        sm_name = f"PlayerProcessingPipeline-{ENV}"
         state_machine_arn = f"arn:aws:states:{region}:{account_id}:stateMachine:{sm_name}"
 
         parameter = get_ssm_client().get_parameter(Name=f"/event_bridge_role/arn/{ENV}")

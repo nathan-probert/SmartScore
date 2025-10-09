@@ -394,3 +394,6 @@ Outputs:
   StepFunctionExecutionRoleArn:
     Description: IAM role ARN to be used by Step Functions
     Value: !GetAtt StateMachineExecutionRole.Arn
+  EventBridgeInvokeRoleArn:
+    Description: IAM role ARN for EventBridge to invoke Step Functions
+    Value: !GetAtt EventBridgeInvokeRole.Arn
