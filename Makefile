@@ -39,6 +39,7 @@ compile_c:
 compile_rust:
 	@echo "Compiling Rust code"
 	@poetry run maturin develop -r --manifest-path smartscore/Rust/make_predictions/Cargo.toml
+	@poetry run maturin develop -r --manifest-path smartscore/Rust/test_weights/Cargo.toml
 
 .PHONY: get_odds
 get_odds:

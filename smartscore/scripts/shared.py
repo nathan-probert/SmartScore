@@ -11,7 +11,7 @@ PATH = "smartscore\\lib"
 DATA_PATH = f"{PATH}\\data.csv"
 
 # FEATURES = ["gpg", "hgpg", "five_gpg", "tgpg", "otga"]
-FEATURES = ["gpg", "hgpg", "five_gpg", "tgpg", "otga", "hppg", "otshga", "is_home"]
+FEATURES = ["gpg", "hgpg", "five_gpg", "tgpg", "otga", "hppg", "otshga", "home"]
 
 
 def invoke_lambda(function_name, payload, wait=True):
