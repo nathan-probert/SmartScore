@@ -6,6 +6,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import make_predictions_rust
 from shared import get_data
+
 from service import get_min_max
 
 
@@ -76,14 +77,12 @@ def main():
     #     is_home=0.0,
     # )
 
-
     # Get players with names
     all_players_with_names = get_players_with_names()
 
     # Filter players who have scoring data
     filtered_players_with_names = [
-        (player, name) for player, name in all_players_with_names
-        if player.scored in {0.0, 1.0}
+        (player, name) for player, name in all_players_with_names if player.scored in {0.0, 1.0}
     ]
 
     # Create min_max object
@@ -92,15 +91,15 @@ def main():
 
     # Separate players and names
     filtered_players = [player for player, name in filtered_players_with_names]
-    names = [name for player, name in filtered_players_with_names]
 
     # Get probabilities for all players at once
     probabilities = make_predictions_rust.predict(filtered_players, min_max_obj, weights)
 
     # Group players by date and tims group
     from collections import defaultdict
+
     date_tims_groups = defaultdict(lambda: defaultdict(list))
-    
+
     for (player, name), probability in zip(filtered_players_with_names, probabilities):
         if player.tims in {1, 2, 3}:
             date_tims_groups[player.date][player.tims].append((player, name, probability))
@@ -113,7 +112,7 @@ def main():
     all_selected_players = []
     for date in sorted(date_tims_groups.keys()):
         tims_groups = date_tims_groups[date]
-        
+
         # For each tims group, get the player with highest probability
         selected_players = []
         for tims_group in [1, 2, 3]:
@@ -121,10 +120,10 @@ def main():
                 # Sort by probability descending and take the top one
                 top_player = max(tims_groups[tims_group], key=lambda x: x[2])
                 selected_players.append(top_player)
-        
+
         # Sort selected players by probability descending
         selected_players.sort(key=lambda x: x[2], reverse=True)
-        
+
         for player, name, probability in selected_players:
             scored_tf = "T" if player.scored == 1.0 else "F"
             print(f"{date:<12} {name:<20} {probability:<12.2f} {scored_tf:<12} {player.tims:<8}")
@@ -134,15 +133,21 @@ def main():
     total_picks = len(all_selected_players)
     correct_picks = sum(1 for player, _, _ in all_selected_players if player.scored == 1.0)
     correct_percentage = (correct_picks / total_picks * 100) if total_picks > 0 else 0
-    
+
     print(f"\n{'='*80}")
-    print(f"FINAL RESULTS:")
+    print("FINAL RESULTS:")
     print(f"Total picks: {total_picks}")
     print(f"Correct picks: {correct_picks}")
     print(f"Correct pick percentage: {correct_percentage:.1f}%")
     print(f"{'='*80}")
 
-    print(f"\nHardcoded weights used: gpg={weights.gpg:.2f}, hgpg={weights.hgpg:.2f}, five_gpg={weights.five_gpg:.2f}, tgpg={weights.tgpg:.2f}, otga={weights.otga:.2f}, is_home={weights.is_home:.2f}, hppg_otshga={weights.hppg_otshga:.2f}")
+    print(
+        f"\nHardcoded weights used: "
+        f"gpg={weights.gpg:.2f}, hgpg={weights.hgpg:.2f}, "
+        f"five_gpg={weights.five_gpg:.2f}, tgpg={weights.tgpg:.2f}, "
+        f"otga={weights.otga:.2f}, is_home={weights.is_home:.2f}, "
+        f"hppg_otshga={weights.hppg_otshga:.2f}"
+    )
 
 
 if __name__ == "__main__":
