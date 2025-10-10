@@ -147,26 +147,26 @@ def make_predictions_teams(players):
             )
         )
 
-    # experimental weights
-    weights = {
-        "gpg": 0.6,
-        "five_gpg": 0.06,
-        "hgpg": 0.0,
-        "tgpg": 0.02,
-        "otga": 0.16,
-        "hppg_otshga": 0.02,
-        "is_home": 0.14,
-    }
+    # old weights
+    # weights = make_predictions_rust.Weights(
+    #     gpg=0.3,
+    #     five_gpg=0.4,
+    #     hgpg=0.3,
+    #     tgpg=0.0,
+    #     otga=0.0,
+    #     hppg_otshga=0.0,
+    #     is_home=0.0,
+    # )
 
-    # rust weights
+    # New weights
     weights = make_predictions_rust.Weights(
-        gpg=0.3,
-        five_gpg=0.4,
-        hgpg=0.3,
+        gpg=0.76,
+        hgpg=0.06,
+        five_gpg=0.0,
         tgpg=0.0,
-        otga=0.0,
-        hppg_otshga=0.0,
-        is_home=0.0,
+        otga=0.04,
+        is_home=0.06,
+        hppg_otshga=0.08,
     )
     min_max_vals = get_min_max()
     min_max = make_predictions_rust.MinMax(
