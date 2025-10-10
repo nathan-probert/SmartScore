@@ -61,7 +61,7 @@ def get_data():
     choice = input().split()[0].lower()
     if choice == "y":
         create_csv()
-    data = pd.read_csv(DATA_PATH, encoding="utf-8")
+    data = pd.read_csv(DATA_PATH, encoding="utf-8", low_memory=False)
 
     # Clean the data
     for col in [col for col in data.columns if col not in ["date", "name"]]:
