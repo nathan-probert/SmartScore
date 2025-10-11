@@ -118,14 +118,15 @@ def get_min_max():
     # min_max = data.get("body", {})
 
     # hardcoding min_max for now
+    # Generate on October 11, 2025
     min_max = {
-        "gpg": {"min": 0.0, "max": 2.0},
+        "gpg": {"min": 0.0, "max": 3.0},
         "hgpg": {"min": 0.0, "max": 2.0},
         "five_gpg": {"min": 0.0, "max": 2.0},
-        "tgpg": {"min": 0.0, "max": 4.0},
-        "otga": {"min": 0.0, "max": 4.0},
-        "otshga": {"min": 0.0, "max": 1.12},
-        "hppg": {"min": 0.0, "max": 0.314},
+        "tgpg": {"min": 0.0, "max": 8.0},
+        "otga": {"min": 0.0, "max": 8.0},
+        "otshga": {"min": 0.0, "max": 2.0},
+        "hppg": {"min": 0.0, "max": 1.0},
     }
     return min_max
 
