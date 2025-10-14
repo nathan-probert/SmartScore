@@ -1,5 +1,6 @@
-from config import ENV
 import make_predictions_rust
+
+from config import ENV
 
 DRAFTKINGS_NHL_ID = 42133
 DRAFTKINGS_GOAL_SCORER_CATEGORY = 1190
@@ -35,8 +36,8 @@ DAYS_TO_KEEP_HISTORIC_DATA = 7
 
 # For the start of the season, we will temporiarly increase the weight of hgpg
 WEIGHTS = make_predictions_rust.Weights(
-    gpg=0.76-0.3,
-    hgpg=0.06+0.3,
+    gpg=0.76 - 0.3,
+    hgpg=0.06 + 0.3,
     five_gpg=0.0,
     tgpg=0.0,
     otga=0.04,
