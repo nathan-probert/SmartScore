@@ -25,6 +25,8 @@ LAMBDA_FUNCTIONS=(
   "CheckCompleted-$ENV"
   "ParseData-$ENV"
   "UpdateHistory-$ENV"
+  "ScrapeInjuriesFunction-$ENV"
+  "FilterInjuredPlayersFunction-$ENV"
 )
 
 

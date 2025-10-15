@@ -7,7 +7,9 @@ from service import (
     backfill_dates,
     check_db_for_date,
     choose_picks,
+    filter_players_by_injuries,
     get_date,
+    get_injury_data,
     get_players_from_team,
     get_teams,
     get_tims,
@@ -203,3 +205,45 @@ def handle_save_historic_db(event, context):
     write_historic_db(picks)
 
     return {"statusCode": 200, "players": players}
+
+
+@lambda_handler_error_responder
+def handle_scrape_injuries(event, context):
+    """
+    Scrape current injury data from RotoWire.
+
+    Args:
+        event (dict): Unused event data.
+        context (dict): Unused Lambda context.
+
+    Returns:
+        dict: A dictionary containing injury data.
+    """
+    injuries = get_injury_data()
+
+    return {"statusCode": 200, "injuries": injuries, "count": len(injuries)}
+
+
+@lambda_handler_error_responder
+def handle_filter_injured_players(event, context):
+    """
+    Filter out injured players from the player list.
+
+    Args:
+        event (dict): Event data containing players and injuries.
+        context (dict): Unused Lambda context.
+
+    Returns:
+        dict: A dictionary containing filtered players.
+    """
+    players = event.get("players", [])
+    injuries = event.get("injuries", [])
+
+    filtered_players = filter_players_by_injuries(players, injuries)
+
+    return {
+        "statusCode": 200,
+        "players": filtered_players,
+        "original_count": len(players),
+        "filtered_count": len(filtered_players),
+    }

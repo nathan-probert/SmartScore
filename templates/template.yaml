@@ -302,7 +302,45 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
-          
+
+  ScrapeInjuriesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "ScrapeInjuries-${ENV}"
+      Handler: event_handler.handle_scrape_injuries
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 60
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
+
+  FilterInjuredPlayersFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "FilterInjuredPlayers-${ENV}"
+      Handler: event_handler.handle_filter_injured_players
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
+
   # IAM Role for EventBridge to invoke Step Function
   EventBridgeInvokeRole:
     Type: AWS::IAM::Role
@@ -388,6 +426,18 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/UpdateHistory-${ENV}"
+      RetentionInDays: 1
+
+  ScrapeInjuriesLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/ScrapeInjuries-${ENV}"
+      RetentionInDays: 1
+
+  FilterInjuredPlayersLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/FilterInjuredPlayers-${ENV}"
       RetentionInDays: 1
 
 Outputs:
