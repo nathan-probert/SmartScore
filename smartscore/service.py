@@ -9,7 +9,7 @@ from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, Playe
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
 from config import ENV
-from constants import DAYS_TO_KEEP_HISTORIC_DATA, LAMBDA_API_NAME
+from constants import DAYS_TO_KEEP_HISTORIC_DATA, LAMBDA_API_NAME, WEIGHTS
 from utility import (
     exponential_backoff_request,
     get_historical_data,
@@ -147,27 +147,6 @@ def make_predictions_teams(players):
             )
         )
 
-    # old weights
-    # weights = make_predictions_rust.Weights(
-    #     gpg=0.3,
-    #     five_gpg=0.4,
-    #     hgpg=0.3,
-    #     tgpg=0.0,
-    #     otga=0.0,
-    #     hppg_otshga=0.0,
-    #     is_home=0.0,
-    # )
-
-    # New weights
-    weights = make_predictions_rust.Weights(
-        gpg=0.76,
-        hgpg=0.06,
-        five_gpg=0.0,
-        tgpg=0.0,
-        otga=0.04,
-        is_home=0.06,
-        hppg_otshga=0.08,
-    )
     min_max_vals = get_min_max()
     min_max = make_predictions_rust.MinMax(
         min_gpg=min_max_vals["gpg"]["min"],
@@ -185,7 +164,7 @@ def make_predictions_teams(players):
         min_otshga=min_max_vals["otshga"]["min"],
         max_otshga=min_max_vals["otshga"]["max"],
     )
-    rust_probabilities = make_predictions_rust.predict(rust_players, min_max, weights)
+    rust_probabilities = make_predictions_rust.predict(rust_players, min_max, WEIGHTS)
     for i, player in enumerate(players):
         player["stat"] = rust_probabilities[i]
 
