@@ -191,9 +191,9 @@ def exponential_backoff_request(url, method="get", data=None, json_data=None, ma
     for attempt in range(max_retries):
         try:
             if method == "get":
-                response = requests.get(url, timeout=5)
+                response = requests.get(url, timeout=10)
             elif method == "post":
-                response = requests.post(url, data=data, json=json_data, timeout=5)
+                response = requests.post(url, data=data, json=json_data, timeout=10)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 

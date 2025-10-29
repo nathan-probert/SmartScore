@@ -40,6 +40,14 @@
             "players.$": "States.StringToJson($.Output)"
             },
             "ResultPath": "$",
+            "Retry": [
+                {
+                    "ErrorEquals": ["States.TaskFailed"],
+                    "IntervalSeconds": 1,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2
+                }
+            ],
             "Next": "CheckIfPlayersOutputIsEmpty"
         },
         "CheckIfPlayersOutputIsEmpty": {

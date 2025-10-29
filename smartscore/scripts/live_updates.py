@@ -35,7 +35,7 @@ def clear_terminal():
 
 def get_goal_scorers(game_id):
     URL = f"https://api-web.nhle.com/v1/wsc/game-story/{game_id}"
-    response = requests.get(URL, timeout=5).json()
+    response = requests.get(URL, timeout=10).json()
 
     cur_goal_scorers = {}
     for scoring_play in response.get("summary", {}).get("scoring", []):
@@ -99,7 +99,7 @@ def get_scoreboard():
     games = {}
 
     URL = "https://api-web.nhle.com/v1/scoreboard/now"
-    response = requests.get(URL, timeout=5).json()
+    response = requests.get(URL, timeout=10).json()
     today = get_date()
 
     for day in response.get("gamesByDate", []):
