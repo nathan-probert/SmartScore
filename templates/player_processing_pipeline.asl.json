@@ -45,7 +45,7 @@
                     "ErrorEquals": ["States.TaskFailed"],
                     "IntervalSeconds": 1,
                     "MaxAttempts": 3,
-                    "BackoffRate": 2
+                    "BackoffRate": 2.0
                 }
             ],
             "Next": "CheckIfPlayersOutputIsEmpty"
