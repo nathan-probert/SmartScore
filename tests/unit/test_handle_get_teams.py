@@ -12,15 +12,13 @@ def mock_get_todays_schedule():
         yield mock
 
 
-@patch("smartscore_info_client.schemas.team_info.requests.get")
+@patch("smartscore_info_client.schemas.team_info.exponential_backoff_request")
 @patch("service.schedule_run")
-def test_handle_get_1_game(mock_schedule_run, mock_team_info_requests_get, mock_get_todays_schedule):
+def test_handle_get_1_game(mock_schedule_run, mock_exponential_backoff_request, mock_get_todays_schedule):
     TeamInfo._class_data_summary = None
     TeamInfo._class_data_penalties = None
 
-    mock_nhl_api_response = MagicMock()
-    mock_nhl_api_response.json.return_value = {"data": []}
-    mock_team_info_requests_get.return_value = mock_nhl_api_response
+    mock_exponential_backoff_request.return_value = {"data": []}
 
     # Realistic mock_schedule_data that get_teams will process
     mock_schedule_data = {
@@ -82,15 +80,13 @@ def test_handle_get_1_game(mock_schedule_run, mock_team_info_requests_get, mock_
     assert response == expected_response
 
 
-@patch("smartscore_info_client.schemas.team_info.requests.get")
+@patch("smartscore_info_client.schemas.team_info.exponential_backoff_request")
 @patch("service.schedule_run")
-def test_handle_get_2_games(mock_schedule_run, mock_team_info_requests_get, mock_get_todays_schedule):
+def test_handle_get_2_games(mock_schedule_run, mock_exponential_backoff_request, mock_get_todays_schedule):
     TeamInfo._class_data_summary = None
     TeamInfo._class_data_penalties = None
 
-    mock_nhl_api_response = MagicMock()
-    mock_nhl_api_response.json.return_value = {"data": []}
-    mock_team_info_requests_get.return_value = mock_nhl_api_response
+    mock_exponential_backoff_request.return_value = {"data": []}
 
     # Realistic mock_schedule_data that get_teams will process
     mock_schedule_data = {
