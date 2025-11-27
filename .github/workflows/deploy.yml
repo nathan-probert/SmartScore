@@ -3,14 +3,16 @@ name: Deploy to AWS
 on:
   push:
     branches:
-      - feature/get-injuries
-
-env:
-  ENV: dev
+      - main
+  pull_request:
+    types: [labeled, synchronize, reopened]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy'))
+    env:
+      ENV: ${{ github.event_name == 'push' && 'prod' || 'dev' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
