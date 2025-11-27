@@ -5,7 +5,9 @@ from typing import Dict, List, Optional
 
 import make_predictions_rust
 import pytz
+import requests
 from aws_lambda_powertools import Logger
+from bs4 import BeautifulSoup
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
@@ -353,13 +355,14 @@ class InjuryScraper:
     PREVIEW_COUNT = 5
 
     def __init__(self):
-        # Delay session creation until runtime (requests may not be available
-        # at Lambda import time). Keep the user-agent stored for later use.
-        self.user_agent = (
+        self.session = requests.Session()
+        # Set a user agent to avoid being blocked
+        user_agent = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/91.0.4472.124 Safari/537.36"
         )
+        self.session.headers.update({"User-Agent": user_agent})
 
     def scrape_injuries(self) -> List[Dict[str, str]]:
         """
@@ -373,19 +376,8 @@ class InjuryScraper:
             - player_url: URL to player's page
             - status_url: URL to injury news article
         """
-        # Import requests and BeautifulSoup at runtime to avoid import-time
-        # dependency failures during Lambda code updates.
         try:
-            import requests
-            from bs4 import BeautifulSoup
-        except Exception as e:  # noqa: BLE001 - surface import problems clearly
-            logger.error("Required scraping libraries are missing: %s", e)
-            return []
-
-        try:
-            session = requests.Session()
-            session.headers.update({"User-Agent": self.user_agent})
-            response = session.get(self.BASE_URL)
+            response = self.session.get(self.BASE_URL)
             response.raise_for_status()
         except requests.RequestException as e:
             logger.error(f"Error fetching injury page: {e}")
