@@ -37,15 +37,17 @@
                 }
             },
             "ResultSelector": {
-            "players.$": "States.StringToJson($.Output)"
+                "players.$": "States.StringToJson($.Output)"
             },
             "ResultPath": "$",
             "Retry": [
                 {
-                    "ErrorEquals": ["States.TaskFailed"],
-                    "IntervalSeconds": 1,
+                    "ErrorEquals": [
+                        "States.TaskFailed"
+                    ],
+                    "IntervalSeconds": 60,
                     "MaxAttempts": 3,
-                    "BackoffRate": 2.0
+                    "BackoffRate": 5
                 }
             ],
             "Next": "CheckIfPlayersOutputIsEmpty"
@@ -71,7 +73,7 @@
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTims-${ENV}",
             "Next": "CheckInitialRun"
         },
-    "CheckInitialRun": {
+        "CheckInitialRun": {
             "Type": "Choice",
             "Choices": [
                 {
