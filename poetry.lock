@@ -1254,7 +1254,7 @@ files = [
 
 [[package]]
 name = "smartscore-info-client"
-version = "2.0.2"
+version = "2.1.0"
 description = ""
 optional = false
 python-versions = ">=3.9, <3.13"
@@ -1269,8 +1269,8 @@ requests = "^2.32.3"
 [package.source]
 type = "git"
 url = "https://github.com/nathan-probert/smartscore-info-client.git"
-reference = "v2.0.2"
-resolved_reference = "e0d9855218b61ad66433eb26e0481d95bb02d3a2"
+reference = "v2.1.0"
+resolved_reference = "2b4243605a4bb730c5b7d2bf50e10df3600f2a7b"
 
 [[package]]
 name = "sniffio"
@@ -1545,4 +1545,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12, <3.13"
-content-hash = "f4e3966414076a4c58f008d1d5484625b9a9df2b3b14ec9e1111a13d78e3dd4e"
+content-hash = "e0b76d4547e6a986587e7fa31865da98ac4c3291779af1b2862abc19033734f2"
