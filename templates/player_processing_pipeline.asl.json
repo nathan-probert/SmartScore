@@ -47,7 +47,7 @@
                     ],
                     "IntervalSeconds": 60,
                     "MaxAttempts": 3,
-                    "BackoffRate": 5
+                    "BackoffRate": 5.0
                 }
             ],
             "Next": "CheckIfPlayersOutputIsEmpty"
