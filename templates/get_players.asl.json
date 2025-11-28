@@ -27,7 +27,7 @@
     "MapToAddPlayersToTeams": {
       "Type": "Map",
       "ItemsPath": "$.teams",
-      "MaxConcurrency": 8,
+      "MaxConcurrency": 2,
       "Iterator": {
         "StartAt": "GetPlayersForThisTeam",
         "States": {
@@ -36,6 +36,7 @@
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetPlayersFromTeam-${ENV}",
             "InputPath": "$",
             "ResultPath": "$.players",
+            "TimeoutSeconds": 300,
             "Next": "MergeTeamAndPlayers"
           },
           "MergeTeamAndPlayers": {
