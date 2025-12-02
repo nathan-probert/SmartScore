@@ -1,4 +1,4 @@
-name: Deploy to AWS
+name: Lint, Test, and Deploy
 
 on:
   push:
