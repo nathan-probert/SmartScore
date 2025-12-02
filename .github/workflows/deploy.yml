@@ -1,4 +1,5 @@
 name: Lint, Test, and Deploy
+name: Lint, Test, and Deploy
 
 on:
   push:
