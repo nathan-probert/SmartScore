@@ -74,7 +74,7 @@ jobs:
             .venv
           retention-days: 1
 
-  lint-and-test:
+  lint:
     needs: setup
     runs-on: ubuntu-latest
     if: always() && needs.setup.result == 'success'
@@ -108,15 +108,47 @@ jobs:
       
       - name: Run lint
         run: poetry run make lint
+
+  test:
+    needs: setup
+    runs-on: ubuntu-latest
+    if: always() && needs.setup.result == 'success'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.12
+      
+      - name: Cache Poetry installation
+        uses: actions/cache@v4
+        with:
+          path: ~/.local
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: build-artifacts
       
       - name: Run tests
-        run: poetry run pytest
+        run: make test
 
   deploy:
-    needs: lint-and-test
+    needs: [lint, test]
     runs-on: ubuntu-latest
     if: |
-      needs.lint-and-test.result == 'success' && (
+      needs.lint.result == 'success' && needs.test.result == 'success' && (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy'))
       )
