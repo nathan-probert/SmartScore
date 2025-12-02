@@ -35,29 +35,14 @@
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetPlayersFromTeam-${ENV}",
             "InputPath": "$",
-            "ResultPath": "$.players",
             "TimeoutSeconds": 300,
-            "Next": "MergeTeamAndPlayers"
-          },
-          "MergeTeamAndPlayers": {
-            "Type": "Pass",
-            "Parameters": {
-              "team_name.$": "$.team_name",
-              "team_abbr.$": "$.team_abbr",
-              "season.$": "$.season",
-              "team_id.$": "$.team_id",
-              "opponent_id.$": "$.opponent_id",
-              "home.$": "$.home",
-              "players.$": "$.players"
-            },
-            "OutputPath": "$",
             "End": true
           }
         }
       },
       "ResultPath": "$",
       "Next": "ParseData"
-    },    
+    },
     "ParseData": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:ParseData-${ENV}",

@@ -158,7 +158,7 @@ Resources:
       Handler: event_handler.handle_get_players_from_team
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 30
+      Timeout: 500
       MemorySize: 128
       Code:
         ZipFile: |
