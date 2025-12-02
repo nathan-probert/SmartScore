@@ -6,23 +6,7 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTeams-${ENV}",
       "ResultPath": "$",
-      "Next": "AreTeamsAvailable"
-    },
-    "AreTeamsAvailable": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.teams[0]",
-          "IsPresent": false,
-          "Next": "ReturnEmptyListAsResult"
-        }
-      ],
-      "Default": "MapToAddPlayersToTeams"
-    },
-    "ReturnEmptyListAsResult": {
-      "Type": "Pass",
-      "Result": [],
-      "End": true
+      "Next": "MapToAddPlayersToTeams"
     },
     "MapToAddPlayersToTeams": {
       "Type": "Map",

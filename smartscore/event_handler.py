@@ -118,7 +118,7 @@ def handle_get_players_from_team(event, context):
         "team_id": event.get("team_id"),
         "opponent_id": event.get("opponent_id"),
         "home": event.get("home"),
-        "players": PLAYER_INFO_SCHEMA.dump(players, many=True)
+        "players": PLAYER_INFO_SCHEMA.dump(players, many=True),
     }
 
 
@@ -196,6 +196,10 @@ def handle_publish_db(event, context):
 
 @lambda_handler_error_responder
 def handle_parse_teams(event, context):
+    # Handles the case when there are no games today
+    if event == []:
+        return []
+
     players = [PlayerInfo(**player) for team in event for player in team.pop("players")]
     teams = [TeamInfo(**team) for team in event]
 
