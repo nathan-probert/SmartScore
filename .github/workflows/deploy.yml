@@ -1,5 +1,4 @@
 name: Lint, Test, and Deploy
-name: Lint, Test, and Deploy
 
 on:
   push:
@@ -11,6 +10,7 @@ on:
 jobs:
   setup:
     runs-on: ubuntu-latest
+    if: always()
     outputs:
       python-version: ${{ steps.setup-python.outputs.python-version }}
     steps:
@@ -77,6 +77,7 @@ jobs:
   lint-and-test:
     needs: setup
     runs-on: ubuntu-latest
+    if: always() && needs.setup.result == 'success'
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -114,9 +115,13 @@ jobs:
   deploy:
     needs: lint-and-test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy'))
+    if: |
+      needs.lint-and-test.result == 'success' && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy'))
+      )
     env:
-      ENV: ${{ github.event_name == 'push' && 'prod' || 'dev' }}
+      ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -162,5 +167,3 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-
-
