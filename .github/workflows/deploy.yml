@@ -8,28 +8,105 @@ on:
     types: [labeled, synchronize, reopened]
 
 jobs:
-  lint-and-test:
+  setup:
     runs-on: ubuntu-latest
+    outputs:
+      python-version: ${{ steps.setup-python.outputs.python-version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
+      
       - name: Install build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential
+      
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.12
+      
+      - name: Cache Poetry installation
+        uses: actions/cache@v3
+        with:
+          path: ~/.local
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Install Poetry
+        run: |
+          curl -sSL https://install.python-poetry.org | python3 -
+      
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            poetry-deps-${{ runner.os }}-
+      
+      - name: Install dependencies
+        run: poetry install --no-root
+      
+      - name: Cache Rust build
+        uses: actions/cache@v3
+        with:
+          path: |
+            smartscore/Rust/make_predictions/target
+          key: rust-build-${{ runner.os }}-${{ hashFiles('smartscore/Rust/make_predictions/Cargo.lock') }}
+          restore-keys: |
+            rust-build-${{ runner.os }}-
+      
+      - name: Compile Rust code
+        run: make compile
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifacts
+          path: |
+            smartscore/Rust/make_predictions/target/release/*.dll
+            smartscore/Rust/make_predictions/target/release/*.so
+            smartscore/Rust/make_predictions/target/release/*.dylib
+            .venv
+          retention-days: 1
+
+  lint-and-test:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
           python-version: 3.12
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-      - name: Install dependencies
-        run: poetry install --no-root
-      - name: Compile Rust code
-        run: make compile
+      
+      - name: Cache Poetry installation
+        uses: actions/cache@v3
+        with:
+          path: ~/.local
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: build-artifacts
+      
       - name: Run lint
-        run: make lint
+        run: poetry run make lint
+      
       - name: Run tests
         run: poetry run pytest
 
@@ -42,19 +119,30 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential  # Install gcc and make
+      
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
           python-version: 3.12
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-      - name: Install dependencies
-        run: poetry install --no-root
+      
+      - name: Cache Poetry installation
+        uses: actions/cache@v3
+        with:
+          path: ~/.local
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: build-artifacts
       - name: Set environment variables
         run: |
           echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> $GITHUB_ENV
