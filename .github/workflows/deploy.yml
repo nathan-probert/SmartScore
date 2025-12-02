@@ -29,7 +29,7 @@ jobs:
           python-version: 3.12
       
       - name: Cache Poetry installation
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.local
           key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
@@ -39,7 +39,7 @@ jobs:
           curl -sSL https://install.python-poetry.org | python3 -
       
       - name: Cache dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cache/pypoetry
@@ -52,7 +52,7 @@ jobs:
         run: poetry install --no-root
       
       - name: Cache Rust build
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             smartscore/Rust/make_predictions/target
@@ -64,7 +64,7 @@ jobs:
         run: make compile
       
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v5
         with:
           name: build-artifacts
           path: |
@@ -88,13 +88,13 @@ jobs:
           python-version: 3.12
       
       - name: Cache Poetry installation
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.local
           key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
       
       - name: Cache dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cache/pypoetry
@@ -102,7 +102,7 @@ jobs:
           key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
       
       - name: Download build artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v6
         with:
           name: build-artifacts
       
@@ -132,13 +132,13 @@ jobs:
           python-version: 3.12
       
       - name: Cache Poetry installation
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.local
           key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
       
       - name: Cache dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cache/pypoetry
@@ -146,7 +146,7 @@ jobs:
           key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
       
       - name: Download build artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v6
         with:
           name: build-artifacts
       - name: Set environment variables
