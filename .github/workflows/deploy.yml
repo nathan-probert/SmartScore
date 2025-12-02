@@ -8,59 +8,185 @@ on:
     types: [labeled, synchronize, reopened]
 
 jobs:
-  lint-and-test:
+  setup:
     runs-on: ubuntu-latest
+    if: always()
+    outputs:
+      python-version: ${{ steps.setup-python.outputs.python-version }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
+      
       - name: Install build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential
+      
       - name: Set up Python
-        uses: actions/setup-python@v2
+        id: setup-python
+        uses: actions/setup-python@v6
         with:
           python-version: 3.12
+      
+      - name: Cache Poetry installation
+        uses: actions/cache@v4
+        with:
+          path: ~/.local
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
       - name: Install Poetry
         run: |
           curl -sSL https://install.python-poetry.org | python3 -
+      
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            poetry-deps-${{ runner.os }}-
+      
       - name: Install dependencies
         run: poetry install --no-root
+      
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            smartscore/Rust/make_predictions/target
+          key: rust-build-${{ runner.os }}-${{ hashFiles('smartscore/Rust/make_predictions/Cargo.lock') }}
+          restore-keys: |
+            rust-build-${{ runner.os }}-
+      
       - name: Compile Rust code
         run: make compile
-      - name: Run lint
-        run: make lint
-      - name: Run tests
-        run: poetry run pytest
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: build-artifacts
+          path: |
+            smartscore/Rust/make_predictions/target/release/*.dll
+            smartscore/Rust/make_predictions/target/release/*.so
+            smartscore/Rust/make_predictions/target/release/*.dylib
+            .venv
+          retention-days: 1
 
-  deploy:
-    needs: lint-and-test
+  lint:
+    needs: setup
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy'))
-    env:
-      ENV: ${{ github.event_name == 'push' && 'prod' || 'dev' }}
+    if: always() && needs.setup.result == 'success'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential  # Install gcc and make
+        uses: actions/checkout@v6
+      
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v6
         with:
           python-version: 3.12
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-      - name: Install dependencies
-        run: poetry install --no-root
+      
+      - name: Cache Poetry installation
+        uses: actions/cache@v4
+        with:
+          path: ~/.local
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: build-artifacts
+      
+      - name: Run lint
+        run: poetry run make lint
+
+  test:
+    needs: setup
+    runs-on: ubuntu-latest
+    if: always() && needs.setup.result == 'success'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.12
+      
+      - name: Cache Poetry installation
+        uses: actions/cache@v4
+        with:
+          path: ~/.local
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: build-artifacts
+      
+      - name: Run tests
+        run: make test
+
+  deploy:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    if: |
+      needs.lint.result == 'success' && needs.test.result == 'success' && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy'))
+      )
+    env:
+      ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.12
+      
+      - name: Cache Poetry installation
+        uses: actions/cache@v4
+        with:
+          path: ~/.local
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pypoetry
+            .venv
+          key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: build-artifacts
       - name: Set environment variables
         run: |
           echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> $GITHUB_ENV
           echo "SUPABASE_API_KEY=${{ secrets.SUPABASE_API_KEY }}" >> $GITHUB_ENV
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -73,5 +199,3 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-
-
