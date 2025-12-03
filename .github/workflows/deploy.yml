@@ -171,12 +171,12 @@ jobs:
       - name: Install Poetry
         run: |
           curl -sSL https://install.python-poetry.org | python3 -
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
       
       - name: Set environment variables
         run: |
           echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> $GITHUB_ENV
           echo "SUPABASE_API_KEY=${{ secrets.SUPABASE_API_KEY }}" >> $GITHUB_ENV
+      
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
@@ -185,6 +185,7 @@ jobs:
           aws-region: us-east-1
       - name: Run deploy script
         run: |
+          export PATH="$HOME/.local/bin:$PATH"
           chmod +x build_scripts/deploy.sh
           ./build_scripts/deploy.sh
         env:
