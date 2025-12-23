@@ -9,7 +9,7 @@ import pytz
 import requests
 from aws_lambda_powertools import Logger
 from bs4 import BeautifulSoup
-from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo, InjuryStatus
+from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, InjuryStatus, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
 from config import ENV

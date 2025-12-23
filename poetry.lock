@@ -2290,7 +2290,7 @@ files = [
 
 [[package]]
 name = "smartscore-info-client"
-version = "2.1.0"
+version = "2.2.0"
 description = ""
 optional = false
 python-versions = ">=3.9, <3.13"
@@ -2305,8 +2305,8 @@ requests = "^2.32.3"
 [package.source]
 type = "git"
 url = "https://github.com/nathan-probert/smartscore-info-client.git"
-reference = "v2.1.0"
-resolved_reference = "2b4243605a4bb730c5b7d2bf50e10df3600f2a7b"
+reference = "v2.2.0"
+resolved_reference = "38d9bf9bc09a2b0a88786d2debe3342ca22affbe"
 
 [[package]]
 name = "sortedcontainers"
@@ -2790,4 +2790,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12, <3.13"
-content-hash = "19478cf6c1d25398bf8281bba3aaa10e804371b0a1d8038ee7762314c25d36f9"
+content-hash = "7928be4f0331a168e8a6b4626cb8d179a2b4b0700a5bf64fdff747df0ba38296"
