@@ -303,11 +303,11 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
 
-  ScrapeInjuriesFunction:
+  GetInjuriesFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub "ScrapeInjuries-${ENV}"
-      Handler: event_handler.handle_scrape_injuries
+      FunctionName: !Sub "GetInjuries-${ENV}"
+      Handler: event_handler.handle_get_injuries
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
       Timeout: 60
@@ -428,10 +428,10 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/UpdateHistory-${ENV}"
       RetentionInDays: 1
 
-  ScrapeInjuriesLogGroup:
+  GetInjuriesLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/lambda/ScrapeInjuries-${ENV}"
+      LogGroupName: !Sub "/aws/lambda/GetInjuries-${ENV}"
       RetentionInDays: 1
 
   FilterInjuredPlayersLogGroup:

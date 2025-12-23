@@ -9,7 +9,7 @@ import pytz
 import requests
 from aws_lambda_powertools import Logger
 from bs4 import BeautifulSoup
-from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
+from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo, InjuryStatus
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
 from config import ENV
@@ -509,3 +509,29 @@ def filter_players_by_injuries(players: List[Dict], injuries: List[Dict[str, str
 
     logger.info(f"Filtered out {len(players) - len(filtered_players)} injured players")
     return filtered_players
+
+
+def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]]) -> List[Dict]:
+    """
+    Merge injury data into the player list.
+
+    Args:
+        players: List of player dictionaries
+        injuries: List of injury dictionaries from RotoWire
+
+    Returns:
+        List of players with added injury information
+    """
+    injury_dict = {injury["player_name"].lower(): injury for injury in injuries}
+
+    for player in players:
+        player_name = player.get("name", "").lower()
+        if player_name in injury_dict:
+            injury = injury_dict[player_name]
+            player.injury_status = InjuryStatus.Injured
+            player["injury_desc"] = injury["status"]
+        else:
+            player["injury_status"] = InjuryStatus.Healthy
+            player["injury_desc"] = ""
+
+    return players

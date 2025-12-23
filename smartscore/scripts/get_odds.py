@@ -25,33 +25,11 @@ from unidecode import unidecode
 sys.path.append("../smartscore")
 
 from constants import DRAFTKINGS_GOAL_SCORER_CATEGORY, DRAFTKINGS_NHL_ID, DRAFTKINGS_PROVIDER_ID  # noqa: E402
-from utility import get_today_db  # noqa: E402
+from utility import adjust_name, get_today_db  # noqa: E402
 
 logger = Logger()
 
 MINIMUM_BET_SIZE = 0.1
-
-
-def adjust_name(df_name):
-    name_replacements = {
-        "Cam": "Cameron",
-        "J.J. Moser": "Janis Moser",
-        "Pat Maroon": "Patrick Maroon",
-        "T.J. Brodie": "TJ Brodie",
-        "Mitchell Marner": "Mitch Marner",
-        "Alex Wennberg": "Alexander Wennberg",
-        "Tim Stuetzle": "Tim Stutzle",
-        "Zach Aston-Reese": "Zachary Aston-Reese",
-        "Nicholas Paul": "Nick Paul",
-        "Matt Dumba": "Mathew Dumba",
-        "Alex Kerfoot": "Alexander Kerfoot",
-        "Josh Mahura": "Joshua Mahura",
-        "Elias-Nils Pettersson": "Elias Pettersson",
-    }
-    for old_name, new_name in name_replacements.items():
-        df_name = df_name.replace(old_name, new_name)
-
-    return df_name
 
 
 def ignore_player(df_name):

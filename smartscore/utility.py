@@ -263,3 +263,25 @@ def exponential_backoff_supabase_request(
             time.sleep(wait_time)
 
     raise Exception("Max retries reached. Request failed.")
+
+
+def adjust_name(df_name):
+    name_replacements = {
+        "Cam": "Cameron",
+        "J.J. Moser": "Janis Moser",
+        "Pat Maroon": "Patrick Maroon",
+        "T.J. Brodie": "TJ Brodie",
+        "Mitchell Marner": "Mitch Marner",
+        "Alex Wennberg": "Alexander Wennberg",
+        "Tim Stuetzle": "Tim Stutzle",
+        "Zach Aston-Reese": "Zachary Aston-Reese",
+        "Nicholas Paul": "Nick Paul",
+        "Matt Dumba": "Mathew Dumba",
+        "Alex Kerfoot": "Alexander Kerfoot",
+        "Josh Mahura": "Joshua Mahura",
+        "Elias-Nils Pettersson": "Elias Pettersson",
+    }
+    for old_name, new_name in name_replacements.items():
+        df_name = df_name.replace(old_name, new_name)
+
+    return df_name

@@ -71,6 +71,11 @@
         "GetTims": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTims-${ENV}",
+            "Next": "GetInjuries"
+        },
+        "GetInjuries": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetInjuries-${ENV}",
             "Next": "CheckInitialRun"
         },
         "CheckInitialRun": {

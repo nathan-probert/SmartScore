@@ -18,6 +18,7 @@ from service import (
     publish_public_db,
     separate_players,
     write_historic_db,
+    merge_injury_data,
 )
 
 logger = Logger()
@@ -225,7 +226,7 @@ def handle_save_historic_db(event, context):
 
 
 @lambda_handler_error_responder
-def handle_scrape_injuries(event, context):
+def handle_get_injuries(event, context):
     """
     Scrape current injury data from RotoWire.
 
@@ -236,7 +237,10 @@ def handle_scrape_injuries(event, context):
     Returns:
         dict: A dictionary containing injury data.
     """
+    players = event.get("players", [])
+
     injuries = get_injury_data()
+    merged_info = merge_injury_data(players, injuries)
 
     return {"statusCode": 200, "injuries": injuries, "count": len(injuries)}
 
