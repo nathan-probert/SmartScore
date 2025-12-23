@@ -57,7 +57,12 @@ def invoke_lambda(function_name, payload, wait=True):
 
 
 def get_tims_players():
-    response = exponential_backoff_request("https://api.hockeychallengehelper.com/api/picks?")
+    headers = {
+        "Origin": "https://hockeychallengehelper.com",
+        "Referer": "https://hockeychallengehelper.com/",
+        "User-Agent": "Mozilla/5.0",
+    }
+    response = exponential_backoff_request("https://api.hockeychallengehelper.com/api/picks?", headers=headers)
     allPlayers = response["playerLists"]
 
     ids = []
@@ -172,7 +177,9 @@ def remove_last_game(time_set):
     return {time.isoformat() for time in time_objects}
 
 
-def exponential_backoff_request(url, method="get", data=None, json_data=None, max_retries=5, base_delay=1):
+def exponential_backoff_request(
+    url, method="get", data=None, json_data=None, headers=None, max_retries=5, base_delay=1
+):
     """
     Makes HTTP requests with exponential backoff retry strategy.
 
@@ -191,9 +198,9 @@ def exponential_backoff_request(url, method="get", data=None, json_data=None, ma
     for attempt in range(max_retries):
         try:
             if method == "get":
-                response = requests.get(url, timeout=10)
+                response = requests.get(url, headers=headers, timeout=10)
             elif method == "post":
-                response = requests.post(url, data=data, json=json_data, timeout=10)
+                response = requests.post(url, data=data, json=json_data, headers=headers, timeout=10)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 

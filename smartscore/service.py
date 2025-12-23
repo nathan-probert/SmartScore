@@ -1,5 +1,6 @@
 import datetime
 import json
+import time
 from collections import defaultdict
 from typing import Dict, List, Optional
 
@@ -110,6 +111,7 @@ def get_players_from_team(team):
             )
             players.append(player_info)
 
+    time.sleep(30)  # to avoid rate limiting
     return players
 
 

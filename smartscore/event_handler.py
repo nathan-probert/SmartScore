@@ -91,15 +91,20 @@ def handle_get_teams(event, context):
 @lambda_handler_error_responder
 def handle_get_players_from_team(event, context):
     """
-    Checks if the data has been previously retrieved for the day.
+    Gets players for a team and returns the complete team structure with players.
 
     Args:
         event (dict): A dictionary of a single teams data.
         context (dict): Unused Lambda context.
 
     Returns:
-        dict: A dictionary containing:
-            - "statusCode" (int): HTTP status code.
+        dict: A dictionary containing team information and players:
+            - "team_name" (str): Team name.
+            - "team_abbr" (str): Team abbreviation.
+            - "season" (str): Season identifier.
+            - "team_id" (int): Team ID.
+            - "opponent_id" (int): Opponent team ID.
+            - "home" (bool): Whether team is playing at home.
             - "players" (list): Retrieved player data for the given team.
     """
     team = TeamInfo(**event)
@@ -108,7 +113,15 @@ def handle_get_players_from_team(event, context):
     players = get_players_from_team(team)
     logger.info(f"Found [{len(players)}] players for team")
 
-    return PLAYER_INFO_SCHEMA.dump(players, many=True)
+    return {
+        "team_name": event.get("team_name"),
+        "team_abbr": event.get("team_abbr"),
+        "season": event.get("season"),
+        "team_id": event.get("team_id"),
+        "opponent_id": event.get("opponent_id"),
+        "home": event.get("home"),
+        "players": PLAYER_INFO_SCHEMA.dump(players, many=True),
+    }
 
 
 @lambda_handler_error_responder
@@ -185,6 +198,10 @@ def handle_publish_db(event, context):
 
 @lambda_handler_error_responder
 def handle_parse_teams(event, context):
+    # Handles the case when there are no games today
+    if event == []:
+        return []
+
     players = [PlayerInfo(**player) for team in event for player in team.pop("players")]
     teams = [TeamInfo(**team) for team in event]
 
