@@ -66,16 +66,16 @@
         "MakePredictions": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:MakePredictions-${ENV}",
-            "Next": "GetTims"
-        },
-        "GetTims": {
-            "Type": "Task",
-            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTims-${ENV}",
             "Next": "GetInjuries"
         },
         "GetInjuries": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetInjuries-${ENV}",
+            "Next": "GetTims"
+        },
+        "GetTims": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTims-${ENV}",
             "Next": "CheckInitialRun"
         },
         "CheckInitialRun": {

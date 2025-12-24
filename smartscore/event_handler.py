@@ -243,7 +243,5 @@ def handle_get_injuries(event, context):
 
     return {
         "statusCode": 200,
-        "date": event.get("date"),
         "players": merged_info,
-        "is_initial_run": event.get("is_initial_run"),
     }
