@@ -2,9 +2,11 @@ import datetime
 import json
 import time
 from collections import defaultdict
+from typing import Dict, List
 
 import make_predictions_rust
 import pytz
+import requests
 from aws_lambda_powertools import Logger
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
@@ -239,7 +241,7 @@ def backfill_dates():
         scorers_dict[date] = players
 
     response = invoke_lambda(LAMBDA_API_NAME, {"method": "POST_BACKFILL", "data": scorers_dict})
-    return response
+    return
 
 
 def publish_public_db(players):
@@ -345,3 +347,85 @@ def write_historic_db(picks):
     data = old_entries + picks if picks else old_entries
     update_historical_data(data)
     return
+
+
+def get_injury_data() -> List[Dict[str, str]]:
+    """
+    Get current injury data from RotoWire.
+
+    Returns:
+        List of injury dictionaries with keys:
+        - player: Name of the injured player
+        - injury: Injury description
+        - status: Injury status
+    """
+    url = "https://www.rotowire.com/hockey/tables/injury-report.php?team=ALL&pos=ALL"
+
+    # Set a user agent to avoid being blocked
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/91.0.4472.124 Safari/537.36"
+        )
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        logger.error(f"Error fetching injury data: {e}")
+        return []
+    except json.JSONDecodeError as e:
+        logger.error(f"Error parsing injury JSON: {e}")
+        return []
+
+    injuries = []
+    for item in data:
+        try:
+            player = item.get("player", "")
+            injury = item.get("injury", "")
+            status = item.get("status", "")
+
+            # Only include if we have at least player name and injury info
+            if player and (injury or status):
+                injuries.append(
+                    {
+                        "player": player,
+                        "injury": injury,
+                        "status": status,
+                    }
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error extracting injury data: {e}")
+            continue
+
+    logger.info(f"Scraped {len(injuries)} injury updates")
+    return injuries
+
+
+def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]]) -> List[Dict]:
+    """
+    Merge injury data into the player list.
+
+    Args:
+        players: List of player dictionaries
+        injuries: List of injury dictionaries from RotoWire
+
+    Returns:
+        List of players with added injury information
+    """
+    injury_dict = {injury["player"].lower(): injury for injury in injuries}
+
+    for player in players:
+        player_name = player.get("name", "").lower()
+        if player_name in injury_dict:
+            injury = injury_dict[player_name]
+            player["injury_status"] = "INJURED"
+            player["injury_desc"] = injury["status"]
+        else:
+            player["injury_status"] = "HEALTHY"
+            player["injury_desc"] = ""
+
+    return players

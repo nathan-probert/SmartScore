@@ -8,11 +8,13 @@ from service import (
     check_db_for_date,
     choose_picks,
     get_date,
+    get_injury_data,
     get_players_from_team,
     get_teams,
     get_tims,
     get_todays_schedule,
     make_predictions_teams,
+    merge_injury_data,
     publish_public_db,
     separate_players,
     write_historic_db,
@@ -220,3 +222,28 @@ def handle_save_historic_db(event, context):
     write_historic_db(picks)
 
     return {"statusCode": 200, "players": players}
+
+
+@lambda_handler_error_responder
+def handle_get_injuries(event, context):
+    """
+    Scrape current injury data from RotoWire.
+
+    Args:
+        event (dict): Unused event data.
+        context (dict): Unused Lambda context.
+
+    Returns:
+        dict: A dictionary containing injury data.
+    """
+    players = event.get("players", [])
+
+    injuries = get_injury_data()
+    merged_info = merge_injury_data(players, injuries)
+
+    return {
+        "statusCode": 200,
+        "date": event.get("date"),
+        "players": merged_info,
+        "is_initial_run": event.get("is_initial_run"),
+    }

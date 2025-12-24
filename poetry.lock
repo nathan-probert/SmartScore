@@ -61,6 +61,29 @@ validation = ["fastjsonschema (>=2.14.5,<3.0.0)"]
 valkey = ["valkey-glide (>=1.3.5,<3.0)"]
 
 [[package]]
+name = "beautifulsoup4"
+version = "4.14.2"
+description = "Screen-scraping library"
+optional = false
+python-versions = ">=3.7.0"
+groups = ["main"]
+files = [
+    {file = "beautifulsoup4-4.14.2-py3-none-any.whl", hash = "sha256:5ef6fa3a8cbece8488d66985560f97ed091e22bbc4e9c2338508a9d5de6d4515"},
+    {file = "beautifulsoup4-4.14.2.tar.gz", hash = "sha256:2a98ab9f944a11acee9cc848508ec28d9228abfd522ef0fad6a02a72e0ded69e"},
+]
+
+[package.dependencies]
+soupsieve = ">1.2"
+typing-extensions = ">=4.0.0"
+
+[package.extras]
+cchardet = ["cchardet"]
+chardet = ["chardet"]
+charset-normalizer = ["charset-normalizer"]
+html5lib = ["html5lib"]
+lxml = ["lxml"]
+
+[[package]]
 name = "boto3"
 version = "1.42.15"
 description = "The AWS SDK for Python"
@@ -2267,7 +2290,7 @@ files = [
 
 [[package]]
 name = "smartscore-info-client"
-version = "2.1.0"
+version = "2.2.0"
 description = ""
 optional = false
 python-versions = ">=3.9, <3.13"
@@ -2282,8 +2305,8 @@ requests = "^2.32.3"
 [package.source]
 type = "git"
 url = "https://github.com/nathan-probert/smartscore-info-client.git"
-reference = "v2.1.0"
-resolved_reference = "2b4243605a4bb730c5b7d2bf50e10df3600f2a7b"
+reference = "v2.2.0"
+resolved_reference = "38d9bf9bc09a2b0a88786d2debe3342ca22affbe"
 
 [[package]]
 name = "sortedcontainers"
@@ -2295,6 +2318,18 @@ groups = ["main"]
 files = [
     {file = "sortedcontainers-2.4.0-py2.py3-none-any.whl", hash = "sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0"},
     {file = "sortedcontainers-2.4.0.tar.gz", hash = "sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88"},
+]
+
+[[package]]
+name = "soupsieve"
+version = "2.8"
+description = "A modern CSS selector implementation for Beautiful Soup."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "soupsieve-2.8-py3-none-any.whl", hash = "sha256:0cc76456a30e20f5d7f2e14a98a4ae2ee4e5abdc7c5ea0aafe795f344bc7984c"},
+    {file = "soupsieve-2.8.tar.gz", hash = "sha256:e2dd4a40a628cb5f28f6d4b0db8800b8f581b65bb380b97de22ba5ca8d72572f"},
 ]
 
 [[package]]
@@ -2755,4 +2790,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12, <3.13"
-content-hash = "e0b76d4547e6a986587e7fa31865da98ac4c3291779af1b2862abc19033734f2"
+content-hash = "7928be4f0331a168e8a6b4626cb8d179a2b4b0700a5bf64fdff747df0ba38296"

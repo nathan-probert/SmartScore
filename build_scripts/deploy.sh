@@ -5,7 +5,7 @@ ENV=${ENV:-dev}  # If ENV is not set, default to "dev"
 
 AWS_REGION=${AWS_REGION:-us-east-1}
 
-MAX_ZIP_SIZE_MB=25
+MAX_ZIP_SIZE_MB=50
 
 SOURCE_DIR="smartscore"
 OUTPUT_DIR="output"
@@ -25,6 +25,7 @@ LAMBDA_FUNCTIONS=(
   "CheckCompleted-$ENV"
   "ParseData-$ENV"
   "UpdateHistory-$ENV"
+  "GetInjuries-$ENV"
 )
 
 
