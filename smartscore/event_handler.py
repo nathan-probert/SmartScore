@@ -9,7 +9,6 @@ from service import (
     choose_picks,
     get_date,
     get_injury_data,
-    get_injury_data,
     get_players_from_team,
     get_teams,
     get_tims,
