@@ -2,13 +2,12 @@ import datetime
 import json
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import make_predictions_rust
 import pytz
 import requests
 from aws_lambda_powertools import Logger
-from bs4 import BeautifulSoup
 from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
@@ -361,7 +360,7 @@ def get_injury_data() -> List[Dict[str, str]]:
         - status: Injury status
     """
     url = "https://www.rotowire.com/hockey/tables/injury-report.php?team=ALL&pos=ALL"
-    
+
     # Set a user agent to avoid being blocked
     headers = {
         "User-Agent": (
@@ -370,9 +369,9 @@ def get_injury_data() -> List[Dict[str, str]]:
             "Chrome/91.0.4472.124 Safari/537.36"
         )
     }
-    
+
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         data = response.json()
     except requests.RequestException as e:
@@ -391,11 +390,13 @@ def get_injury_data() -> List[Dict[str, str]]:
 
             # Only include if we have at least player name and injury info
             if player and (injury or status):
-                injuries.append({
-                    "player": player,
-                    "injury": injury,
-                    "status": status,
-                })
+                injuries.append(
+                    {
+                        "player": player,
+                        "injury": injury,
+                        "status": status,
+                    }
+                )
         except Exception as e:  # noqa: BLE001
             logger.error(f"Error extracting injury data: {e}")
             continue
