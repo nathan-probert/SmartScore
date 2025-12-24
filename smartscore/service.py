@@ -9,7 +9,7 @@ import pytz
 import requests
 from aws_lambda_powertools import Logger
 from bs4 import BeautifulSoup
-from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, InjuryStatus, PlayerInfo
+from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
 from config import ENV
@@ -350,165 +350,58 @@ def write_historic_db(picks):
     return
 
 
-class InjuryScraper:
-    """Scraper for NHL injury news from RotoWire."""
-
-    BASE_URL = "https://www.rotowire.com/hockey/news.php?view=injuries"
-    PREVIEW_COUNT = 5
-
-    def __init__(self):
-        self.session = requests.Session()
-        # Set a user agent to avoid being blocked
-        user_agent = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/91.0.4472.124 Safari/537.36"
-        )
-        self.session.headers.update({"User-Agent": user_agent})
-
-    def scrape_injuries(self) -> List[Dict[str, str]]:
-        """
-        Scrape injury information from RotoWire.
-
-        Returns:
-            List of dictionaries containing injury data with keys:
-            - player_name: Name of the injured player
-            - team: Team abbreviation
-            - status: Injury status/description
-            - player_url: URL to player's page
-            - status_url: URL to injury news article
-        """
-        try:
-            response = self.session.get(self.BASE_URL)
-            response.raise_for_status()
-        except requests.RequestException as e:
-            logger.error(f"Error fetching injury page: {e}")
-            return []
-
-        soup = BeautifulSoup(response.content, "html.parser")
-
-        injuries = []
-        # Find injury entries - they appear to be in divs with player info
-        injury_containers = soup.find_all("div", class_="news-update")
-
-        if not injury_containers:
-            # Try alternative selector if the first one doesn't work
-            injury_containers = soup.find_all("div", class_=lambda x: x and "news" in x.lower())
-
-        for container in injury_containers:
-            injury_data = self._extract_injury_data(container)
-            if injury_data:
-                injuries.append(injury_data)
-
-        return injuries
-
-    def _extract_injury_data(self, container) -> Optional[Dict[str, str]]:
-        """Extract injury data from a single container."""
-        try:
-            # Find team logo and extract team abbreviation
-            team_img = container.find("img", src=lambda x: x and "teamlogo" in x)
-            team = ""
-            if team_img:
-                # Extract team from alt text or src
-                alt_text = team_img.get("alt", "")
-                if alt_text:
-                    team = alt_text
-                else:
-                    # Try to extract from src URL
-                    src = team_img.get("src", "")
-                    if "teamlogo/hockey/100" in src:
-                        team = src.split("100")[1].split(".")[0]
-
-            # Find player name link
-            player_link = container.find("a", href=lambda x: x and "/player/" in x)
-            player_name = ""
-            player_url = ""
-            if player_link:
-                player_name = player_link.get_text(strip=True)
-                player_url = f"https://www.rotowire.com{player_link.get('href')}"
-
-            # Find injury status link
-            status_link = container.find("a", href=lambda x: x and "/headlines/" in x and "injury" in x)
-            status = ""
-            status_url = ""
-            if status_link:
-                status = status_link.get_text(strip=True)
-                status_url = f"https://www.rotowire.com{status_link.get('href')}"
-
-            # Only return if we have at least player name and status
-            if player_name and status:
-                return {
-                    "player_name": player_name,
-                    "team": team,
-                    "status": status,
-                    "player_url": player_url,
-                    "status_url": status_url,
-                }
-
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"Error extracting injury data: {e}")
-
-        return None
-
-
 def get_injury_data() -> List[Dict[str, str]]:
     """
     Get current injury data from RotoWire.
 
     Returns:
-        List of injury dictionaries
+        List of injury dictionaries with keys:
+        - player: Name of the injured player
+        - injury: Injury description
+        - status: Injury status
     """
-    scraper = InjuryScraper()
-    injuries = scraper.scrape_injuries()
+    url = "https://www.rotowire.com/hockey/tables/injury-report.php?team=ALL&pos=ALL"
+    
+    # Set a user agent to avoid being blocked
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/91.0.4472.124 Safari/537.36"
+        )
+    }
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        logger.error(f"Error fetching injury data: {e}")
+        return []
+    except json.JSONDecodeError as e:
+        logger.error(f"Error parsing injury JSON: {e}")
+        return []
+
+    injuries = []
+    for item in data:
+        try:
+            player = item.get("player", "")
+            injury = item.get("injury", "")
+            status = item.get("status", "")
+
+            # Only include if we have at least player name and injury info
+            if player and (injury or status):
+                injuries.append({
+                    "player": player,
+                    "injury": injury,
+                    "status": status,
+                })
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error extracting injury data: {e}")
+            continue
+
     logger.info(f"Scraped {len(injuries)} injury updates")
     return injuries
-
-
-def filter_players_by_injuries(players: List[Dict], injuries: List[Dict[str, str]]) -> List[Dict]:
-    """
-    Filter out players who are injured or have concerning injury statuses.
-
-    Args:
-        players: List of player dictionaries
-        injuries: List of injury dictionaries from RotoWire
-
-    Returns:
-        Filtered list of players, excluding those with serious injuries
-    """
-    if not injuries:
-        return players
-
-    # Create a set of injured player names for quick lookup
-    injured_players = set()
-    for injury in injuries:
-        player_name = injury["player_name"].lower()
-        status = injury["status"].lower()
-
-        # Filter out players with serious injury statuses
-        serious_indicators = [
-            "placed on ir",
-            "out for season",
-            "out indefinitely",
-            "torn",
-            "fracture",
-            "surgery",
-            "season-ending",
-            "out for year",
-            "out long-term",
-        ]
-
-        if any(indicator in status for indicator in serious_indicators):
-            injured_players.add(player_name)
-
-    # Filter players
-    filtered_players = []
-    for player in players:
-        player_name = player.get("name", "").lower()
-        if player_name not in injured_players:
-            filtered_players.append(player)
-
-    logger.info(f"Filtered out {len(players) - len(filtered_players)} injured players")
-    return filtered_players
 
 
 def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]]) -> List[Dict]:
@@ -522,16 +415,16 @@ def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]]) -> Li
     Returns:
         List of players with added injury information
     """
-    injury_dict = {injury["player_name"].lower(): injury for injury in injuries}
+    injury_dict = {injury["player"].lower(): injury for injury in injuries}
 
     for player in players:
         player_name = player.get("name", "").lower()
         if player_name in injury_dict:
             injury = injury_dict[player_name]
-            player.injury_status = InjuryStatus.Injured
+            player["injury_status"] = "INJURED"
             player["injury_desc"] = injury["status"]
         else:
-            player["injury_status"] = InjuryStatus.Healthy
+            player["injury_status"] = "HEALTHY"
             player["injury_desc"] = ""
 
     return players
