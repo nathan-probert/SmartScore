@@ -241,4 +241,8 @@ def handle_get_injuries(event, context):
     injuries = get_injury_data()
     merged_info = merge_injury_data(players, injuries)
 
-    return {"statusCode": 200, "players": merged_info}
+    return {
+        "statusCode": 200,
+        "players": merged_info,
+        "is_initial_run": event.get("is_initial_run"),
+    }
