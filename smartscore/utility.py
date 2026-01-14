@@ -153,7 +153,7 @@ def schedule_run(times):
         # Add "last_game": True to the last rule's input
         input_payload = {
             "source": "eventBridge",
-            "last_game": False if idx < len(times) - 1 else True,
+            "last_game": True if idx == len(times) - 1 else False,
         }
 
         get_events_client().put_targets(
