@@ -128,7 +128,7 @@ def schedule_run(times):
     logger.info(f"Scheduling rule for given times: [{times}]")
     delete_expired_rules()
 
-    for time_str in times:
+    for idx, time_str in enumerate(times):
         event_time = parser.parse(time_str)
         trigger_time = event_time + timedelta(minutes=5)
         cron_schedule = create_cron_schedule(trigger_time)
@@ -151,6 +151,12 @@ def schedule_run(times):
         parameter = get_ssm_client().get_parameter(Name=f"/event_bridge_role/arn/{ENV}")
         role_arn = parameter["Parameter"]["Value"]
 
+        # Add "last_game": True to the last rule's input
+        input_payload = {
+            "source": "eventBridge",
+            "last_game": False if idx < len(times) - 1 else True,
+        }
+
         get_events_client().put_targets(
             Rule=rule_name,
             Targets=[
@@ -158,7 +164,7 @@ def schedule_run(times):
                     "Id": "1",
                     "Arn": state_machine_arn,
                     "RoleArn": role_arn,
-                    "Input": '{"source": "eventBridge"}',
+                    "Input": json.dumps(input_payload),
                 }
             ],
         )
