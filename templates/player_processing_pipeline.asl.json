@@ -12,12 +12,12 @@
             "Choices": [
                 {
                     "Variable": "$.status",
-                    "BooleanEquals": "normal_run",
+                    "StringEquals": "normal_run",
                     "Next": "GetTims"
                 },
                 {
                     "Variable": "$.status",
-                    "BooleanEquals": "first_run",
+                    "StringEquals": "first_run",
                     "Next": "Backfill"
                 },
                 {

@@ -68,6 +68,7 @@ def handle_check_completed(event, context):
 
     return {"statusCode": 200, "status": status, "players": entries}
 
+
 @lambda_handler_error_responder
 def handle_get_teams(event, context):
     """
