@@ -114,8 +114,7 @@ def delete_expired_rules():
     response = client.list_rules()
 
     for rule in response.get("Rules", []):
-        # Remove if the rule name matches TriggerStateMachineAt_YYYYMMDDHHMM
-        if rule["Name"].startswith("TriggerStateMachineAt_"):
+        if rule["Name"].startswith("TriggerStateMachineAt_") and rule["Name"].endswith(f"-{ENV}"):
             targets = client.list_targets_by_rule(Rule=rule["Name"]).get("Targets", [])
             if targets:
                 target_ids = [target["Id"] for target in targets]
@@ -170,17 +169,6 @@ def schedule_run(times):
         )
 
         print(f"Scheduled event for {trigger_time} with rule name {rule_name}")
-
-
-def remove_last_game(time_set):
-    time_objects = set()
-    for time_str in time_set:
-        event_time = parser.parse(time_str)
-        time_objects.add(event_time)
-
-    time_objects.discard(max(time_objects))
-
-    return {time.isoformat() for time in time_objects}
 
 
 def exponential_backoff_request(

@@ -19,7 +19,6 @@ from utility import (
     get_tims_players,
     get_today_db,
     invoke_lambda,
-    remove_last_game,
     save_to_db,
     schedule_run,
     update_historical_data,
@@ -88,7 +87,6 @@ def get_teams(data):
     if not start_times:
         logger.info("No start times found")
     else:
-        start_times = remove_last_game(start_times)
         schedule_run(start_times)
 
     return teams
