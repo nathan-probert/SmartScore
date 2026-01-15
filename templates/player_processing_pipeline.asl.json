@@ -11,14 +11,19 @@
             "Type": "Choice",
             "Choices": [
                 {
-                    "Variable": "$.completed",
-                    "BooleanEquals": true,
+                    "Variable": "$.status",
+                    "StringEquals": "normal_run",
                     "Next": "GetTims"
                 },
                 {
-                    "Variable": "$.completed",
-                    "BooleanEquals": false,
+                    "Variable": "$.status",
+                    "StringEquals": "first_run",
                     "Next": "Backfill"
+                },
+                {
+                    "Variable": "$.status",
+                    "StringEquals": "last_run",
+                    "Next": "PublishToDb"
                 }
             ]
         },

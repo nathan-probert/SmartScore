@@ -114,8 +114,7 @@ def delete_expired_rules():
     response = client.list_rules()
 
     for rule in response.get("Rules", []):
-        # Remove if the rule name matches TriggerStateMachineAt_YYYYMMDDHHMM
-        if rule["Name"].startswith("TriggerStateMachineAt_"):
+        if rule["Name"].startswith("TriggerStateMachineAt_") and rule["Name"].endswith(f"-{ENV}"):
             targets = client.list_targets_by_rule(Rule=rule["Name"]).get("Targets", [])
             if targets:
                 target_ids = [target["Id"] for target in targets]
@@ -128,7 +127,8 @@ def schedule_run(times):
     logger.info(f"Scheduling rule for given times: [{times}]")
     delete_expired_rules()
 
-    for time_str in times:
+    times = sorted(times)
+    for idx, time_str in enumerate(times):
         event_time = parser.parse(time_str)
         trigger_time = event_time + timedelta(minutes=5)
         cron_schedule = create_cron_schedule(trigger_time)
@@ -151,6 +151,12 @@ def schedule_run(times):
         parameter = get_ssm_client().get_parameter(Name=f"/event_bridge_role/arn/{ENV}")
         role_arn = parameter["Parameter"]["Value"]
 
+        # Add "last_game": True to the last rule's input
+        input_payload = {
+            "source": "eventBridge",
+            "last_game": True if idx == len(times) - 1 else False,
+        }
+
         get_events_client().put_targets(
             Rule=rule_name,
             Targets=[
@@ -158,23 +164,12 @@ def schedule_run(times):
                     "Id": "1",
                     "Arn": state_machine_arn,
                     "RoleArn": role_arn,
-                    "Input": '{"source": "eventBridge"}',
+                    "Input": json.dumps(input_payload),
                 }
             ],
         )
 
         print(f"Scheduled event for {trigger_time} with rule name {rule_name}")
-
-
-def remove_last_game(time_set):
-    time_objects = set()
-    for time_str in time_set:
-        event_time = parser.parse(time_str)
-        time_objects.add(event_time)
-
-    time_objects.discard(max(time_objects))
-
-    return {time.isoformat() for time in time_objects}
 
 
 def exponential_backoff_request(

@@ -55,15 +55,18 @@ def handle_check_completed(event, context):
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
-            - "completed" (bool): Whether data has already been retrieved.
+            - "status" (str): The current status of data retrieval.
             - "players" (list | None): Retrieved player data, if available.
     """
-    entries = check_db_for_date()
-    completed = False
-    if entries:
-        completed = True
+    if event.get("last_game"):
+        return {"statusCode": 200, "status": "last_run", "players": None}
 
-    return {"statusCode": 200, "completed": completed, "players": entries}
+    entries = check_db_for_date()
+    status = "first_run"
+    if entries:
+        status = "normal_run"
+
+    return {"statusCode": 200, "status": status, "players": entries}
 
 
 @lambda_handler_error_responder

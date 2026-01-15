@@ -76,7 +76,7 @@ def test_handle_get_1_game(mock_schedule_run, mock_exponential_backoff_request, 
     response = handle_get_teams({}, {})
 
     mock_get_todays_schedule.assert_called_once()
-    mock_schedule_run.assert_called_once_with(set())
+    mock_schedule_run.assert_called_once_with({"2025-06-11T23:00:00Z"})
     assert response == expected_response
 
 
@@ -182,7 +182,7 @@ def test_handle_get_2_games(mock_schedule_run, mock_exponential_backoff_request,
     response = handle_get_teams({}, {})
 
     mock_get_todays_schedule.assert_called_once()
-    mock_schedule_run.assert_called_once_with({"2025-06-11T01:00:00+00:00"})
+    mock_schedule_run.assert_called_once_with({"2025-06-11T23:00:00Z", "2025-06-11T01:00:00Z"})
     assert response == expected_response
 
 
