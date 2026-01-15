@@ -1,13 +1,13 @@
 import json
 from unittest.mock import patch
 
-from smartscore.utility import schedule_run
+from utility import schedule_run
 
 
-@patch("smartscore.utility.get_events_client")
-@patch("smartscore.utility.get_sts_client")
-@patch("smartscore.utility.get_ssm_client")
-@patch("smartscore.utility.boto3.session.Session")
+@patch("utility.get_events_client")
+@patch("utility.get_sts_client")
+@patch("utility.get_ssm_client")
+@patch("utility.boto3.session.Session")
 def test_schedule_run_last_game_true(mock_session, mock_ssm_client, mock_sts_client, mock_events_client):
     times = [
         "2026-01-15T03:00:00Z",  # +5 min -> 03:05
