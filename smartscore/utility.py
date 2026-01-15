@@ -127,6 +127,7 @@ def schedule_run(times):
     logger.info(f"Scheduling rule for given times: [{times}]")
     delete_expired_rules()
 
+    times = sorted(times)
     for idx, time_str in enumerate(times):
         event_time = parser.parse(time_str)
         trigger_time = event_time + timedelta(minutes=5)
