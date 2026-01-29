@@ -25,7 +25,7 @@ def test_handle_save_historic_db_with_players(
     todays_entries = [entry for entry in called_arg if entry.get("date") == today]
     assert len(todays_entries) == len(picks)  # 3, one for each tims group
 
-    assert len(called_arg) == 21  # 3 * 7 days
+    assert len(called_arg) == 24  # 3 * 8 days
     assert response == {"statusCode": 200, "players": players_input}
 
 
@@ -49,5 +49,5 @@ def test_handle_save_historic_db_with__no_players(
     todays_entries = [entry for entry in called_arg if entry.get("date") == today]
     assert len(todays_entries) == 0
 
-    assert len(called_arg) == 21  # 3 * 7 days
+    assert len(called_arg) == 24  # 3 * 8 days
     assert response == {"statusCode": 200, "players": []}
