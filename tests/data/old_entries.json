@@ -313,5 +313,50 @@
         "tgpg": 3.35365,
         "otga": 2.86585,
         "Scored": 0
+    },
+    {
+        "id": 28,
+        "player_id": 8490001,
+        "name": "Alex Newhook",
+        "date": "2026-01-27",
+        "gpg": 0.312,
+        "hgpg": 0.250,
+        "five_gpg": 0.3,
+        "stat": 0.150,
+        "tims": 2,
+        "team_name": "Montreal",
+        "tgpg": 2.95,
+        "otga": 2.60,
+        "Scored": 1
+    },
+    {
+        "id": 29,
+        "player_id": 8490002,
+        "name": "Cole Caufield",
+        "date": "2026-01-27",
+        "gpg": 0.410,
+        "hgpg": 0.320,
+        "five_gpg": 0.5,
+        "stat": 0.210,
+        "tims": 1,
+        "team_name": "Montreal",
+        "tgpg": 2.95,
+        "otga": 2.60,
+        "Scored": 0
+    },
+    {
+        "id": 30,
+        "player_id": 8490003,
+        "name": "Nick Suzuki",
+        "date": "2026-01-27",
+        "gpg": 0.350,
+        "hgpg": 0.300,
+        "five_gpg": 0.4,
+        "stat": 0.180,
+        "tims": 3,
+        "team_name": "Montreal",
+        "tgpg": 2.95,
+        "otga": 2.60,
+        "Scored": 1
     }
 ]

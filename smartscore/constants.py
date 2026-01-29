@@ -20,7 +20,8 @@ HISTORY_API_URL = (
 
 LAMBDA_API_NAME = f"Api-{ENV}"
 
-DAYS_TO_KEEP_HISTORIC_DATA = 7
+# This includes the current day
+DAYS_TO_KEEP_HISTORIC_DATA = 8
 
 # Prediction weights
 # old weights
