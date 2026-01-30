@@ -11,7 +11,7 @@ PATH = "smartscore\\lib"
 DATA_PATH = f"{PATH}\\data.csv"
 
 # FEATURES = ["gpg", "hgpg", "five_gpg", "tgpg", "otga"]
-FEATURES = ["gpg", "hgpg", "five_gpg", "tgpg", "otga", "hppg", "otshga", "is_home"]
+FEATURES = ["gpg", "hgpg", "five_gpg", "tgpg", "otga", "hppg", "otshga", "home"]
 
 
 def invoke_lambda(function_name, payload, wait=True):
@@ -57,10 +57,12 @@ def create_csv():
 
 
 def get_data():
-    print("Do you want to download the data from the database? (y/n)")
-    choice = input().split()[0].lower()
-    if choice == "y":
-        create_csv()
+    # Uncomment this to ask about downloading data each time
+    # print("Do you want to download the data from the database? (y/n)")
+    # choice = input().split()[0].lower()
+    # if choice == "y":
+    #     create_csv()
+
     data = pd.read_csv(DATA_PATH, encoding="utf-8", low_memory=False)
 
     # Clean the data

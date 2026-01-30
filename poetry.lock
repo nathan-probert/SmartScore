@@ -2564,6 +2564,30 @@ docs = ["furo (>=2023.7.26)", "proselint (>=0.13)", "sphinx (>=7.1.2,!=7.3)", "s
 test = ["covdefaults (>=2.3)", "coverage (>=7.2.7)", "coverage-enable-subprocess (>=1)", "flaky (>=3.7)", "packaging (>=23.1)", "pytest (>=7.4)", "pytest-env (>=0.8.2)", "pytest-freezer (>=0.4.8)", "pytest-mock (>=3.11.1)", "pytest-randomly (>=3.12)", "pytest-timeout (>=2.1)", "setuptools (>=68)", "time-machine (>=2.10)"]
 
 [[package]]
+name = "warp-lang"
+version = "1.11.0"
+description = "A Python framework for high-performance simulation and graphics programming"
+optional = false
+python-versions = ">=3.9"
+groups = ["dev"]
+files = [
+    {file = "warp_lang-1.11.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:3a4f1c9a6e721d7de7d6dad6b242c54afaf20c6e14a767c0da03e5e963fcc13c"},
+    {file = "warp_lang-1.11.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:524dce20de6162ba25333552168ebf430973050e00d9f8116b8df41a60d25d6e"},
+    {file = "warp_lang-1.11.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:1ae6cfc226107f96e4d495b41a3dab32488e8ee8f074b0e1bcaf22e7fb8c904d"},
+    {file = "warp_lang-1.11.0-py3-none-win_amd64.whl", hash = "sha256:80d8493cbe243a3510134f3af289646d7bd7484217a30ecf565d676466ef8a5e"},
+]
+
+[package.dependencies]
+numpy = "*"
+
+[package.extras]
+benchmark = ["usd-core (>=25.5)", "usd-exchange (>=2.1.0a3)"]
+dev = ["coverage[toml]", "nvtx", "warp-lang[docs]", "warp-lang[examples]"]
+docs = ["myst_parser", "nvidia-sphinx-theme", "pre-commit", "sphinx-copybutton"]
+examples = ["blosc (>=1.11.1)", "matplotlib (>=3.7.5)", "pillow (>=10.4.0)", "psutil (>=7.1.0)", "pyglet (>=2.1.9)", "usd-core (>=25.5)", "usd-exchange (>=2.1.0a3)"]
+torch-cu12 = ["torch (>=2.7.0)", "warp-lang[examples]"]
+
+[[package]]
 name = "websockets"
 version = "15.0.1"
 description = "An implementation of the WebSocket Protocol (RFC 6455 & 7692)"
@@ -2790,4 +2814,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12, <3.13"
-content-hash = "7928be4f0331a168e8a6b4626cb8d179a2b4b0700a5bf64fdff747df0ba38296"
+content-hash = "4bc14f4a855667b7c5bf0f290e822c5b21903e8f536aff97f34c224051d82528"

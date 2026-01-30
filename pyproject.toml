@@ -25,6 +25,7 @@ pandas = "^2.2.3"
 maturin = "^1.8.2"
 boto3 = "^1.40.6"
 statelint = "^2.0.0"
+warp-lang = "^1.11.0"
 
 [tool.poetry.requires-plugins]
 poetry-plugin-export = ">=1.9"
