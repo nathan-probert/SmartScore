@@ -1,13 +1,7 @@
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 import pytz
-
-import sys
-import types
-import pytest
-from unittest.mock import patch, MagicMock
 
 from service import (
     choose_picks,
@@ -40,7 +34,6 @@ def test_get_date_with_hour(mock_datetime):
     assert result == "2024-01-15T14:30:00"
 
 
-
 @patch("service.datetime")
 def test_get_date_add_days(mock_datetime):
     """Test get_date with add_days parameter."""
@@ -48,12 +41,12 @@ def test_get_date_add_days(mock_datetime):
     mock_datetime.datetime.now.return_value = mock_now
     # Use real timedelta
     import datetime as real_datetime
+
     mock_datetime.timedelta = real_datetime.timedelta
 
     result = get_date(add_days=5)
 
     assert result == "2024-01-20"
-
 
 
 @patch("service.datetime")
@@ -62,12 +55,12 @@ def test_get_date_subtract_days(mock_datetime):
     mock_now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=pytz.timezone("America/Toronto"))
     mock_datetime.datetime.now.return_value = mock_now
     import datetime as real_datetime
+
     mock_datetime.timedelta = real_datetime.timedelta
 
     result = get_date(subtract_days=3)
 
     assert result == "2024-01-12"
-
 
 
 @patch("service.PLAYER_INFO_SCHEMA")
@@ -82,21 +75,25 @@ def test_separate_players_basic(mock_team_schema, mock_player_schema):
         "home": t.home,
         "tgpg": getattr(t, "tgpg", 0.0),
     }
+
     class Player:
         def __init__(self, name, id, team_id):
             self.name = name
             self.id = id
             self.team_id = team_id
+
     players = [
         Player("Player One", 1, 10),
         Player("Player Two", 2, 20),
     ]
+
     class Team:
         def __init__(self, team_name, team_id, home, tgpg):
             self.team_name = team_name
             self.team_id = team_id
             self.home = home
             self.tgpg = tgpg
+
     teams = [
         Team("Team A", 10, True, 3.0),
         Team("Team B", 20, False, 2.8),
@@ -115,7 +112,6 @@ def test_separate_players_basic(mock_team_schema, mock_player_schema):
     assert result[1]["tgpg"] == 2.8
 
 
-
 @patch("service.PLAYER_INFO_SCHEMA")
 @patch("service.TEAM_INFO_SCHEMA")
 def test_separate_players_excludes_fields(mock_team_schema, mock_player_schema):
@@ -126,19 +122,23 @@ def test_separate_players_excludes_fields(mock_team_schema, mock_player_schema):
         "team_id": t.team_id,
         "home": t.home,
     }
+
     class Player:
         def __init__(self, name, id, team_id):
             self.name = name
             self.id = id
             self.team_id = team_id
+
     players = [
         Player("Player One", 1, 10),
     ]
+
     class Team:
         def __init__(self, team_name, team_id, home):
             self.team_name = team_name
             self.team_id = team_id
             self.home = home
+
     teams = [
         Team("Team A", 10, True),
     ]

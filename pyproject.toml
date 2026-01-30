@@ -49,6 +49,8 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "PLR2004", "S105"]
+"smartscore/scripts/*" = ["PLR0915", "PLR0915", "PLR0912", "PLR0913", "E741", "PLR2004"]
 
 [tool.coverage.run]
 source = ["smartscore"]

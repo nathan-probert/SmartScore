@@ -1,8 +1,4 @@
-from unittest.mock import MagicMock, patch
-
-import pytest
-from smartscore_info_client.schemas.player_info import PlayerInfo
-from smartscore_info_client.schemas.team_info import TeamInfo
+from unittest.mock import patch
 
 from event_handler import (
     handle_check_completed,
