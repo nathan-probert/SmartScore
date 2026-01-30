@@ -12,9 +12,10 @@ from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, Playe
 from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
 from config import ENV
-from constants import DAYS_TO_KEEP_HISTORIC_DATA, LAMBDA_API_NAME, WEIGHTS
+from constants import DAYS_TO_KEEP_HISTORIC_DATA, LAMBDA_API_NAME, NUM_EXPECTED_PLAYERS, WEIGHTS
 from utility import (
     exponential_backoff_request,
+    get_cur_pick_pct,
     get_historical_data,
     get_tims_players,
     get_today_db,
@@ -22,6 +23,7 @@ from utility import (
     save_to_db,
     schedule_run,
     update_historical_data,
+    upload_metrics,
 )
 
 logger = Logger()
@@ -344,7 +346,11 @@ def write_historic_db(picks):
 
     data = old_entries + picks if picks else old_entries
     update_historical_data(data)
-    return
+
+    # Return yesterday's 3 players
+    yesterday = get_date(subtract_days=1)
+    yesterdays_entries = [entry for entry in data if entry.get("date") == yesterday]
+    return yesterdays_entries
 
 
 def get_injury_data() -> List[Dict[str, str]]:
@@ -427,3 +433,37 @@ def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]]) -> Li
             player["injury_desc"] = ""
 
     return players
+
+
+def calculate_metrics(yesterday_results: List[Dict]) -> List[Dict]:
+    if len(yesterday_results) != NUM_EXPECTED_PLAYERS:
+        logger.warning(
+            f"Yesterday's results do not have exactly {NUM_EXPECTED_PLAYERS} players, skipping metrics calculation"
+        )
+        return []
+
+    cur_picks_overall = get_cur_pick_pct()
+    if not cur_picks_overall:
+        return {
+            "value": "-",
+            "correct": "-",
+            "total": "-",
+        }
+
+    correct_picks = sum(1 for player in yesterday_results if player.get("Scored") == 1)
+    new_total = cur_picks_overall["total"] + 3
+    new_correct = cur_picks_overall["correct"] + correct_picks
+
+    return {
+        "value": (new_correct / new_total) * 100,
+        "total": new_total,
+        "correct": new_correct,
+    }
+
+
+def update_metrics(new_metrics: List[Dict]) -> None:
+    if not new_metrics:
+        logger.warning("No new metrics to update")
+        return
+
+    upload_metrics(new_metrics)

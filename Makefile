@@ -18,7 +18,11 @@ lint:
 	@poetry run pre-commit run -a
 
 test:
-	@echo "Running tests"
+	@echo "Running tests with coverage"
+	@poetry run pytest -v --cov=smartscore --cov-report=term-missing --cov-report=html
+
+test-no-cov:
+	@echo "Running tests without coverage"
 	@poetry run pytest -v
 
 compile:

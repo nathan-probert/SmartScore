@@ -5,6 +5,7 @@ from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 from decorators import lambda_handler_error_responder
 from service import (
     backfill_dates,
+    calculate_metrics,
     check_db_for_date,
     choose_picks,
     get_date,
@@ -17,6 +18,7 @@ from service import (
     merge_injury_data,
     publish_public_db,
     separate_players,
+    update_metrics,
     write_historic_db,
 )
 
@@ -193,6 +195,8 @@ def handle_publish_db(event, context):
     """
 
     entries = event.get("players")
+    if not entries:
+        entries = []
 
     publish_public_db(entries)
 
@@ -222,7 +226,10 @@ def handle_save_historic_db(event, context):
     players = event.get("players")
     picks = choose_picks(players)
 
-    write_historic_db(picks)
+    yesterday_results = write_historic_db(picks)
+
+    new_metrics = calculate_metrics(yesterday_results)
+    update_metrics(new_metrics)
 
     return {"statusCode": 200, "players": players}
 
@@ -233,7 +240,7 @@ def handle_get_injuries(event, context):
     Scrape current injury data from RotoWire.
 
     Args:
-        event (dict): Unused event data.
+        event (dict): A dictionary containing player data.
         context (dict): Unused Lambda context.
 
     Returns:

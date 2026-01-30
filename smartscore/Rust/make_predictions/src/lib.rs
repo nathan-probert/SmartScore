@@ -20,6 +20,7 @@ fn make_predictions_rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<(
     m.add_class::<PlayerInfo>()?;
     m.add_class::<MinMax>()?;
     m.add_class::<Weights>()?;
+    m.add_class::<weight_generation::WeightGenerator>()?;
     m.add_function(wrap_pyfunction!(predict, m)?)?;
     m.add_function(wrap_pyfunction!(test_weights, m)?)?;
     m.add_function(wrap_pyfunction!(generate_weight_permutations, m)?)?;

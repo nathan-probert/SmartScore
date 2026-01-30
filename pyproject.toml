@@ -21,10 +21,12 @@ beautifulsoup4 = "^4.12.3"
 pre-commit = "^4.0.1"
 ruff = "^0.5.5"
 pytest = "^8.2.2"
+pytest-cov = "^6.0.0"
 pandas = "^2.2.3"
 maturin = "^1.8.2"
 boto3 = "^1.40.6"
 statelint = "^2.0.0"
+warp-lang = "^1.11.0"
 
 [tool.poetry.requires-plugins]
 poetry-plugin-export = ">=1.9"
@@ -47,11 +49,41 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "PLR2004", "S105"]
+"smartscore/scripts/*" = ["PLR0915", "PLR0915", "PLR0912", "PLR0913", "E741", "PLR2004"]
+
+[tool.coverage.run]
+source = ["smartscore"]
+omit = [
+    "*/tests/*",
+    "*/scripts/*",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
 "tests/*" = [
   "D",
   "S",
   "PLR2004",
   "ARG001",
+]
+"smartscore/scripts/*" = [
+  "PLR0913", # Too many arguments in function definition
+  "PLR0912", # Too many branches
+  "PLR0915", # Too many statements
+  "PLR2004", # Magic value
+  "E741",    # Ambiguous variable name
 ]
 
 [tool.ruff.lint.pylint]
