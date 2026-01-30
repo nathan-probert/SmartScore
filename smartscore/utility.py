@@ -9,6 +9,7 @@ from dateutil import parser
 from postgrest.exceptions import APIError
 
 from config import ENV, SUPABASE_CLIENT
+from constants import CURRENT_PICK_ACCURACY
 
 logger = Logger()
 
@@ -209,7 +210,7 @@ def exponential_backoff_request(
 
 
 def exponential_backoff_supabase_request(
-    table_name, method="get", data=None, json_data=None, max_retries=5, base_delay=1
+    table_name, method="get", data=None, json_data=None, max_retries=5, base_delay=1, select="*", eq=None
 ):
     """
     Makes Supabase requests with exponential backoff retry strategy.
@@ -220,17 +221,23 @@ def exponential_backoff_supabase_request(
         json_data: JSON data for POST requests
         max_retries: Maximum number of retry attempts
         base_delay: Base delay between retries in seconds
+        select: Columns to select in GET requests
 
     Returns:
         Parsed JSON response
     """
     method = method.upper()
 
-    logger.info(f"Making {method} request to table: {table_name} with data: {json_data}")
+    logger.info(f"Making {method} request to table: {table_name} with data: {json_data} select: {select} eq: {eq}")
     for attempt in range(max_retries):
         try:
             if method == "GET":
-                response = (SUPABASE_CLIENT.table(table_name).select("*").execute()).data
+                query = SUPABASE_CLIENT.table(table_name).select(select)
+                if eq is not None:
+                    # eq should be a tuple: (column, value)
+                    col, val = eq
+                    query = query.eq(col, val)
+                response = query.execute().data
             elif method == "POST":
                 # Clear the table before inserting new data
                 SUPABASE_CLIENT.table(table_name).delete().neq("id", 0).execute()
@@ -280,3 +287,23 @@ def adjust_name(df_name):
         df_name = df_name.replace(old_name, new_name)
 
     return df_name
+
+
+def get_cur_pick_pct():
+    response = exponential_backoff_supabase_request(
+        f"Metrics-{ENV}",
+        method="get",
+        eq=("id", CURRENT_PICK_ACCURACY),
+    )
+    if not response:
+        return
+
+    return {
+        "value": round(response[0].get("value", 0.0), 3),
+        "correct": response[0].get("correct", 0),
+        "total": response[0].get("total", 0),
+    }
+
+
+def upload_metrics(metrics) -> None:
+    exponential_backoff_supabase_request(f"Metrics-{ENV}", method="post", json_data=metrics)
