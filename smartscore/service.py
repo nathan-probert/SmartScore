@@ -443,7 +443,6 @@ def calculate_metrics(yesterday_results: List[Dict]) -> List[Dict]:
         return []
 
     cur_picks_overall = get_cur_pick_pct()
-    logger.info(f"Current pick percentage: {cur_picks_overall['value']:.2f}%")
     if not cur_picks_overall:
         return {
             "value": "-",
