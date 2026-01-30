@@ -195,6 +195,8 @@ def handle_publish_db(event, context):
     """
 
     entries = event.get("players")
+    if not entries:
+        entries = []
 
     publish_public_db(entries)
 
