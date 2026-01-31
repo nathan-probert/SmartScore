@@ -1,4 +1,4 @@
-from smartscore.utility import get_emails
+from utility import get_emails
 
 
 def test_get_emails_returns_list():
