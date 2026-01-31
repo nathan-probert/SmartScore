@@ -324,9 +324,14 @@ def write_historic_db(picks):
     table = defaultdict(list)
     for entry in old_entries:
         table[entry["date"]].append((entry["player_id"], entry["Scored"]))
+
+    # Return yesterday's 3 players
+    yesterday = get_date(subtract_days=1)
+    yesterdays_entries = [entry for entry in data if entry.get("date") == yesterday]
+
     if today in table.keys():
         logger.info(f"Today already in table: {table[today]}")
-        return
+        return yesterdays_entries
 
     if picks:
         while len(table) >= DAYS_TO_KEEP_HISTORIC_DATA:
@@ -354,9 +359,6 @@ def write_historic_db(picks):
     data = old_entries + picks if picks else old_entries
     update_historical_data(data)
 
-    # Return yesterday's 3 players
-    yesterday = get_date(subtract_days=1)
-    yesterdays_entries = [entry for entry in data if entry.get("date") == yesterday]
     return yesterdays_entries
 
 
@@ -443,7 +445,7 @@ def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]]) -> Li
 
 
 def calculate_metrics(yesterday_results: List[Dict]) -> List[Dict]:
-    if len(yesterday_results) != NUM_EXPECTED_PLAYERS:
+    if not yesterday_results or len(yesterday_results) != NUM_EXPECTED_PLAYERS:
         logger.warning(
             f"Yesterday's results do not have exactly {NUM_EXPECTED_PLAYERS} players, skipping metrics calculation"
         )
@@ -462,7 +464,7 @@ def calculate_metrics(yesterday_results: List[Dict]) -> List[Dict]:
     new_correct = cur_picks_overall["correct"] + correct_picks
 
     return {
-        "value": (new_correct / new_total) * 100,
+        "value": round((new_correct / new_total) * 100, 2),
         "total": new_total,
         "correct": new_correct,
     }
