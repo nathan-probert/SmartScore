@@ -455,7 +455,7 @@ def calculate_metrics(yesterday_results: List[Dict]) -> List[Dict]:
     new_correct = cur_picks_overall["correct"] + correct_picks
 
     return {
-        "value": (new_correct / new_total) * 100,
+        "value": round((new_correct / new_total) * 100, 2),
         "total": new_total,
         "correct": new_correct,
     }
