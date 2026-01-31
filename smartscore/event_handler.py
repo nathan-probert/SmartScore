@@ -172,7 +172,7 @@ def handle_get_tims(event, context):
         "statusCode": 200,
         "date": get_date(),
         "players": players,
-        "status": event.get("status"),
+        "status": event.get("status", "first_run"),
     }
 
 
