@@ -87,13 +87,13 @@
             "Type": "Choice",
             "Choices": [
                 {
-                    "Variable": "$.is_initial_run",
-                    "BooleanEquals": true,
+                    "Variable": "$.status",
+                    "StringEquals": "first_run",
                     "Next": "SaveToDb"
                 },
                 {
-                    "Variable": "$.is_initial_run",
-                    "BooleanEquals": false,
+                    "Variable": "$.status",
+                    "StringEquals": "normal_run",
                     "Next": "PublishToDb"
                 }
             ]
