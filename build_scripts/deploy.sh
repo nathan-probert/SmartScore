@@ -32,8 +32,26 @@ LAMBDA_FUNCTIONS=(
 
 generate_smartscore_stack() {
   export $(grep -v '^#' .env | xargs)
-  if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_API_KEY" ]; then
-    echo "Error: SUPABASE_URL or SUPABASE_API_KEY environment variables are not set."
+  # List of required environment variables
+  REQUIRED_VARS=(
+    "ENV"
+    "SUPABASE_URL"
+    "SUPABASE_API_KEY"
+    "SUPABASE_SERVICE_ROLE_KEY"
+    "BREVO_SMTP_LOGIN"
+    "BREVO_SMTP_KEY"
+    "BREVO_FROM_EMAIL"
+  )
+
+  MISSING_VARS=()
+  for VAR in "${REQUIRED_VARS[@]}"; do
+    if [ -z "${!VAR}" ]; then
+      MISSING_VARS+=("$VAR")
+    fi
+  done
+
+  if [ ${#MISSING_VARS[@]} -ne 0 ]; then
+    echo "Error: The following environment variables are not set: ${MISSING_VARS[*]}"
     exit 1
   fi
 
@@ -45,6 +63,10 @@ generate_smartscore_stack() {
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
+        ParameterKey=SupabaseServiceRoleKey,ParameterValue="$SUPABASE_SERVICE_ROLE_KEY" \
+        ParameterKey=BrevoSmtpLogin,ParameterValue="$BREVO_SMTP_LOGIN" \
+        ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
+        ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -61,6 +83,10 @@ generate_smartscore_stack() {
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
+        ParameterKey=SupabaseServiceRoleKey,ParameterValue="$SUPABASE_SERVICE_ROLE_KEY" \
+        ParameterKey=BrevoSmtpLogin,ParameterValue="$BREVO_SMTP_LOGIN" \
+        ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
+        ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."

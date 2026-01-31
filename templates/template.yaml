@@ -167,6 +167,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   GetPlayersFromTeamFunction:
     Type: AWS::Lambda::Function
@@ -186,6 +187,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   MakePredictionsFunction:
     Type: AWS::Lambda::Function
@@ -205,6 +207,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   GetTimsFunction:
     Type: AWS::Lambda::Function
@@ -224,6 +227,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   PerformBackfillingFunction:
     Type: AWS::Lambda::Function
@@ -239,6 +243,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -258,6 +263,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -277,6 +283,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -296,6 +303,10 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          BREVO_SMTP_LOGIN: !Ref BrevoSmtpLogin
+          BREVO_SMTP_KEY: !Ref BrevoSmtpKey
+          BREVO_FROM_EMAIL: !Ref BrevoFromEmail
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -315,6 +326,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -338,6 +350,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   GetInjuriesFunction:
     Type: AWS::Lambda::Function
@@ -357,6 +370,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   # IAM Role for EventBridge to invoke Step Function
   EventBridgeInvokeRole:
