@@ -299,11 +299,12 @@ def get_cur_pick_pct():
         return
 
     return {
-        "value": round(response[0].get("value", 0.0), 3),
+        "value": response[0].get("value", 0.0),
         "correct": response[0].get("correct", 0),
         "total": response[0].get("total", 0),
     }
 
 
 def upload_metrics(metrics) -> None:
+    metrics["id"] = CURRENT_PICK_ACCURACY
     exponential_backoff_supabase_request(f"Metrics-{ENV}", method="post", json_data=metrics)
