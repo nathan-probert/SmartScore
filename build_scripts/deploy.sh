@@ -31,7 +31,6 @@ LAMBDA_FUNCTIONS=(
 
 
 generate_smartscore_stack() {
-  export $(grep -v '^#' .env | xargs)
   # List of required environment variables
   REQUIRED_VARS=(
     "ENV"

@@ -12,6 +12,18 @@ Parameters:
   SupabaseApiKey:
     Type: String
     Description: The API key for Supabase
+  SupabaseServiceRoleKey:
+    Type: String
+    Description: The Service Role Key for Supabase
+  BrevoSmtpLogin:
+    Type: String
+    Description: The SMTP login for Brevo
+  BrevoSmtpKey:
+    Type: String
+    Description: The SMTP key for Brevo
+  BrevoFromEmail:
+    Type: String
+    Description: The "from" email address for Brevo
 
 Resources:
   # IAM Role for Lambda Execution
