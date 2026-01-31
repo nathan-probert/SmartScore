@@ -327,7 +327,7 @@ def write_historic_db(picks):
 
     # Return yesterday's 3 players
     yesterday = get_date(subtract_days=1)
-    yesterdays_entries = [entry for entry in data if entry.get("date") == yesterday]
+    yesterdays_entries = [entry for entry in old_entries if entry.get("date") == yesterday]
 
     if today in table.keys():
         logger.info(f"Today already in table: {table[today]}")
