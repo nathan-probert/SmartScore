@@ -306,4 +306,5 @@ def get_cur_pick_pct():
 
 
 def upload_metrics(metrics) -> None:
+    metrics["id"] = CURRENT_PICK_ACCURACY
     exponential_backoff_supabase_request(f"Metrics-{ENV}", method="post", json_data=metrics)
