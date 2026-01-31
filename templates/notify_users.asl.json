@@ -1,0 +1,16 @@
+{
+    "Comment": "A state machine to handle notifying the users via email",
+    "StartAt": "GetDate",
+    "States": {
+        "GetDate": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:CheckCompleted-${ENV}",
+            "Next": "SendEmails"
+        },
+        "SendEmails": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:SendEmails-${ENV}",
+            "End": true
+        }
+    }
+}

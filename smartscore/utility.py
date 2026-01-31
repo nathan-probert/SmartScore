@@ -8,7 +8,7 @@ from aws_lambda_powertools import Logger
 from dateutil import parser
 from postgrest.exceptions import APIError
 
-from config import ENV, SUPABASE_CLIENT
+from config import ENV, SUPABASE_ADMIN_AUTH_CLIENT, SUPABASE_CLIENT
 from constants import CURRENT_PICK_ACCURACY
 
 logger = Logger()
@@ -307,3 +307,26 @@ def get_cur_pick_pct():
 
 def upload_metrics(metrics) -> None:
     exponential_backoff_supabase_request(f"Metrics-{ENV}", method="post", json_data=metrics)
+
+
+def get_emails():
+    """
+    Fetches emails for users who have opted in to notifications.
+
+    Implements the canonical query via the get_opted_in_emails() database function:
+        SELECT u.email
+        FROM public.user_preferences p
+        JOIN auth.users u ON u.id = p.user_id
+        WHERE p.notify = true AND u.email IS NOT NULL
+
+    Returns a list of emails for users who want notifications.
+    """
+
+    try:
+        response = SUPABASE_ADMIN_AUTH_CLIENT.rpc("get_opted_in_emails").execute()
+        emails = [row["email"] for row in response.data if row.get("email")]
+        logger.info(f"Found {len(emails)} users with notifications enabled")
+        return emails
+    except (KeyError, AttributeError, Exception) as e:
+        logger.error(f"Failed to fetch opted-in emails: {e.__class__.__name__}: {e}")
+        return []

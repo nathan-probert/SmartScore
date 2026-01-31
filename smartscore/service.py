@@ -2,6 +2,7 @@ import datetime
 import json
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List
 
 import make_predictions_rust
@@ -13,9 +14,11 @@ from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 
 from config import ENV
 from constants import DAYS_TO_KEEP_HISTORIC_DATA, LAMBDA_API_NAME, NUM_EXPECTED_PLAYERS, WEIGHTS
+from email_utility import send_email
 from utility import (
     exponential_backoff_request,
     get_cur_pick_pct,
+    get_emails,
     get_historical_data,
     get_tims_players,
     get_today_db,
@@ -294,14 +297,18 @@ def choose_picks(players):
     # get the top pick from each tims {1,2,3}
     tims_picks = {}
     for player in players:
-        tims = player["tims"]
+        tims = int(player["tims"])
         if tims not in tims_picks:
             tims_picks[tims] = player
         elif player["stat"] > tims_picks[tims]["stat"]:
             tims_picks[tims] = player
     tims_picks.pop(0, None)
 
-    for i in range(1, 4):
+    if len(tims_picks) < NUM_EXPECTED_PLAYERS:
+        logger.error(f"Less than {NUM_EXPECTED_PLAYERS} tims picks found: {tims_picks.keys()}")
+        return []
+
+    for i in range(1, NUM_EXPECTED_PLAYERS + 1):
         tims_picks[i]["Scored"] = None
     return list(tims_picks.values())
 
@@ -467,3 +474,17 @@ def update_metrics(new_metrics: List[Dict]) -> None:
         return
 
     upload_metrics(new_metrics)
+
+
+def get_all_emails() -> List[str]:
+    return get_emails()
+
+
+def send_emails(emails: List[str], picks: List[Dict]) -> None:
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(send_email, email, picks) for email in emails]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Error sending email in parallel: {e}")

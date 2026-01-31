@@ -131,6 +131,22 @@ Resources:
           }
         }
 
+  NotifyUsersStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "NotifyUsers-${ENV}"
+      RoleArn: !GetAtt StateMachineExecutionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "StartAt": "Placeholder",
+          "States": {
+            "Placeholder": {
+              "Type": "Pass",
+              "End": true
+            }
+          }
+        }
+
 
   # Lambda Functions
   GetTeamsFunction:
@@ -252,6 +268,25 @@ Resources:
     Properties:
       FunctionName: !Sub "CheckCompleted-${ENV}"
       Handler: event_handler.handle_check_completed
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
+
+  SendEmailsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "SendEmails-${ENV}"
+      Handler: event_handler.handle_emails
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
       Timeout: 30
@@ -396,6 +431,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/CheckCompleted-${ENV}"
+      RetentionInDays: 1
+
+  SendEmailsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/SendEmails-${ENV}"
       RetentionInDays: 1
 
   ParseDataLogGroup:

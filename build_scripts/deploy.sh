@@ -26,6 +26,7 @@ LAMBDA_FUNCTIONS=(
   "ParseData-$ENV"
   "UpdateHistory-$ENV"
   "GetInjuries-$ENV"
+  "SendEmails-$ENV"
 )
 
 
@@ -233,6 +234,7 @@ generate_smartscore_stack
 echo "Deploying Step Functions..."
 deploy_state_machine "PlayerProcessingPipeline" "templates/player_processing_pipeline.asl.json"
 deploy_state_machine "GetPlayers" "templates/get_players.asl.json"
+deploy_state_machine "SendEmails" "templates/send_emails.asl.json"
 
 # update the Lambda function code
 update_lambda_code
