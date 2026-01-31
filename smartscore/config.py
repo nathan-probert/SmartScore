@@ -27,3 +27,7 @@ SUPABASE_ADMIN_AUTH_CLIENT: Client = create_client(
 # Email
 GMAIL_EMAIL = os.environ.get("GMAIL_EMAIL")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
+
+BREVO_SMTP_LOGIN = os.environ.get("BREVO_SMTP_LOGIN")
+BREVO_SMTP_KEY = os.environ.get("BREVO_SMTP_KEY")
+BREVO_FROM_EMAIL = os.environ.get("BREVO_FROM_EMAIL")

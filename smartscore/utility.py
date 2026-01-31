@@ -326,7 +326,8 @@ def get_emails():
         response = SUPABASE_ADMIN_AUTH_CLIENT.rpc("get_opted_in_emails").execute()
         users = [
             {"email": row["email"], "display_name": row.get("Display_name", "")}
-            for row in response.data if row.get("email")
+            for row in response.data
+            if row.get("email")
         ]
         logger.info(f"Found {len(users)} users with notifications enabled")
         return users

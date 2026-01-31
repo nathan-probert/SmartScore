@@ -5,7 +5,7 @@ from typing import Dict, List
 
 from aws_lambda_powertools import Logger
 
-from config import GMAIL_APP_PASSWORD, GMAIL_EMAIL
+from config import BREVO_FROM_EMAIL, BREVO_SMTP_KEY, BREVO_SMTP_LOGIN
 
 
 def get_html_and_text(picks: List[Dict], display_name: str = "") -> (str, str):
@@ -40,7 +40,11 @@ def get_html_and_text(picks: List[Dict], display_name: str = "") -> (str, str):
         text_body += f"{pick.get('tims', '')} | {pick.get('name', '')} | {pick.get('team_name', '')} | {stat_str}\n"
 
     # HTML
-    greeting_html = f"<p style='font-size:1.1em;text-align:center;color:{foreground};'>Hi {display_name},</p>" if display_name else ""
+    greeting_html = (
+        f"<p style='font-size:1.1em;text-align:center;color:{foreground};'>Hi {display_name},</p>"
+        if display_name
+        else ""
+    )
     html_body = f"""
 <html>
   <body style="font-family: Arial, sans-serif; color: {foreground}; background-color: {background}; \
@@ -105,26 +109,28 @@ def get_html_and_text(picks: List[Dict], display_name: str = "") -> (str, str):
     return html_body, text_body
 
 
-def send_email(email: str, picks: List[Dict], display_name: str = "") -> None:
+def send_email(email: str, picks: List[Dict], display_name: str = "", date: str = "") -> None:
     logger = Logger()
+
     try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server = smtplib.SMTP("smtp-relay.brevo.com", 587)
         server.starttls()
-        server.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
+        server.login(BREVO_SMTP_LOGIN, BREVO_SMTP_KEY)
 
         msg = MIMEMultipart("alternative")
-        msg["From"] = GMAIL_EMAIL
+        msg["From"] = BREVO_FROM_EMAIL
         msg["To"] = email
-        msg["Subject"] = "Your Picks Update"
+        msg["Subject"] = f"SmartScore Daily Picks - {date}"
 
-        # Use the shared template function, now pass display_name
         html_body, text_body = get_html_and_text(picks, display_name)
 
         msg.attach(MIMEText(text_body, "plain"))
         msg.attach(MIMEText(html_body, "html"))
+
         server.send_message(msg)
+        server.quit()
+
         logger.info(f"Email sent to {email}")
 
-        server.quit()
     except (smtplib.SMTPException, ConnectionError) as e:
         logger.error(f"Failed to send email to {email}: {e}")
