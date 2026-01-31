@@ -8,7 +8,7 @@ from aws_lambda_powertools import Logger
 from config import GMAIL_APP_PASSWORD, GMAIL_EMAIL
 
 
-def get_html_and_text(picks: List[Dict]) -> (str, str):
+def get_html_and_text(picks: List[Dict], display_name: str = "") -> (str, str):
     logo_url = "https://raw.githubusercontent.com/nathan-probert/portfolio-site/refs/heads/main/public/images/logo.jpg"
     background = "#141720"
     card_bg = "#212531"
@@ -27,7 +27,9 @@ def get_html_and_text(picks: List[Dict]) -> (str, str):
     sorted_picks = sorted(picks, key=tims_key)
 
     # Plain text
-    text_body = "Tims | Name | Team | Probability\n"
+    greeting = f"Hey {display_name},\n\n" if display_name else ""
+    text_body = greeting
+    text_body += "Tims | Name | Team | Probability\n"
     text_body += "-" * 40 + "\n"
     for pick in sorted_picks:
         stat = pick.get("stat", "")
@@ -38,6 +40,7 @@ def get_html_and_text(picks: List[Dict]) -> (str, str):
         text_body += f"{pick.get('tims', '')} | {pick.get('name', '')} | {pick.get('team_name', '')} | {stat_str}\n"
 
     # HTML
+    greeting_html = f"<p style='font-size:1.1em;text-align:center;color:{foreground};'>Hi {display_name},</p>" if display_name else ""
     html_body = f"""
 <html>
   <body style="font-family: Arial, sans-serif; color: {foreground}; background-color: {background}; \
@@ -49,6 +52,7 @@ def get_html_and_text(picks: List[Dict]) -> (str, str):
           filter:drop-shadow(0 2px 8px #0008);" \
           onerror="this.style.display='none';this.insertAdjacentHTML('afterend', '<div style=\'font-size:1.2em;color:{primary};margin-bottom:18px;\'>SmartScore logo</div>');">
       </div>
+      {greeting_html}
       <p style="font-size:1.1em;text-align:center;color:{foreground};">Here are your picks for today:</p>
       <table style="width:100%;border-collapse:collapse;margin:18px 0 18px 0;background:{card_bg};">
         <thead>
@@ -101,7 +105,7 @@ def get_html_and_text(picks: List[Dict]) -> (str, str):
     return html_body, text_body
 
 
-def send_email(email: str, picks: List[Dict]) -> None:
+def send_email(email: str, picks: List[Dict], display_name: str = "") -> None:
     logger = Logger()
     try:
         server = smtplib.SMTP("smtp.gmail.com", 587)
@@ -113,8 +117,8 @@ def send_email(email: str, picks: List[Dict]) -> None:
         msg["To"] = email
         msg["Subject"] = "Your Picks Update"
 
-        # Use the shared template function
-        html_body, text_body = get_html_and_text(picks)
+        # Use the shared template function, now pass display_name
+        html_body, text_body = get_html_and_text(picks, display_name)
 
         msg.attach(MIMEText(text_body, "plain"))
         msg.attach(MIMEText(html_body, "html"))

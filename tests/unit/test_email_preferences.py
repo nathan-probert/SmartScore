@@ -15,7 +15,7 @@ def test_get_emails_only_notify_true(monkeypatch):
         ]
 
     monkeypatch.setattr(
-        "smartscore.utility.SUPABASE_ADMIN_AUTH_CLIENT",
+        "utility.SUPABASE_ADMIN_AUTH_CLIENT",
         type(
             "DummyClient",
             (),
@@ -23,7 +23,10 @@ def test_get_emails_only_notify_true(monkeypatch):
         )(),
     )
     emails = get_emails()
-    assert emails == ["user1@example.com", "user2@example.com"]
+    assert emails == [
+        {"email": "user1@example.com", "display_name": ""},
+        {"email": "user2@example.com", "display_name": ""},
+    ]
 
 
 def test_get_emails_empty(monkeypatch):
@@ -31,7 +34,7 @@ def test_get_emails_empty(monkeypatch):
         data = []
 
     monkeypatch.setattr(
-        "smartscore.utility.SUPABASE_ADMIN_AUTH_CLIENT",
+        "utility.SUPABASE_ADMIN_AUTH_CLIENT",
         type(
             "DummyClient",
             (),

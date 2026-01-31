@@ -324,9 +324,12 @@ def get_emails():
 
     try:
         response = SUPABASE_ADMIN_AUTH_CLIENT.rpc("get_opted_in_emails").execute()
-        emails = [row["email"] for row in response.data if row.get("email")]
-        logger.info(f"Found {len(emails)} users with notifications enabled")
-        return emails
+        users = [
+            {"email": row["email"], "display_name": row.get("Display_name", "")}
+            for row in response.data if row.get("email")
+        ]
+        logger.info(f"Found {len(users)} users with notifications enabled")
+        return users
     except (KeyError, AttributeError, Exception) as e:
         logger.error(f"Failed to fetch opted-in emails: {e.__class__.__name__}: {e}")
         return []

@@ -480,9 +480,12 @@ def get_all_emails() -> List[str]:
     return get_emails()
 
 
-def send_emails(emails: List[str], picks: List[Dict]) -> None:
+def send_emails(users: List[str], picks: List[Dict]) -> None:
     with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(send_email, email, picks) for email in emails]
+        futures = [
+            executor.submit(send_email, user["email"], picks, user.get("display_name", ""))
+            for user in users
+        ]
         for future in as_completed(futures):
             try:
                 future.result()
