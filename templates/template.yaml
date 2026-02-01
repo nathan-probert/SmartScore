@@ -95,6 +95,7 @@ Resources:
                   - !GetAtt ParseData.Arn
                   - !GetAtt UpdateHistoryFunction.Arn
                   - !GetAtt GetInjuriesFunction.Arn
+                  - !GetAtt SendEmailsFunction.Arn
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
               - Effect: Allow
                 Action:
