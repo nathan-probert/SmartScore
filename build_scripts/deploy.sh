@@ -259,7 +259,7 @@ generate_smartscore_stack
 echo "Deploying Step Functions..."
 deploy_state_machine "PlayerProcessingPipeline" "templates/player_processing_pipeline.asl.json"
 deploy_state_machine "GetPlayers" "templates/get_players.asl.json"
-deploy_state_machine "SendEmails" "templates/send_emails.asl.json"
+deploy_state_machine "NotifyUsers" "templates/notify_users.asl.json"
 
 # update the Lambda function code
 update_lambda_code
