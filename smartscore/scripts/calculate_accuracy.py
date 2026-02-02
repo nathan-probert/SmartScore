@@ -163,11 +163,11 @@ def main():
 
     print(f"\n{'='*80}")
     print("FINAL RESULTS:")
-    print(f"Overall: {correct_percentage:.1f}% | Correct: {correct_picks} | Wrong: {wrong_picks}")
+    print(f"Overall: {correct_percentage:.3f}% | Correct: {correct_picks} | Wrong: {wrong_picks}")
     for group in sorted(group_stats.keys()):
         stats = group_stats[group]
         pct = (stats["correct"] / stats["total"] * 100) if stats["total"] > 0 else 0
-        print(f"Group {group}: {pct:.1f}% | Correct: {stats['correct']} | Wrong: {stats['wrong']}")
+        print(f"Group {group}: {pct:.3f}% | Correct: {stats['correct']} | Wrong: {stats['wrong']}")
     print(f"{'='*80}")
 
     print(

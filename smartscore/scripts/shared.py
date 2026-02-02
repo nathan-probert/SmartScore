@@ -57,11 +57,11 @@ def create_csv():
 
 
 def get_data():
-    # Uncomment this to ask about downloading data each time
-    # print("Do you want to download the data from the database? (y/n)")
-    # choice = input().split()[0].lower()
-    # if choice == "y":
-    #     create_csv()
+    # Comment this to skip ask about downloading data each time
+    print("Do you want to download the data from the database? (y/n)")
+    choice = input().split()[0].lower()
+    if choice == "y":
+        create_csv()
 
     data = pd.read_csv(DATA_PATH, encoding="utf-8", low_memory=False)
 
