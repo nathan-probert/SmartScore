@@ -417,6 +417,16 @@ Resources:
           RoleArn: !GetAtt EventBridgeInvokeRole.Arn
           Id: PlayerProcessingPipelineStateMachineTarget
 
+  DailySendEmailTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(0 14 * * ? *)"  # 9 AM EST (14:00 UTC)
+      State: ENABLED
+      Targets:
+        - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:NotifyUsers-${ENV}"
+          RoleArn: !GetAtt EventBridgeInvokeRole.Arn
+          Id: NotifyUsersStateMachineTarget
+
   # Lambda Log Groups
   GetTeamsLogGroup:
     Type: AWS::Logs::LogGroup
