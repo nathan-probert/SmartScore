@@ -62,13 +62,14 @@ def handle_check_completed(event, context):
             - "status" (str): The current status of data retrieval.
             - "players" (list | None): Retrieved player data, if available.
     """
-    if event.get("last_game"):
-        return {"statusCode": 200, "status": "last_run", "players": None}
 
     entries = check_db_for_date()
-    status = "first_run"
-    if entries:
+    if event.get("last_game"):
+        status = "last_run"
+    elif entries:
         status = "normal_run"
+    else:
+        status = "first_run"
 
     return {"statusCode": 200, "status": status, "players": entries}
 
@@ -174,7 +175,7 @@ def handle_get_tims(event, context):
         "statusCode": 200,
         "date": get_date(),
         "players": players,
-        "status": event.get("status"),
+        "status": event.get("status", "first_run"),
     }
 
 

@@ -40,10 +40,15 @@ def test_handle_check_completed_normal_run(mock_check_db):
 @patch("event_handler.check_db_for_date")
 def test_handle_check_completed_last_game(mock_check_db):
     """Test when last_game flag is set."""
+    mock_entries = [
+        {"player_id": 1, "name": "Player 1", "date": "2024-01-15"},
+        {"player_id": 2, "name": "Player 2", "date": "2024-01-15"},
+    ]
+    mock_check_db.return_value = mock_entries
+
     result = handle_check_completed({"last_game": True}, {})
 
-    assert result == {"statusCode": 200, "status": "last_run", "players": None}
-    mock_check_db.assert_not_called()
+    assert result == {"statusCode": 200, "status": "last_run", "players": mock_entries}
 
 
 @patch("event_handler.publish_public_db")
