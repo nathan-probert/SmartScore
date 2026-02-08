@@ -404,8 +404,9 @@ Resources:
               - Effect: Allow
                 Action:
                   - states:StartExecution
-                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
-                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:NotifyUsers-${ENV}"
+                Resource:
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:NotifyUsers-${ENV}"
   # EventBridge Rule to trigger Step Function daily at 8 AM UTC
   DailyStepFunctionTrigger:
     Type: AWS::Events::Rule
