@@ -14,7 +14,7 @@ python-dotenv = "^1.0.1"
 smartscore-info-client = {git = "https://github.com/nathan-probert/smartscore-info-client.git", rev = "v2.2.0"}
 pytz = "^2024.2"
 unidecode = "^1.3.8"
-supabase = "^2.15.0"
+supabase = "^2.27.0"
 beautifulsoup4 = "^4.12.3"
 urllib3 = "^2.6.3"
 numpy = "^2.4.1"
@@ -53,6 +53,7 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "PLR2004", "S105"]
 "smartscore/scripts/*" = ["PLR0915", "PLR0915", "PLR0912", "PLR0913", "E741", "PLR2004"]
+"smartscore/email_utility.py" = ["E501"]
 
 [tool.coverage.run]
 source = ["smartscore"]

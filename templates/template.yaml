@@ -12,6 +12,18 @@ Parameters:
   SupabaseApiKey:
     Type: String
     Description: The API key for Supabase
+  SupabaseServiceRoleKey:
+    Type: String
+    Description: The Service Role Key for Supabase
+  BrevoSmtpLogin:
+    Type: String
+    Description: The SMTP login for Brevo
+  BrevoSmtpKey:
+    Type: String
+    Description: The SMTP key for Brevo
+  BrevoFromEmail:
+    Type: String
+    Description: The "from" email address for Brevo
 
 Resources:
   # IAM Role for Lambda Execution
@@ -83,6 +95,7 @@ Resources:
                   - !GetAtt ParseData.Arn
                   - !GetAtt UpdateHistoryFunction.Arn
                   - !GetAtt GetInjuriesFunction.Arn
+                  - !GetAtt SendEmailsFunction.Arn
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
               - Effect: Allow
                 Action:
@@ -131,6 +144,22 @@ Resources:
           }
         }
 
+  NotifyUsersStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "NotifyUsers-${ENV}"
+      RoleArn: !GetAtt StateMachineExecutionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "StartAt": "Placeholder",
+          "States": {
+            "Placeholder": {
+              "Type": "Pass",
+              "End": true
+            }
+          }
+        }
+
 
   # Lambda Functions
   GetTeamsFunction:
@@ -151,6 +180,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   GetPlayersFromTeamFunction:
     Type: AWS::Lambda::Function
@@ -170,6 +200,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   MakePredictionsFunction:
     Type: AWS::Lambda::Function
@@ -189,6 +220,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   GetTimsFunction:
     Type: AWS::Lambda::Function
@@ -208,6 +240,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   PerformBackfillingFunction:
     Type: AWS::Lambda::Function
@@ -223,6 +256,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -242,6 +276,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -261,6 +296,30 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
+
+  SendEmailsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "SendEmails-${ENV}"
+      Handler: event_handler.handle_emails
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          BREVO_SMTP_LOGIN: !Ref BrevoSmtpLogin
+          BREVO_SMTP_KEY: !Ref BrevoSmtpKey
+          BREVO_FROM_EMAIL: !Ref BrevoFromEmail
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -280,6 +339,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -303,6 +363,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   GetInjuriesFunction:
     Type: AWS::Lambda::Function
@@ -322,6 +383,7 @@ Resources:
           ENV: !Ref ENV
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
 
   # IAM Role for EventBridge to invoke Step Function
   EventBridgeInvokeRole:
@@ -342,8 +404,9 @@ Resources:
               - Effect: Allow
                 Action:
                   - states:StartExecution
-                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
-
+                Resource:
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:NotifyUsers-${ENV}"
   # EventBridge Rule to trigger Step Function daily at 8 AM UTC
   DailyStepFunctionTrigger:
     Type: AWS::Events::Rule
@@ -354,6 +417,16 @@ Resources:
         - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
           RoleArn: !GetAtt EventBridgeInvokeRole.Arn
           Id: PlayerProcessingPipelineStateMachineTarget
+
+  DailySendEmailTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(0 14 * * ? *)"  # 9 AM EST (14:00 UTC)
+      State: ENABLED
+      Targets:
+        - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:NotifyUsers-${ENV}"
+          RoleArn: !GetAtt EventBridgeInvokeRole.Arn
+          Id: NotifyUsersStateMachineTarget
 
   # Lambda Log Groups
   GetTeamsLogGroup:
@@ -396,6 +469,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/CheckCompleted-${ENV}"
+      RetentionInDays: 1
+
+  SendEmailsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/SendEmails-${ENV}"
       RetentionInDays: 1
 
   ParseDataLogGroup:
