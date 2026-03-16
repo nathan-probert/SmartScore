@@ -48,7 +48,7 @@ jobs:
             poetry-deps-${{ runner.os }}-
       
       - name: Install dependencies
-        run: poetry install --no-root
+        run: poetry install --with dev
       
       - name: Cache Rust build
         uses: actions/cache@v4
@@ -104,6 +104,15 @@ jobs:
         uses: actions/download-artifact@v6
         with:
           name: build-artifacts
+
+      - name: Use .venv from artifact
+        run: |
+          if [ -d .venv ]; then
+            echo ".venv found from artifact."
+          else
+            echo ".venv not found!"
+            exit 1
+          fi
       
       - name: Run lint
         run: poetry run make lint
@@ -139,6 +148,15 @@ jobs:
         uses: actions/download-artifact@v6
         with:
           name: build-artifacts
+
+      - name: Use .venv from artifact
+        run: |
+          if [ -d .venv ]; then
+            echo ".venv found from artifact."
+          else
+            echo ".venv not found!"
+            exit 1
+          fi
       
       - name: Run tests
         run: make test
