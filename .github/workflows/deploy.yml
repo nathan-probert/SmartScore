@@ -105,20 +105,6 @@ jobs:
         with:
           name: build-artifacts
 
-      - name: Move .venv to root
-        run: |
-          if [ -d ./build-artifacts/.venv ]; then
-            mv ./build-artifacts/.venv .venv
-          fi
-
-      - name: Use .venv from artifact
-        run: |
-          if [ -d .venv ]; then
-            echo ".venv found from artifact."
-          else
-            echo ".venv not found!"
-            exit 1
-          fi
       
       - name: Run lint
         run: poetry run make lint
@@ -155,20 +141,6 @@ jobs:
         with:
           name: build-artifacts
 
-      - name: Move .venv to root
-        run: |
-          if [ -d ./build-artifacts/.venv ]; then
-            mv ./build-artifacts/.venv .venv
-          fi
-
-      - name: Use .venv from artifact
-        run: |
-          if [ -d .venv ]; then
-            echo ".venv found from artifact."
-          else
-            echo ".venv not found!"
-            exit 1
-          fi
       
       - name: Run tests
         run: make test
