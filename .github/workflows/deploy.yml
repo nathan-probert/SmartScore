@@ -70,7 +70,6 @@ jobs:
             smartscore/Rust/make_predictions/target/release/*.dll
             smartscore/Rust/make_predictions/target/release/*.so
             smartscore/Rust/make_predictions/target/release/*.dylib
-            .venv
           retention-days: 1
 
   lint:
@@ -104,7 +103,6 @@ jobs:
         uses: actions/download-artifact@v6
         with:
           name: build-artifacts
-
       
       - name: Run lint
         run: poetry run make lint
@@ -141,7 +139,6 @@ jobs:
         with:
           name: build-artifacts
 
-      
       - name: Run tests
         run: make test
 
