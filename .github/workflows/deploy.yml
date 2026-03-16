@@ -105,6 +105,12 @@ jobs:
         with:
           name: build-artifacts
 
+      - name: Move .venv to root
+        run: |
+          if [ -d ./build-artifacts/.venv ]; then
+            mv ./build-artifacts/.venv .venv
+          fi
+
       - name: Use .venv from artifact
         run: |
           if [ -d .venv ]; then
@@ -148,6 +154,12 @@ jobs:
         uses: actions/download-artifact@v6
         with:
           name: build-artifacts
+
+      - name: Move .venv to root
+        run: |
+          if [ -d ./build-artifacts/.venv ]; then
+            mv ./build-artifacts/.venv .venv
+          fi
 
       - name: Use .venv from artifact
         run: |
