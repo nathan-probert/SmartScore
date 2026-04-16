@@ -117,12 +117,12 @@ generate_zip_file() {
   echo "Creating ZIP package for Lambda..."
   cd $OUTPUT_DIR
 
-  # Exclude any .zip files from the ZIP package
-  zip -r $KEY . -x "*.zip" > /dev/null
+  # Use maximum compression and exclude any existing zip artifacts.
+  zip -9 -r $KEY . -x "*.zip" > /dev/null
 
   cd ..
 
-  ZIP_FILE_SIZE=$(stat -c%s "$OUTPUT_DIR/$KEY")
+  ZIP_FILE_SIZE=$(wc -c < "$OUTPUT_DIR/$KEY")
   ZIP_FILE_SIZE_MB=$((ZIP_FILE_SIZE / 1024 / 1024))
 
   echo "Size of ZIP file: $ZIP_FILE_SIZE_MB MB"
@@ -131,6 +131,32 @@ generate_zip_file() {
       echo "Error: The ZIP file exceeds $MAX_ZIP_SIZE_MB MB. Aborting deployment."
       exit 1
   fi
+}
+
+
+prune_output_dir() {
+  echo "Pruning non-runtime artifacts from output..."
+
+  # These packages are not needed at Lambda runtime for this project and
+  # disproportionately increase package size.
+  rm -rf $OUTPUT_DIR/virtualenv
+  rm -rf $OUTPUT_DIR/virtualenv-*.dist-info
+  rm -rf $OUTPUT_DIR/python_discovery
+  rm -rf $OUTPUT_DIR/python_discovery-*.dist-info
+  rm -rf $OUTPUT_DIR/distlib
+  rm -rf $OUTPUT_DIR/distlib-*.dist-info
+  rm -rf $OUTPUT_DIR/filelock
+  rm -rf $OUTPUT_DIR/filelock-*.dist-info
+  rm -rf $OUTPUT_DIR/platformdirs
+  rm -rf $OUTPUT_DIR/platformdirs-*.dist-info
+
+  # Remove cache, bytecode and tests from vendored dependencies.
+  find $OUTPUT_DIR -type d -name "__pycache__" -exec rm -rf {} +
+  find $OUTPUT_DIR -type d -name "tests" -exec rm -rf {} +
+  find $OUTPUT_DIR -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+
+  # Console entry points are not used in Lambda runtime.
+  rm -rf $OUTPUT_DIR/bin
 }
 
 
@@ -248,6 +274,9 @@ cp -r $SOURCE_DIR/* $OUTPUT_DIR
 cp -r $OUTPUT_DIR/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so $OUTPUT_DIR/make_predictions_rust.so
 rm -rf $OUTPUT_DIR/C
 rm -rf $OUTPUT_DIR/Rust
+
+# remove unnecessary artifacts before zipping
+prune_output_dir
 
 # generate the ZIP file
 generate_zip_file

@@ -48,7 +48,7 @@ jobs:
             poetry-deps-${{ runner.os }}-
       
       - name: Install dependencies
-        run: poetry install --no-root
+        run: poetry install --with dev
       
       - name: Cache Rust build
         uses: actions/cache@v4
@@ -70,7 +70,6 @@ jobs:
             smartscore/Rust/make_predictions/target/release/*.dll
             smartscore/Rust/make_predictions/target/release/*.so
             smartscore/Rust/make_predictions/target/release/*.dylib
-            .venv
           retention-days: 1
 
   lint:
@@ -84,7 +83,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: 3.12
+          python-version: ${{ needs.setup.outputs.python-version }}
       
       - name: Cache Poetry installation
         uses: actions/cache@v4
@@ -119,7 +118,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: 3.12
+          python-version: ${{ needs.setup.outputs.python-version }}
       
       - name: Cache Poetry installation
         uses: actions/cache@v4
@@ -139,7 +138,7 @@ jobs:
         uses: actions/download-artifact@v6
         with:
           name: build-artifacts
-      
+
       - name: Run tests
         run: make test
 
