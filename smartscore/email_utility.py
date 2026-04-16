@@ -6,6 +6,7 @@ from typing import Dict, List
 from aws_lambda_powertools import Logger
 
 from config import BREVO_FROM_EMAIL, BREVO_SMTP_KEY, BREVO_SMTP_LOGIN
+from feature_flags import is_feature_enabled
 
 
 def get_html_and_text(picks: List[Dict], display_name: str = "") -> (str, str):
@@ -111,6 +112,10 @@ def get_html_and_text(picks: List[Dict], display_name: str = "") -> (str, str):
 
 def send_email(email: str, picks: List[Dict], display_name: str = "", date: str = "") -> None:
     logger = Logger()
+
+    if not is_feature_enabled("send_emails"):
+        logger.info(f"Feature flag disabled: skipping email to {email}")
+        return
 
     try:
         server = smtplib.SMTP("smtp-relay.brevo.com", 587)

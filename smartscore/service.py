@@ -15,6 +15,7 @@ from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
 from config import ENV
 from constants import DAYS_TO_KEEP_HISTORIC_DATA, LAMBDA_API_NAME, NUM_EXPECTED_PLAYERS, WEIGHTS
 from email_utility import send_email
+from feature_flags import is_feature_enabled
 from utility import (
     exponential_backoff_request,
     get_cur_pick_pct,
@@ -483,6 +484,10 @@ def get_all_emails() -> List[str]:
 
 
 def send_emails(users: List[str], picks: List[Dict]) -> None:
+    if not is_feature_enabled("send_emails"):
+        logger.info("Feature flag disabled: skipping email sends")
+        return
+
     with ThreadPoolExecutor() as executor:
         futures = [
             executor.submit(send_email, user["email"], picks, user.get("display_name", ""), get_date())

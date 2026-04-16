@@ -24,6 +24,9 @@ Parameters:
   BrevoFromEmail:
     Type: String
     Description: The "from" email address for Brevo
+  FeatureSendEmails:
+    Type: String
+    Description: Feature flag controlling whether notification emails are sent
 
 Resources:
   # IAM Role for Lambda Execution
@@ -320,6 +323,7 @@ Resources:
           BREVO_SMTP_LOGIN: !Ref BrevoSmtpLogin
           BREVO_SMTP_KEY: !Ref BrevoSmtpKey
           BREVO_FROM_EMAIL: !Ref BrevoFromEmail
+          FEATURE_SEND_EMAILS: !Ref FeatureSendEmails
       Code:
         ZipFile: |
           def lambda_handler(event, context):
