@@ -40,11 +40,25 @@ EXPECTED_PLAYERS = {
 # ---------------------------------------------------------------------------
 # PostHog flag toggling (user override scoped to the Lambda distinct id, so
 # real users are never affected).
+#
+# Two keys are involved:
+#   * POSTHOG_FEATURE_FLAG_KEY (project API key) - used by the deployed
+#     Lambdas and by the /flags propagation check below.
+#   * POSTHOG_PERSONAL_API_KEY - required to call the private project admin
+#     API to read the flag id and write the user override (a project key does
+#     not have permission for those endpoints).
 # ---------------------------------------------------------------------------
-def _posthog_api_key() -> str:
+def _project_api_key() -> str:
     key = os.environ.get("POSTHOG_FEATURE_FLAG_KEY")
     if not key:
         raise RuntimeError("POSTHOG_FEATURE_FLAG_KEY env var is required")
+    return key
+
+
+def _admin_api_key() -> str:
+    key = os.environ.get("POSTHOG_PERSONAL_API_KEY")
+    if not key:
+        raise RuntimeError("POSTHOG_PERSONAL_API_KEY env var is required")
     return key
 
 
@@ -61,7 +75,7 @@ def _flag_id() -> int:
     url = f"{POSTHOG_HOST}/api/projects/{_posthog_project_id()}/feature_flags/"
     resp = requests.get(
         url,
-        headers={"Authorization": f"Bearer {_posthog_api_key()}"},
+        headers={"Authorization": f"Bearer {_admin_api_key()}"},
         params={"key": FLAG_KEY},
         timeout=30,
     )
@@ -86,7 +100,7 @@ def _set_flag(enabled: bool) -> None:
     resp = requests.patch(
         url,
         headers={
-            "Authorization": f"Bearer {_posthog_api_key()}",
+            "Authorization": f"Bearer {_admin_api_key()}",
             "Content-Type": "application/json",
         },
         json=body,
@@ -104,7 +118,7 @@ def _wait_for_flag(enabled: bool) -> None:
         resp = requests.post(
             url,
             json={
-                "api_key": _posthog_api_key(),
+                "api_key": _project_api_key(),
                 "distinct_id": distinct_id,
                 "person_properties": {"env": ENVIRONMENT},
                 "groups": {},
@@ -122,7 +136,15 @@ def _wait_for_flag(enabled: bool) -> None:
 # AWS Lambda helpers.
 # ---------------------------------------------------------------------------
 def _enabled() -> bool:
-    return all(os.environ.get(name) for name in ("POSTHOG_FEATURE_FLAG_KEY", "POSTHOG_PROJECT_ID", "AWS_ACCOUNT_ID"))
+    return all(
+        os.environ.get(name)
+        for name in (
+            "POSTHOG_FEATURE_FLAG_KEY",
+            "POSTHOG_PERSONAL_API_KEY",
+            "POSTHOG_PROJECT_ID",
+            "AWS_ACCOUNT_ID",
+        )
+    )
 
 
 def _invoke(lambda_client, function_name: str, payload: Optional[dict] = None) -> dict:
@@ -147,7 +169,10 @@ def _fetch_roster_players(lambda_client, teams: List[dict]) -> Dict[str, set]:
 @pytest.mark.integration
 def test_get_teams_and_players_run_against_mock_data():
     if not _enabled():
-        pytest.skip("integration disabled: set POSTHOG_FEATURE_FLAG_KEY, " "POSTHOG_PROJECT_ID, and AWS_ACCOUNT_ID")
+        pytest.skip(
+            "integration disabled: set POSTHOG_FEATURE_FLAG_KEY, "
+            "POSTHOG_PERSONAL_API_KEY, POSTHOG_PROJECT_ID, and AWS_ACCOUNT_ID"
+        )
 
     lambda_client = boto3.client("lambda", region_name=REGION)
 
