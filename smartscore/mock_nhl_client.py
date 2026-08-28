@@ -23,6 +23,11 @@ from smartscore_info_client.models.team import TeamStats
 # (dev only). In local tests the base directory is always passed explicitly.
 _FIXTURES_DIR = Path(os.environ.get("NHL_FIXTURES_DIR", "fixtures/nhl"))
 
+# The mock serves a frozen day of games. ``get_schedule``/``get_score`` ignore
+# the caller-provided date (e.g. "today") and always return this fixture, so
+# the mock keeps working in the off-season regardless of the runtime date.
+_MOCK_DATE = os.environ.get("NHL_MOCK_DATE", "2025-06-11")
+
 
 class MockNHLClient(NHLClient):
     """NHLClient whose methods return frozen fixtures keyed by path."""
@@ -41,10 +46,10 @@ class MockNHLClient(NHLClient):
         return self._cache[relative_path]
 
     def get_schedule(self, date):
-        return self._load(f"schedule/{date}.json")
+        return self._load(f"schedule/{_MOCK_DATE}.json")
 
     def get_score(self, date):
-        return self._load(f"score/{date}.json")
+        return self._load(f"score/{_MOCK_DATE}.json")
 
     def get_roster(self, team_abbr):
         return self._load(f"roster/{team_abbr}.json")
