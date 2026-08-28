@@ -86,13 +86,15 @@ def main():
     # Total predictions: 639
     # Accuracy: 31.0%
 
+    THRESHOLD = 0.5  # Threshold for selecting players based on probability
+
     # Get players with names
     all_players_with_names = get_players_with_names()
 
     # Only include players on or after the start date
     from datetime import datetime
 
-    start_date = datetime.strptime("2025-10-07", "%Y-%m-%d")
+    start_date = datetime.strptime("2025-01-25", "%Y-%m-%d")
     filtered_players_with_names = [
         (player, name)
         for player, name in all_players_with_names
@@ -114,9 +116,12 @@ def main():
 
     date_tims_groups = defaultdict(lambda: defaultdict(list))
 
+    players_over_threshold = []
     for (player, name), probability in zip(filtered_players_with_names, probabilities):
         if player.tims in {1, 2, 3}:
             date_tims_groups[player.date][player.tims].append((player, name, probability))
+        if probability >= THRESHOLD:
+            players_over_threshold.append((player, name, probability))
 
     # Print header
     print(f"{'Date':<12} {'Name':<20} {'Probability':<12} {'Scored (T/F)':<12} {'Tims':<8}")
@@ -149,6 +154,9 @@ def main():
     wrong_picks = total_picks - correct_picks
     correct_percentage = (correct_picks / total_picks * 100) if total_picks > 0 else 0
 
+    total_picks_over_threshold = len(players_over_threshold)
+    correct_picks_over_threshold = sum(1 for player, _, _ in players_over_threshold if player.scored == 1.0)
+
     # Group metrics by tims
     from collections import defaultdict
 
@@ -169,6 +177,8 @@ def main():
         pct = (stats["correct"] / stats["total"] * 100) if stats["total"] > 0 else 0
         print(f"Group {group}: {pct:.3f}% | Correct: {stats['correct']} | Wrong: {stats['wrong']}")
     print(f"{'='*80}")
+    print(f"Players selected over {THRESHOLD}: {total_picks_over_threshold}")
+    print(f"Correct picks over {THRESHOLD}: {correct_picks_over_threshold}")
 
     print(
         f"\nHardcoded weights used: "

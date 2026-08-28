@@ -1,9 +1,15 @@
 from unittest.mock import patch
 
 import pytest
-from smartscore_info_client.schemas.team_info import TeamInfo
+from smartscore_info_client.api.nhle import NHLClient
 
 from event_handler import handle_get_teams
+
+
+@pytest.fixture
+def fresh_nhl_client():
+    with patch("service.NHL_CLIENT", NHLClient()):
+        yield
 
 
 @pytest.fixture
@@ -12,12 +18,11 @@ def mock_get_todays_schedule():
         yield mock
 
 
-@patch("smartscore_info_client.schemas.team_info.exponential_backoff_request")
+@patch("smartscore_info_client.api.nhle.exponential_backoff_request")
 @patch("service.schedule_run")
-def test_handle_get_1_game(mock_schedule_run, mock_exponential_backoff_request, mock_get_todays_schedule):
-    TeamInfo._class_data_summary = None
-    TeamInfo._class_data_penalties = None
-
+def test_handle_get_1_game(
+    mock_schedule_run, mock_exponential_backoff_request, mock_get_todays_schedule, fresh_nhl_client
+):
     mock_exponential_backoff_request.return_value = {"data": []}
 
     # Realistic mock_schedule_data that get_teams will process
@@ -78,14 +83,14 @@ def test_handle_get_1_game(mock_schedule_run, mock_exponential_backoff_request, 
     mock_get_todays_schedule.assert_called_once()
     mock_schedule_run.assert_called_once_with({"2025-06-11T23:00:00Z"})
     assert response == expected_response
+    assert mock_exponential_backoff_request.call_count == 2  # one team summary + one penalty payload
 
 
-@patch("smartscore_info_client.schemas.team_info.exponential_backoff_request")
+@patch("smartscore_info_client.api.nhle.exponential_backoff_request")
 @patch("service.schedule_run")
-def test_handle_get_2_games(mock_schedule_run, mock_exponential_backoff_request, mock_get_todays_schedule):
-    TeamInfo._class_data_summary = None
-    TeamInfo._class_data_penalties = None
-
+def test_handle_get_2_games(
+    mock_schedule_run, mock_exponential_backoff_request, mock_get_todays_schedule, fresh_nhl_client
+):
     mock_exponential_backoff_request.return_value = {"data": []}
 
     # Realistic mock_schedule_data that get_teams will process
@@ -184,6 +189,8 @@ def test_handle_get_2_games(mock_schedule_run, mock_exponential_backoff_request,
     mock_get_todays_schedule.assert_called_once()
     mock_schedule_run.assert_called_once_with({"2025-06-11T23:00:00Z", "2025-06-11T01:00:00Z"})
     assert response == expected_response
+    # Team payloads are cached per season, so 4 teams only cost 2 requests
+    assert mock_exponential_backoff_request.call_count == 2
 
 
 @patch("service.schedule_run")

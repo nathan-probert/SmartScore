@@ -3,10 +3,10 @@ import time
 from datetime import timedelta
 
 import boto3
-import requests
 from aws_lambda_powertools import Logger
 from dateutil import parser
 from postgrest.exceptions import APIError
+from smartscore_info_client.utility import exponential_backoff_request
 
 from config import ENV, SUPABASE_CLIENT
 from constants import CURRENT_PICK_ACCURACY
@@ -171,42 +171,6 @@ def schedule_run(times):
         )
 
         print(f"Scheduled event for {trigger_time} with rule name {rule_name}")
-
-
-def exponential_backoff_request(
-    url, method="get", data=None, json_data=None, headers=None, max_retries=5, base_delay=1
-):
-    """
-    Makes HTTP requests with exponential backoff retry strategy.
-
-    Args:
-        url: URL to send the request to
-        method: HTTP method ("get" or "post")
-        data: Form data for POST requests
-        json_data: JSON data for POST requests
-        max_retries: Maximum number of retry attempts
-        base_delay: Base delay between retries in seconds
-
-    Returns:
-        Parsed JSON response
-    """
-    method = method.lower()
-    for attempt in range(max_retries):
-        try:
-            if method == "get":
-                response = requests.get(url, headers=headers, timeout=10)
-            elif method == "post":
-                response = requests.post(url, data=data, json=json_data, headers=headers, timeout=10)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            wait_time = base_delay * (2**attempt)
-            print(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time} seconds...")
-            time.sleep(wait_time)
-    raise Exception("Max retries reached. Request failed.")
 
 
 def exponential_backoff_supabase_request(

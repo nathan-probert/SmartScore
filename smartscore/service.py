@@ -1,6 +1,5 @@
 import datetime
 import json
-import time
 from collections import defaultdict
 from typing import Dict, List
 
@@ -8,13 +7,15 @@ import make_predictions_rust
 import pytz
 import requests
 from aws_lambda_powertools import Logger
-from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
-from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
+from smartscore_info_client.api.nhle import NHLClient
+from smartscore_info_client.models.player import Player, PlayerInfo
+from smartscore_info_client.models.team import GameTeam, TeamInfo
+from smartscore_info_client.schemas.player import PLAYER_MERGE_EXCLUDED_FIELDS
+from smartscore_info_client.schemas.team import TEAM_MERGE_EXCLUDED_FIELDS
 
 from config import ENV
 from constants import DAYS_TO_KEEP_HISTORIC_DATA, LAMBDA_API_NAME, NUM_EXPECTED_PLAYERS, WEIGHTS
 from utility import (
-    exponential_backoff_request,
     get_cur_pick_pct,
     get_historical_data,
     get_tims_players,
@@ -27,6 +28,8 @@ from utility import (
 )
 
 logger = Logger()
+
+NHL_CLIENT = NHLClient()
 
 
 def get_date(hour=False, add_days=0, subtract_days=0):
@@ -46,8 +49,7 @@ def get_todays_schedule():
     date = get_date()
     logger.info(f"Getting players for date: {date}")
 
-    URL = f"https://api-web.nhle.com/v1/schedule/{date}"
-    return exponential_backoff_request(URL)
+    return NHL_CLIENT.get_schedule(date)
 
 
 def get_teams(data):
@@ -66,7 +68,7 @@ def get_teams(data):
         if away_name == " ":
             away_name = game["awayTeam"]["commonName"]["default"]
 
-        home_team = TeamInfo(
+        home_team = GameTeam(
             team_name=home_name,
             team_abbr=game["homeTeam"]["abbrev"],
             season=game["season"],
@@ -74,7 +76,7 @@ def get_teams(data):
             opponent_id=game["awayTeam"]["id"],
             home=True,
         )
-        away_team = TeamInfo(
+        away_team = GameTeam(
             team_name=away_name,
             team_abbr=game["awayTeam"]["abbrev"],
             season=game["season"],
@@ -94,23 +96,36 @@ def get_teams(data):
     return teams
 
 
+def enrich_teams(teams):
+    """Attach team stats to each game team, fetched once per season."""
+    return [
+        TeamInfo(
+            team=team,
+            stats=NHL_CLIENT.get_team_stats(team.season, team.team_id, team.opponent_id),
+        )
+        for team in teams
+    ]
+
+
 def get_players_from_team(team):
     players = []
 
-    URL = f"https://api-web.nhle.com/v1/roster/{team.team_abbr}/current"
-    data = exponential_backoff_request(URL)
+    roster = NHL_CLIENT.get_roster(team.team_abbr)
 
-    types = ["forwards", "defensemen"]
-    for player_type in types:
-        for player in data[player_type]:
-            player_info = PlayerInfo(
-                name=f"{player["firstName"]["default"]} {player["lastName"]["default"]}",
-                id=player["id"],
-                team_id=team.team_id,
+    player_types = ["forwards", "defensemen"]
+    for player_type in player_types:
+        for player in roster[player_type]:
+            players.append(
+                PlayerInfo(
+                    player=Player(
+                        name=f"{player['firstName']['default']} {player['lastName']['default']}",
+                        id=player["id"],
+                        team_id=team.team_id,
+                    ),
+                    stats=NHL_CLIENT.get_player_stats(player["id"]),
+                )
             )
-            players.append(player_info)
 
-    time.sleep(30)  # to avoid rate limiting
     return players
 
 
@@ -208,7 +223,7 @@ def backfill_dates():
 
     scorers_dict = {}
     for date in dates_no_scored:
-        data = exponential_backoff_request(f"https://api-web.nhle.com/v1/score/{date}")
+        data = NHL_CLIENT.get_score(date)
 
         # get players who actually played
         players = []
@@ -266,23 +281,16 @@ def check_db_for_date():
     return None
 
 
-def separate_players(players, teams):
+def merge_players_and_teams(team_payloads):
+    """Flatten a list of team payloads into one merged entry per player."""
     entries = []
-    team_table = {team.team_id: TEAM_INFO_SCHEMA.dump(team) for team in teams}
-    for player in players:
-        team_info = team_table[player.team_id]
-        team_info_filtered = {
-            key: value
-            for key, value in team_info.items()
-            if key not in ("team_id", "opponent_id", "season", "team_abbr")
-        }
+    for team in team_payloads:
+        team_players = team.pop("players", [])
+        team_info = {key: value for key, value in team.items() if key not in TEAM_MERGE_EXCLUDED_FIELDS}
 
-        player_data = PLAYER_INFO_SCHEMA.dump(player)
-        player_info_filtered = {
-            key: value for key, value in player_data.items() if key not in ("team_id", "odds", "stat")
-        }
-
-        entries.append({**player_info_filtered, **team_info_filtered})
+        for player in team_players:
+            player_info = {key: value for key, value in player.items() if key not in PLAYER_MERGE_EXCLUDED_FIELDS}
+            entries.append({**player_info, **team_info})
 
     return entries
 
