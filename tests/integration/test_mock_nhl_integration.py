@@ -2,7 +2,8 @@
 
 When run (opt-in, since it talks to real AWS + PostHog), it:
 
-1. Toggles the ``mock-nhl-api`` PostHog flag ON for ``smartscore-lambda-{env}``.
+1. Toggles the ``mock-nhl-api`` PostHog flag ON (it is permanently targeted
+   to ``env == dev``, so prod is never mocked).
 2. Waits for the deployed Lambdas to pick up the new value (they cache with a
    short TTL).
 3. Invokes the deployed ``GetTeams-{env}`` and ``GetPlayersFromTeam-{env}``
@@ -123,7 +124,9 @@ def _wait_for_flag(enabled: bool) -> None:
             timeout=30,
         )
         resp.raise_for_status()
-        if bool(resp.json().get("featureFlags", {}).get(FLAG_KEY, False)) == enabled:
+        data = resp.json()
+        flag = (data.get("flags") or {}).get(FLAG_KEY) or {}
+        if bool(flag.get("enabled", False)) == enabled:
             return
         time.sleep(1)
     raise RuntimeError(f"Timed out waiting for flag {FLAG_KEY!r} to reach value {enabled!r}")
