@@ -38,17 +38,56 @@ generate_smartscore_stack() {
 
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
-    UPDATE_OUTPUT=$(aws cloudformation update-stack \
+
+    local CHANGE_SET_NAME="$STACK_NAME-deploy"
+
+    aws cloudformation create-change-set \
       --stack-name "$STACK_NAME" \
+      --change-set-name "$CHANGE_SET_NAME" \
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
-      --capabilities CAPABILITY_NAMED_IAM 2>&1)
+      --capabilities CAPABILITY_NAMED_IAM \
+      --change-set-type UPDATE >/dev/null
 
-    if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
-      echo "No updates needed. Skipping wait."
+    # Wait for the change set to finish creating. An empty change set is
+    # reported as FAILED (StatusReason "didn't contain changes"), so a non-zero
+    # exit from the waiter is expected in that case and handled below.
+    if ! aws cloudformation wait change-set-create-complete \
+        --stack-name "$STACK_NAME" \
+        --change-set-name "$CHANGE_SET_NAME" 2>/dev/null; then
+
+      CHANGE_SET_STATUS=$(aws cloudformation describe-change-set \
+        --stack-name "$STACK_NAME" \
+        --change-set-name "$CHANGE_SET_NAME" \
+        --query "Status" --output text)
+
+      if [ "$CHANGE_SET_STATUS" != "FAILED" ]; then
+        echo "Error: Change set is in unexpected status: $CHANGE_SET_STATUS."
+        aws cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$CHANGE_SET_NAME"
+        exit 1
+      fi
+
+      CHANGE_SET_REASON=$(aws cloudformation describe-change-set \
+        --stack-name "$STACK_NAME" \
+        --change-set-name "$CHANGE_SET_NAME" \
+        --query "StatusReason" --output text)
+
+      if echo "$CHANGE_SET_REASON" | grep -q "didn't contain changes"; then
+        echo "No updates needed. Skipping wait."
+        aws cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$CHANGE_SET_NAME"
+      else
+        echo "Error: Change set creation failed: $CHANGE_SET_REASON."
+        aws cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$CHANGE_SET_NAME"
+        exit 1
+      fi
     else
+      echo "Executing change set for $STACK_NAME..."
+      aws cloudformation execute-change-set \
+        --stack-name "$STACK_NAME" \
+        --change-set-name "$CHANGE_SET_NAME"
+
       echo "Waiting for CloudFormation stack update to complete..."
       aws cloudformation wait stack-update-complete --stack-name "$STACK_NAME"
     fi
