@@ -38,15 +38,18 @@ EXPECTED_PLAYERS = {
 
 
 # ---------------------------------------------------------------------------
-# PostHog flag toggling (user override scoped to the Lambda distinct id, so
-# real users are never affected).
+# PostHog flag toggling.
+#
+# The ``mock-nhl-api`` flag is permanently targeted to ``env == dev`` so prod
+# can never be mocked. The harness toggles the flag's ``active`` field:
+#   * PATCH active=true  -> dev lambdas serve mock fixtures
+#   * PATCH active=false -> dev lambdas hit the live NHL API (post-test)
 #
 # Two keys are involved:
 #   * POSTHOG_FEATURE_FLAG_KEY (project API key) - used by the deployed
 #     Lambdas and by the /flags propagation check below.
 #   * POSTHOG_PERSONAL_API_KEY - required to call the private project admin
-#     API to read the flag id and write the user override (a project key does
-#     not have permission for those endpoints).
+#     API to locate the flag and toggle its ``active`` field.
 # ---------------------------------------------------------------------------
 def _project_api_key() -> str:
     key = os.environ.get("POSTHOG_FEATURE_FLAG_KEY")
@@ -87,23 +90,17 @@ def _flag_id() -> int:
 
 
 def _set_flag(enabled: bool) -> None:
+    """Toggle the flag's ``active`` field so dev mock mode is on/off."""
     import requests
 
-    distinct_id = f"smartscore-lambda-{ENVIRONMENT}"
-    url = f"{POSTHOG_HOST}/api/projects/{_posthog_project_id()}/feature_flags/" f"{_flag_id()}/override_users/"
-    body = [
-        {
-            "override_user_id": distinct_id,
-            "override_value": bool(enabled),
-        }
-    ]
+    url = f"{POSTHOG_HOST}/api/projects/{_posthog_project_id()}/feature_flags/" f"{_flag_id()}/"
     resp = requests.patch(
         url,
         headers={
             "Authorization": f"Bearer {_admin_api_key()}",
             "Content-Type": "application/json",
         },
-        json=body,
+        json={"active": bool(enabled)},
         timeout=30,
     )
     resp.raise_for_status()
