@@ -6,12 +6,16 @@ When run (opt-in, since it talks to real AWS + PostHog), it:
    to ``env == dev``, so prod is never mocked).
 2. Waits for the deployed Lambdas to pick up the new value (they cache with a
    short TTL).
-3. Invokes the deployed ``GetTeams-{env}`` and ``GetPlayersFromTeam-{env}``
+3. Directly invokes the deployed ``GetTeams-{env}`` and ``GetPlayersFromTeam-{env}``
    Lambdas, which run the schedule -> roster -> player-landing pipeline
    entirely against the frozen fixtures (no live NHL calls).
-4. Asserts the returned players match the dummy fixtures (TOR: Tavares, Marner;
+4. Runs the real ``GetPlayers-{env}`` Step Functions state machine end-to-end
+   (GetTeams -> Map -> GetPlayersFromTeam -> ParseData) against the same mocked
+   data, verifying variables (team context, players) are threaded through the
+   state machine correctly.
+5. Asserts the returned players match the dummy fixtures (TOR: Tavares, Marner;
    EDM: McDavid, Draisaitl).
-5. Toggles the flag back OFF (always, even on failure).
+6. Toggles the flag back OFF (always, even on failure).
 
 Skipped unless the required env vars are present.
 """
@@ -166,6 +170,54 @@ def _fetch_roster_players(lambda_client, teams: List[dict]) -> Dict[str, set]:
     return by_abbr
 
 
+def _state_machine_arn(name: str) -> str:
+    acct = os.environ["AWS_ACCOUNT_ID"]
+    return f"arn:aws:states:{REGION}:{acct}:stateMachine:{name}-{ENVIRONMENT}"
+
+
+def _run_get_players_state_machine(sfn_client, timeout: int = 300) -> List[dict]:
+    """Start the GetPlayers-{env} state machine and return its final output.
+
+    The state machine runs GetTeams -> Map(GetPlayersFromTeam) -> ParseData,
+    so a successful run proves variables (team context + players) are threaded
+    through the real Step Functions orchestration against the mocked data.
+    """
+    arn = _state_machine_arn("GetPlayers")
+    name = f"integration-{int(time.time() * 1000)}"
+    start = sfn_client.start_execution(stateMachineArn=arn, input="{}", name=name)
+    execution_arn = start["executionArn"]
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        detail = sfn_client.describe_execution(executionArn=execution_arn)
+        status = detail["status"]
+        if status == "SUCCEEDED":
+            return json.loads(detail.get("output", "null"))
+        if status in ("FAILED", "ABORTED", "TIMED_OUT"):
+            raise AssertionError(
+                f"GetPlayers-{ENVIRONMENT} state machine finished with status {status}: "
+                f"{detail.get('error')} {detail.get('cause')}"
+            )
+        time.sleep(5)
+    raise AssertionError(f"Timed out waiting for GetPlayers-{ENVIRONMENT} state machine")
+
+
+def _assert_state_machine_players(entries: List[dict]) -> None:
+    """Assert the state machine's ParseData output matches the fixtures."""
+    assert entries, "GetPlayers state machine returned no players"
+    names = {e.get("name") for e in entries if e.get("name")}
+    expected_names = {player for players in EXPECTED_PLAYERS.values() for player in players}
+    missing = expected_names - names
+    assert not missing, f"State machine output missing players: {missing}"
+
+    team_names = {e.get("team_name") for e in entries}
+    assert team_names == {"Toronto", "Edmonton"}, f"Unexpected teams: {team_names}"
+
+    # The Map iterator must preserve per-team context (home/away).
+    by_team = {e.get("team_name"): e.get("home") for e in entries}
+    assert by_team.get("Toronto") is True
+    assert by_team.get("Edmonton") is False
+
+
 @pytest.mark.integration
 def test_get_teams_and_players_run_against_mock_data():
     if not _enabled():
@@ -175,6 +227,7 @@ def test_get_teams_and_players_run_against_mock_data():
         )
 
     lambda_client = boto3.client("lambda", region_name=REGION)
+    sfn_client = boto3.client("stepfunctions", region_name=REGION)
 
     _set_flag(True)
     _wait_for_flag(True)
@@ -190,5 +243,8 @@ def test_get_teams_and_players_run_against_mock_data():
             actual = rosters.get(abbr, set())
             missing = expected - actual
             assert not missing, f"{abbr} missing players: {missing}"
+
+        entries = _run_get_players_state_machine(sfn_client)
+        _assert_state_machine_players(entries)
     finally:
         _set_flag(False)
