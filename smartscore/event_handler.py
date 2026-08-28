@@ -10,6 +10,7 @@ from service import (
     check_db_for_date,
     choose_picks,
     enrich_teams,
+    get_all_emails,
     get_date,
     get_injury_data,
     get_players_from_team,
@@ -20,6 +21,7 @@ from service import (
     merge_injury_data,
     merge_players_and_teams,
     publish_public_db,
+    send_emails,
     update_metrics,
     write_historic_db,
 )
@@ -244,4 +246,29 @@ def handle_get_injuries(event, context):
     return {
         "statusCode": 200,
         "players": merged_info,
+    }
+
+
+@lambda_handler_error_responder
+def handle_emails(event, context):
+    """
+    Sends out emails to users with their smartscore picks.
+
+    Args:
+        event (dict): A dictionary containing player data.
+        context (dict): Unused Lambda context.
+
+    Returns:
+        dict: A dictionary containing status code.
+    """
+    picks = choose_picks(event.get("players", []))
+
+    users = get_all_emails()  # Now returns list of dicts with email and display_name
+    for user in users:
+        logger.info(f"Sending email to {user['email']} (Display name: {user.get('display_name', '')})")
+
+    send_emails(users, picks)
+
+    return {
+        "statusCode": 200,
     }

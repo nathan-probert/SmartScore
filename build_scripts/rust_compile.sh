@@ -2,10 +2,14 @@
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 PROJECT_PATH=$(dirname "$SCRIPT_DIR")
-PROJECT_PATH="$(cygpath.exe -C ANSI -w -p "${PROJECT_PATH}")"
+
+# Convert to Windows path only when cygpath is available (Git Bash on Windows).
+if command -v cygpath.exe >/dev/null 2>&1; then
+    PROJECT_PATH="$(cygpath.exe -C ANSI -w -p "${PROJECT_PATH}")"
+fi
 
 # Run the Docker container with volume mounting
-if ! docker run -it --rm -v "$PROJECT_PATH:/project" quay.io/pypa/manylinux_2_28_x86_64 sh -c "
+if ! docker run --rm -v "$PROJECT_PATH:/project" quay.io/pypa/manylinux_2_28_x86_64 sh -c "
     # Install required tools for Rust
     yum update -y
     yum groupinstall -y 'Development Tools'
@@ -20,7 +24,7 @@ if ! docker run -it --rm -v "$PROJECT_PATH:/project" quay.io/pypa/manylinux_2_28
 "; then
     echo "Running for linux environment."
     echo "If you are on windows, ensure docker is running."
-    cd smartscore/Rust/make_predictions
+    cd "$PROJECT_PATH/smartscore/Rust/make_predictions"
 
     cargo build --release --target x86_64-unknown-linux-gnu
 fi
