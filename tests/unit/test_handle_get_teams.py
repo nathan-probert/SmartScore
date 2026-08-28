@@ -8,7 +8,7 @@ from event_handler import handle_get_teams
 
 @pytest.fixture
 def fresh_nhl_client():
-    with patch("service.NHL_CLIENT", NHLClient()):
+    with patch("service.get_nhl_client", return_value=NHLClient()):
         yield
 
 

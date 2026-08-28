@@ -27,6 +27,10 @@ Parameters:
   FeatureSendEmails:
     Type: String
     Description: Feature flag controlling whether notification emails are sent
+  PosthogApiKey:
+    Type: String
+    Default: ""
+    Description: PostHog project/personal API key for runtime feature-flag evaluation
 
 Resources:
   # IAM Role for Lambda Execution
@@ -184,6 +188,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
 
   GetPlayersFromTeamFunction:
     Type: AWS::Lambda::Function
@@ -204,6 +209,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
 
   MakePredictionsFunction:
     Type: AWS::Lambda::Function
@@ -224,6 +230,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
 
   GetTimsFunction:
     Type: AWS::Lambda::Function
@@ -244,6 +251,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
 
   PerformBackfillingFunction:
     Type: AWS::Lambda::Function
@@ -260,6 +268,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -280,6 +289,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -300,6 +310,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -320,6 +331,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
           BREVO_SMTP_LOGIN: !Ref BrevoSmtpLogin
           BREVO_SMTP_KEY: !Ref BrevoSmtpKey
           BREVO_FROM_EMAIL: !Ref BrevoFromEmail
@@ -344,6 +356,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -368,6 +381,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
 
   GetInjuriesFunction:
     Type: AWS::Lambda::Function
@@ -388,6 +402,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
 
   # IAM Role for EventBridge to invoke Step Function
   EventBridgeInvokeRole:

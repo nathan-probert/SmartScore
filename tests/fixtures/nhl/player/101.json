@@ -1,0 +1,28 @@
+{
+  "playerId": 101,
+  "firstName": { "default": "Mitch" },
+  "lastName": { "default": "Marner" },
+  "seasonTotals": [
+    {
+      "season": 20242025,
+      "leagueAbbrev": "NHL",
+      "goals": 20,
+      "gamesPlayed": 78,
+      "powerPlayGoals": 6
+    },
+    {
+      "season": 20232024,
+      "leagueAbbrev": "NHL",
+      "goals": 18,
+      "gamesPlayed": 80,
+      "powerPlayGoals": 5
+    }
+  ],
+  "last5Games": [
+    { "goals": 0 },
+    { "goals": 0 },
+    { "goals": 1 },
+    { "goals": 0 },
+    { "goals": 0 }
+  ]
+}

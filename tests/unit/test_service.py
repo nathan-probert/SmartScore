@@ -2,12 +2,15 @@ from datetime import datetime
 from unittest.mock import patch
 
 import pytz
+from smartscore_info_client.api.nhle import NHLClient
 from smartscore_info_client.models.player import PlayerInfo, PlayerStats
 from smartscore_info_client.models.team import GameTeam
 
+from mock_nhl_client import MockNHLClient
 from service import (
     choose_picks,
     get_date,
+    get_nhl_client,
     get_players_from_team,
     merge_injury_data,
     merge_players_and_teams,
@@ -65,6 +68,21 @@ def test_get_date_subtract_days(mock_datetime):
     result = get_date(subtract_days=3)
 
     assert result == "2024-01-12"
+
+
+@patch("service.is_feature_enabled", return_value=False)
+def test_get_nhl_client_returns_real_client_when_flag_off(mock_flag):
+    """With the mock flag off, get_nhl_client returns a live NHLClient."""
+    client = get_nhl_client()
+    assert isinstance(client, NHLClient)
+    assert not isinstance(client, MockNHLClient)
+
+
+@patch("service.is_feature_enabled", return_value=True)
+def test_get_nhl_client_returns_mock_client_when_flag_on(mock_flag):
+    """With the mock flag on, get_nhl_client returns a MockNHLClient."""
+    client = get_nhl_client()
+    assert isinstance(client, MockNHLClient)
 
 
 def test_merge_players_and_teams_merges_player_and_team_data():
@@ -164,17 +182,17 @@ def test_merge_players_and_teams_empty():
     assert result == []
 
 
-@patch("service.NHL_CLIENT")
+@patch("service.get_nhl_client")
 def test_get_players_from_team_builds_player_info(mock_client):
     """Test that get_players_from_team fetches roster and stats explicitly."""
-    mock_client.get_roster.return_value = {
+    mock_client.return_value.get_roster.return_value = {
         "forwards": [
             {"id": 1, "firstName": {"default": "John"}, "lastName": {"default": "Doe"}},
             {"id": 2, "firstName": {"default": "Jane"}, "lastName": {"default": "Roe"}},
         ],
         "defensemen": [],
     }
-    mock_client.get_player_stats.side_effect = lambda player_id: PlayerStats(
+    mock_client.return_value.get_player_stats.side_effect = lambda player_id: PlayerStats(
         gpg=float(player_id), hgpg=0.5, five_gpg=0.4, hppg=0.3
     )
 
@@ -197,8 +215,8 @@ def test_get_players_from_team_builds_player_info(mock_client):
     assert players[0].gpg == 1.0
     assert players[1].name == "Jane Roe"
     assert players[1].id == 2
-    mock_client.get_roster.assert_called_once_with("TA")
-    assert mock_client.get_player_stats.call_count == 2
+    mock_client.return_value.get_roster.assert_called_once_with("TA")
+    assert mock_client.return_value.get_player_stats.call_count == 2
 
 
 def test_choose_picks_basic():
