@@ -166,20 +166,35 @@ prune_output_dir() {
 
 
 update_lambda_code() {
+  local PIDS=()
+  local UPDATE_COUNT=0
+
   for FUNCTION in "${LAMBDA_FUNCTIONS[@]}"; do
-    echo "Updating Lambda function code: $FUNCTION..."
-
-    aws lambda update-function-code \
-      --function-name "$FUNCTION" \
-      --zip-file fileb://$OUTPUT_DIR/$KEY &>/dev/null  # Suppress all output
-
-    if [ $? -ne 0 ]; then
-      echo "Error: Failed to update Lambda function code: $FUNCTION."
-      exit 1
-    fi
-
-    echo "Lambda function code updated successfully: $FUNCTION."
+    (
+      echo "Updating Lambda function code: $FUNCTION..."
+      if ! aws lambda update-function-code \
+          --function-name "$FUNCTION" \
+          --zip-file fileb://$OUTPUT_DIR/$KEY &>/dev/null; then
+        echo "Error: Failed to update Lambda function code: $FUNCTION."
+        exit 1
+      fi
+      echo "Lambda function code updated successfully: $FUNCTION."
+    ) &
+    PIDS+=($!)
+    UPDATE_COUNT=$((UPDATE_COUNT + 1))
   done
+
+  echo "Updating $UPDATE_COUNT Lambda function(s) in parallel..."
+
+  local FAILED=0
+  for PID in "${PIDS[@]}"; do
+    wait "$PID" || FAILED=1
+  done
+
+  if [ $FAILED -ne 0 ]; then
+    echo "Error: One or more Lambda function updates failed."
+    exit 1
+  fi
 }
 
 
