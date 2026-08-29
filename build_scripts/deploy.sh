@@ -26,13 +26,32 @@ LAMBDA_FUNCTIONS=(
   "ParseData-$ENV"
   "UpdateHistory-$ENV"
   "GetInjuries-$ENV"
+  "SendEmails-$ENV"
 )
 
 
 generate_smartscore_stack() {
-  export $(grep -v '^#' .env | xargs)
-  if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_API_KEY" ]; then
-    echo "Error: SUPABASE_URL or SUPABASE_API_KEY environment variables are not set."
+  # List of required environment variables
+  REQUIRED_VARS=(
+    "ENV"
+    "SUPABASE_URL"
+    "SUPABASE_API_KEY"
+    "SUPABASE_SERVICE_ROLE_KEY"
+    "BREVO_SMTP_LOGIN"
+    "BREVO_SMTP_KEY"
+    "BREVO_FROM_EMAIL"
+    "FEATURE_SEND_EMAILS"
+  )
+
+  MISSING_VARS=()
+  for VAR in "${REQUIRED_VARS[@]}"; do
+    if [ -z "${!VAR}" ]; then
+      MISSING_VARS+=("$VAR")
+    fi
+  done
+
+  if [ ${#MISSING_VARS[@]} -ne 0 ]; then
+    echo "Error: The following environment variables are not set: ${MISSING_VARS[*]}"
     exit 1
   fi
 
@@ -44,6 +63,11 @@ generate_smartscore_stack() {
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
+        ParameterKey=SupabaseServiceRoleKey,ParameterValue="$SUPABASE_SERVICE_ROLE_KEY" \
+        ParameterKey=BrevoSmtpLogin,ParameterValue="$BREVO_SMTP_LOGIN" \
+        ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
+        ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
+        ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -60,6 +84,11 @@ generate_smartscore_stack() {
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
         ParameterKey=SupabaseUrl,ParameterValue="$SUPABASE_URL" \
         ParameterKey=SupabaseApiKey,ParameterValue="$SUPABASE_API_KEY" \
+        ParameterKey=SupabaseServiceRoleKey,ParameterValue="$SUPABASE_SERVICE_ROLE_KEY" \
+        ParameterKey=BrevoSmtpLogin,ParameterValue="$BREVO_SMTP_LOGIN" \
+        ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
+        ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
+        ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
@@ -91,12 +120,12 @@ generate_zip_file() {
   echo "Creating ZIP package for Lambda..."
   cd $OUTPUT_DIR
 
-  # Exclude any .zip files from the ZIP package
-  zip -r $KEY . -x "*.zip" > /dev/null
+  # Use maximum compression and exclude any existing zip artifacts.
+  zip -9 -r $KEY . -x "*.zip" > /dev/null
 
   cd ..
 
-  ZIP_FILE_SIZE=$(stat -c%s "$OUTPUT_DIR/$KEY")
+  ZIP_FILE_SIZE=$(wc -c < "$OUTPUT_DIR/$KEY")
   ZIP_FILE_SIZE_MB=$((ZIP_FILE_SIZE / 1024 / 1024))
 
   echo "Size of ZIP file: $ZIP_FILE_SIZE_MB MB"
@@ -105,6 +134,32 @@ generate_zip_file() {
       echo "Error: The ZIP file exceeds $MAX_ZIP_SIZE_MB MB. Aborting deployment."
       exit 1
   fi
+}
+
+
+prune_output_dir() {
+  echo "Pruning non-runtime artifacts from output..."
+
+  # These packages are not needed at Lambda runtime for this project and
+  # disproportionately increase package size.
+  rm -rf $OUTPUT_DIR/virtualenv
+  rm -rf $OUTPUT_DIR/virtualenv-*.dist-info
+  rm -rf $OUTPUT_DIR/python_discovery
+  rm -rf $OUTPUT_DIR/python_discovery-*.dist-info
+  rm -rf $OUTPUT_DIR/distlib
+  rm -rf $OUTPUT_DIR/distlib-*.dist-info
+  rm -rf $OUTPUT_DIR/filelock
+  rm -rf $OUTPUT_DIR/filelock-*.dist-info
+  rm -rf $OUTPUT_DIR/platformdirs
+  rm -rf $OUTPUT_DIR/platformdirs-*.dist-info
+
+  # Remove cache, bytecode and tests from vendored dependencies.
+  find $OUTPUT_DIR -type d -name "__pycache__" -exec rm -rf {} +
+  find $OUTPUT_DIR -type d -name "tests" -exec rm -rf {} +
+  find $OUTPUT_DIR -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+
+  # Console entry points are not used in Lambda runtime.
+  rm -rf $OUTPUT_DIR/bin
 }
 
 
@@ -223,6 +278,9 @@ cp -r $OUTPUT_DIR/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/
 rm -rf $OUTPUT_DIR/C
 rm -rf $OUTPUT_DIR/Rust
 
+# remove unnecessary artifacts before zipping
+prune_output_dir
+
 # generate the ZIP file
 generate_zip_file
 
@@ -233,6 +291,7 @@ generate_smartscore_stack
 echo "Deploying Step Functions..."
 deploy_state_machine "PlayerProcessingPipeline" "templates/player_processing_pipeline.asl.json"
 deploy_state_machine "GetPlayers" "templates/get_players.asl.json"
+deploy_state_machine "NotifyUsers" "templates/notify_users.asl.json"
 
 # update the Lambda function code
 update_lambda_code

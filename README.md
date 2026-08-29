@@ -35,6 +35,35 @@ Deploy to AWS:
 *If you are on windows, ensure Docker is running with the image: "public.ecr.aws/amazonlinux/amazonlinux:2".*
 <br/><br/>
 
+## GitHub CD Configuration
+
+The deployment pipeline expects the following GitHub repository secrets to be configured:
+
+- `AWS_ACCESS_KEY_ID`: AWS IAM access key ID used by CI/CD for authenticated AWS API calls.
+- `AWS_ACCOUNT_ID`: Target AWS account ID used for deployment targeting and resource naming.
+- `AWS_SECRET_ACCESS_KEY`: AWS IAM secret key paired with the access key for CI/CD authentication.
+- `BREVO_FROM_EMAIL`: Sender address used for outbound SmartScore notification emails.
+- `BREVO_SMTP_KEY`: Brevo SMTP API key/password used to authenticate with the SMTP relay.
+- `BREVO_SMTP_LOGIN`: Brevo SMTP login/username used with the SMTP key.
+- `FEATURE_SEND_EMAILS`: Feature flag that enables or disables sending emails at runtime.
+- `SUPABASE_API_KEY`: Supabase anon/public API key used by the default client.
+- `SUPABASE_SERVICE_ROLE_KEY`: Supabase service-role key used for privileged server-side operations.
+- `SUPABASE_URL`: Base URL for the Supabase project used by application clients.
+
+## Feature Flags
+
+Feature flags are stored as environment variables and read at runtime.
+
+- `FEATURE_SEND_EMAILS`: Controls whether SmartScore sends user notification emails.
+    - `true`, `1`, `yes`, `on` => enabled
+    - `false`, `0`, `no`, `off` (or unset if changed in code defaults) => disabled
+
+Example:
+
+```bash
+FEATURE_SEND_EMAILS=false
+```
+
 *Note: This program is intended for informational purposes only and does not facilitate actual betting. Users should exercise their own judgment and discretion when using the provided suggestions for betting purposes.*
 
 <br/>

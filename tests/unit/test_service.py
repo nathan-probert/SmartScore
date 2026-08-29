@@ -7,6 +7,7 @@ from service import (
     choose_picks,
     get_date,
     merge_injury_data,
+    send_emails,
     separate_players,
 )
 
@@ -264,3 +265,31 @@ def test_merge_injury_data_empty_players():
     result = merge_injury_data([], injuries)
 
     assert result == []
+
+
+@patch("service.send_email")
+@patch("service.is_feature_enabled", return_value=False)
+def test_send_emails_respects_disabled_feature_flag(mock_feature_enabled, mock_send_email):
+    """Test send_emails skips work when send_emails feature flag is disabled."""
+    users = [{"email": "test@example.com", "display_name": "Tester"}]
+    picks = [{"name": "Player 1", "stat": 0.9, "tims": 1}]
+
+    send_emails(users, picks)
+
+    mock_feature_enabled.assert_called_once_with("send_emails")
+    mock_send_email.assert_not_called()
+
+
+@patch("service.send_email")
+@patch("service.get_date", return_value="2026-04-16")
+@patch("service.is_feature_enabled", return_value=True)
+def test_send_emails_sends_when_feature_flag_enabled(mock_feature_enabled, mock_get_date, mock_send_email):
+    """Test send_emails dispatches emails when send_emails feature flag is enabled."""
+    users = [{"email": "test@example.com", "display_name": "Tester"}]
+    picks = [{"name": "Player 1", "stat": 0.9, "tims": 1}]
+
+    send_emails(users, picks)
+
+    mock_feature_enabled.assert_called_once_with("send_emails")
+    mock_get_date.assert_called_once()
+    mock_send_email.assert_called_once_with("test@example.com", picks, "Tester", "2026-04-16")

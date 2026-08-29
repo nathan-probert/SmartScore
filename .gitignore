@@ -15,3 +15,5 @@ node_modules
 .ruff_cache
 output
 .coverage
+preview_email.html
+secret_readme.md
