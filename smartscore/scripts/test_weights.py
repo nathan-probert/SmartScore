@@ -2,6 +2,7 @@
 
 import os
 import sys
+from collections import defaultdict
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import make_predictions_rust
@@ -111,8 +112,6 @@ def main():
     probabilities = make_predictions_rust.predict(filtered_players, min_max_obj, weights)
 
     # Group players by date and tims group
-    from collections import defaultdict
-
     date_tims_groups = defaultdict(lambda: defaultdict(list))
 
     for (player, name), probability in zip(filtered_players_with_names, probabilities):
@@ -149,12 +148,12 @@ def main():
     correct_picks = sum(1 for player, _, _ in all_selected_players if player.scored == 1.0)
     correct_percentage = (correct_picks / total_picks * 100) if total_picks > 0 else 0
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("FINAL RESULTS:")
     print(f"Total picks: {total_picks}")
     print(f"Correct picks: {correct_picks}")
     print(f"Correct pick percentage: {correct_percentage:.1f}%")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     print(
         f"\nHardcoded weights used: "

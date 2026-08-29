@@ -249,11 +249,9 @@ def backfill_dates():
             if game.get("gameScheduleState") == "OK":
                 if not game.get("gameOutcome"):
                     logger.info(
-                        f"Game not completed: {
-                        game.get('homeTeam', {}).get('abbrev')
-                    } vs {
-                        game.get('awayTeam', {}).get('abbrev')
-                    }"
+                        f"Game not completed: {game.get('homeTeam', {}).get('abbrev')} vs {
+                            game.get('awayTeam', {}).get('abbrev')
+                        }"
                     )
                     return
             if game.get("gameScheduleState") == "PPD":

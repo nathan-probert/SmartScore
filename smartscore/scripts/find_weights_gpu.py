@@ -21,7 +21,7 @@ LABELS = ["gpg", "five_gpg", "hgpg", "tgpg", "otga", "hppg_otshga", "is_home"]
 
 # Warp kernel to evaluate weights
 @wp.kernel
-def evaluate_weights(
+def evaluate_weights(  # noqa: PLR0917 - positional args required by the Warp kernel API
     gpg: wp.array(dtype=wp.float32),
     hgpg: wp.array(dtype=wp.float32),
     five_gpg: wp.array(dtype=wp.float32),

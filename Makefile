@@ -1,11 +1,11 @@
 local-setup:
 	@echo Creating virtual environment
-	@poetry env activate
+	@uv sync
 	@$(MAKE) install
 
 install:
 	@echo Installing all dev dependencies
-	@poetry install --with dev
+	@uv sync --all-groups
 
 check-ci:
 	@echo "Checking CI configuration"
@@ -15,19 +15,19 @@ check-ci:
 
 lint:
 	@echo "Linting code"
-	@poetry run pre-commit run -a
+	@uv run pre-commit run -a
 
 test:
 	@echo "Running tests with coverage"
-	@poetry run pytest -v --cov=smartscore --cov-report=term-missing --cov-report=html
+	@uv run pytest -v --cov=smartscore --cov-report=term-missing --cov-report=html
 
 test-no-cov:
 	@echo "Running tests without coverage"
-	@poetry run pytest -v
+	@uv run pytest -v
 
 integration:
 	@echo "Running AWS-dev integration tests with mocked NHL data"
-	@poetry run pytest -v tests/integration
+	@uv run pytest -v tests/integration
 
 compile:
 	@$(MAKE) compile_rust
@@ -39,12 +39,12 @@ compile_c:
 
 compile_rust:
 	@echo "Compiling Rust code"
-	@poetry run maturin develop -r --manifest-path smartscore/Rust/make_predictions/Cargo.toml
+	@uv run maturin develop -r --manifest-path smartscore/Rust/make_predictions/Cargo.toml
 
 get_odds:
 	@echo "Getting odds"
-	@ENV=prod poetry run python smartscore/scripts/get_odds.py
+	@ENV=prod uv run python smartscore/scripts/get_odds.py
 
 watch_live:
 	@echo "Running live"
-	@poetry run python smartscore/scripts/live_updates.py
+	@uv run python smartscore/scripts/live_updates.py

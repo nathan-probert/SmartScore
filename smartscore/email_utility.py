@@ -82,9 +82,9 @@ def get_html_and_text(picks: List[Dict], display_name: str = "") -> (str, str):
             stat_str = f"{stat}%" if stat != "" else ""
         html_body += f"""
           <tr>
-            <td style=\"padding:10px 0;border-bottom:1px solid {grey};color:{foreground};\">{pick.get('tims', '')}</td>
-            <td style=\"padding:10px 0;border-bottom:1px solid {grey};color:{foreground};\">{pick.get('name', '')}</td>
-            <td style=\"padding:10px 0;border-bottom:1px solid {grey};color:{foreground};\">{pick.get('team_name', '')}</td>
+            <td style=\"padding:10px 0;border-bottom:1px solid {grey};color:{foreground};\">{pick.get("tims", "")}</td>
+            <td style=\"padding:10px 0;border-bottom:1px solid {grey};color:{foreground};\">{pick.get("name", "")}</td>
+            <td style=\"padding:10px 0;border-bottom:1px solid {grey};color:{foreground};\">{pick.get("team_name", "")}</td>
             <td style=\"padding:10px 0;border-bottom:1px solid {grey};color:{primary};font-weight:bold;\">{stat_str}</td>
           </tr>
 """

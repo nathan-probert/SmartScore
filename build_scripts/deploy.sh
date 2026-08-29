@@ -268,8 +268,16 @@ mkdir -p $OUTPUT_DIR
 
 # update dependencies
 echo "Updating dependencies..."
-poetry export -f requirements.txt --output $OUTPUT_DIR/requirements.txt --without-hashes
-poetry run pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
+uv export --no-dev --format requirements-txt --output-file $OUTPUT_DIR/requirements.txt --no-hashes
+if [ $? -ne 0 ]; then
+  echo "Error: Dependency export failed."
+  exit 1
+fi
+uv run pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
+if [ $? -ne 0 ]; then
+  echo "Error: Dependency install failed."
+  exit 1
+fi
 rm -f $OUTPUT_DIR/requirements.txt
 
 # compile C code

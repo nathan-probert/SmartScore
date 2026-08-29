@@ -60,7 +60,7 @@ def invalidate_cache() -> None:
 def _evaluate_posthog(name: str) -> Optional[bool]:
     """Evaluate a single flag via the PostHog SDK, or None if unavailable."""
     try:
-        import posthog
+        import posthog  # noqa: PLC0415 - lazy import so a PostHog outage can't break startup
 
         posthog.project_api_key = POSTHOG_FEATURE_FLAG_KEY
         posthog.host = POSTHOG_HOST
