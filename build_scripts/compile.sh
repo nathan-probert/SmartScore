@@ -3,8 +3,8 @@
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 PROJECT_PATH=$(dirname "$SCRIPT_DIR")
 
-# Convert to Windows path only when cygpath is available (Git Bash on Windows).
-if command -v cygpath.exe >/dev/null 2>&1; then
+# Convert to Windows path only when cygpath is available AND we're in Git Bash (not WSL).
+if command -v cygpath.exe >/dev/null 2>&1 && [ -z "$WSL_DISTRO_NAME" ]; then
     PROJECT_PATH="$(cygpath.exe -C ANSI -w -p "${PROJECT_PATH}")"
 fi
 

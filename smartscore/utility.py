@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from datetime import timedelta
 
@@ -17,28 +18,31 @@ logger = Logger()
 _boto3_clients = {}
 
 
+def _get_boto3_client(service_name):
+    cache_key = service_name
+    if cache_key not in _boto3_clients:
+        kwargs = {}
+        endpoint_url = os.environ.get("AWS_ENDPOINT_URL")
+        if endpoint_url:
+            kwargs["endpoint_url"] = endpoint_url
+        _boto3_clients[cache_key] = boto3.client(service_name, **kwargs)
+    return _boto3_clients[cache_key]
+
+
 def get_lambda_client():
-    if "lambda" not in _boto3_clients:
-        _boto3_clients["lambda"] = boto3.client("lambda")
-    return _boto3_clients["lambda"]
+    return _get_boto3_client("lambda")
 
 
 def get_sts_client():
-    if "sts" not in _boto3_clients:
-        _boto3_clients["sts"] = boto3.client("sts")
-    return _boto3_clients["sts"]
+    return _get_boto3_client("sts")
 
 
 def get_events_client():
-    if "events" not in _boto3_clients:
-        _boto3_clients["events"] = boto3.client("events")
-    return _boto3_clients["events"]
+    return _get_boto3_client("events")
 
 
 def get_ssm_client():
-    if "ssm" not in _boto3_clients:
-        _boto3_clients["ssm"] = boto3.client("ssm")
-    return _boto3_clients["ssm"]
+    return _get_boto3_client("ssm")
 
 
 def invoke_lambda(function_name, payload, wait=True):
@@ -111,7 +115,7 @@ def create_cron_schedule(date_string):
 
 
 def delete_expired_rules():
-    client = boto3.client("events")
+    client = get_events_client()
     response = client.list_rules()
 
     for rule in response.get("Rules", []):

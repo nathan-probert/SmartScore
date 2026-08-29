@@ -3,8 +3,8 @@
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 PROJECT_PATH=$(dirname "$SCRIPT_DIR")
 
-# Convert to Windows path only when cygpath is available (Git Bash on Windows).
-if command -v cygpath.exe >/dev/null 2>&1; then
+# Convert to Windows path only when cygpath is available AND we're in Git Bash (not WSL).
+if command -v cygpath.exe >/dev/null 2>&1 && [ -z "$WSL_DISTRO_NAME" ]; then
     PROJECT_PATH="$(cygpath.exe -C ANSI -w -p "${PROJECT_PATH}")"
 fi
 
@@ -16,8 +16,7 @@ if ! docker run --rm -v "$PROJECT_PATH:/project" quay.io/pypa/manylinux_2_28_x86
     yum install -y rust-toolset
 
     # Navigate to the Rust project directory
-    cd /project
-    cd /smartscore/Rust/make_predictions
+    cd /project/smartscore/Rust/make_predictions
 
     # Compile the Rust code (assuming it's using Cargo)
     cargo build --release --target x86_64-unknown-linux-gnu
