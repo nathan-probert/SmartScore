@@ -64,13 +64,19 @@ jobs:
             "$SITE_PACKAGES/make_predictions_rust.so"
           uv run python -c "import make_predictions_rust; print('make_predictions_rust import OK')"
 
+      - name: Stage build artifacts
+        run: |
+          mkdir -p build_artifacts/smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release
+          cp smartscore/compiled_code.so build_artifacts/smartscore/compiled_code.so
+          cp smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so \
+            build_artifacts/smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v5
         with:
           name: build-artifacts
-          path: |
-            smartscore/compiled_code.so
-            smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so
+          path: build_artifacts/
+          if-no-files-found: error
           retention-days: 1
 
   lint:
