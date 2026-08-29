@@ -315,6 +315,8 @@ cp -r $SOURCE_DIR/* $OUTPUT_DIR
 cp -r $OUTPUT_DIR/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so $OUTPUT_DIR/make_predictions_rust.so
 rm -rf $OUTPUT_DIR/C
 rm -rf $OUTPUT_DIR/Rust
+# Dev/research tooling in smartscore/scripts is not imported at Lambda runtime.
+rm -rf $OUTPUT_DIR/scripts
 
 # Stage NHL mock fixtures into the zip for dev only, so deployed dev lambdas
 # can serve frozen NHL data when the mock flag is on. Prod stays clean.
