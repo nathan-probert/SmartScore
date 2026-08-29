@@ -22,6 +22,6 @@ Layout (relative to this directory):
 
 Record a real game day with:
 
-    poetry run python -m smartscore.scripts.record_nhl_fixtures 2025-06-11
+    uv run python -m smartscore.scripts.record_nhl_fixtures 2025-06-11
 
 Always record from a real day games were played so the data is realistic.

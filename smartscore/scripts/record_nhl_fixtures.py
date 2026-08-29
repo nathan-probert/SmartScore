@@ -7,7 +7,7 @@ Lambdas can run in mock mode (off-season / integration tests) with realistic
 data.
 
 Usage:
-    poetry run python -m smartscore.scripts.record_nhl_fixtures 2025-06-11
+    uv run python -m smartscore.scripts.record_nhl_fixtures 2025-06-11
 
 The date should be a real day on which NHL games were played so the recorded
 schedule/rosters/player-stats/team-stats correspond to actual games.

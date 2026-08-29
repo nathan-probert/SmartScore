@@ -1,3 +1,4 @@
+import datetime as real_datetime
 from datetime import datetime
 from unittest.mock import patch
 
@@ -48,8 +49,6 @@ def test_get_date_add_days(mock_datetime):
     mock_now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=pytz.timezone("America/Toronto"))
     mock_datetime.datetime.now.return_value = mock_now
     # Use real timedelta
-    import datetime as real_datetime
-
     mock_datetime.timedelta = real_datetime.timedelta
 
     result = get_date(add_days=5)
@@ -62,8 +61,6 @@ def test_get_date_subtract_days(mock_datetime):
     """Test get_date with subtract_days parameter."""
     mock_now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=pytz.timezone("America/Toronto"))
     mock_datetime.datetime.now.return_value = mock_now
-    import datetime as real_datetime
-
     mock_datetime.timedelta = real_datetime.timedelta
 
     result = get_date(subtract_days=3)
@@ -367,8 +364,6 @@ def test_backfill_dates_fetches_score_via_client_and_builds_scorers(mock_client,
     # Freeze "today" so yesterday resolves to 2025-06-11 (the backfill date).
     mock_now = datetime(2025, 6, 12, 12, 0, 0, tzinfo=pytz.timezone("America/Toronto"))
     mock_datetime.datetime.now.return_value = mock_now
-    import datetime as real_datetime
-
     mock_datetime.timedelta = real_datetime.timedelta
 
     # GET_DATES_NO_SCORED returns a single date to backfill; POST_BACKFILL returns 200.

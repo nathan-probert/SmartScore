@@ -296,6 +296,6 @@ def get_emails():
         ]
         logger.info(f"Found {len(users)} users with notifications enabled")
         return users
-    except (KeyError, AttributeError, Exception) as e:
+    except Exception as e:  # noqa: BLE001 - a failure fetching emails must not crash the send-emails pipeline
         logger.error(f"Failed to fetch opted-in emails: {e.__class__.__name__}: {e}")
         return []

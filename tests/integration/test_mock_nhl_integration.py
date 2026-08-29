@@ -27,6 +27,7 @@ from typing import Dict, List, Optional
 
 import boto3
 import pytest
+import requests
 
 pytestmark = pytest.mark.integration
 
@@ -78,8 +79,6 @@ def _posthog_project_id() -> int:
 
 
 def _flag_id() -> int:
-    import requests
-
     url = f"{POSTHOG_HOST}/api/projects/{_posthog_project_id()}/feature_flags/"
     resp = requests.get(
         url,
@@ -96,9 +95,7 @@ def _flag_id() -> int:
 
 def _set_flag(enabled: bool) -> None:
     """Toggle the flag's ``active`` field so dev mock mode is on/off."""
-    import requests
-
-    url = f"{POSTHOG_HOST}/api/projects/{_posthog_project_id()}/feature_flags/" f"{_flag_id()}/"
+    url = f"{POSTHOG_HOST}/api/projects/{_posthog_project_id()}/feature_flags/{_flag_id()}/"
     resp = requests.patch(
         url,
         headers={
@@ -112,8 +109,6 @@ def _set_flag(enabled: bool) -> None:
 
 
 def _wait_for_flag(enabled: bool) -> None:
-    import requests
-
     distinct_id = f"smartscore-lambda-{ENVIRONMENT}"
     url = f"{POSTHOG_HOST}/flags?v=2"
     for _ in range(30):

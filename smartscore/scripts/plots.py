@@ -113,7 +113,7 @@ def main():
     print("Calibration Table:")
     print("Bin Range\tPredicted\tActual\tCount")
     for i in range(len(bins) - 1):
-        print(f"{bins[i]:.2f}-{bins[i+1]:.2f}\t{predicted[i]:.2f}\t{actual[i]:.2f}\t{bin_totals[i]}")
+        print(f"{bins[i]:.2f}-{bins[i + 1]:.2f}\t{predicted[i]:.2f}\t{actual[i]:.2f}\t{bin_totals[i]}")
 
     # -----------------------------
     # 2–4. Threshold metrics
