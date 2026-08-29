@@ -68,6 +68,7 @@ generate_smartscore_stack() {
         ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
+        ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -89,6 +90,7 @@ generate_smartscore_stack() {
         ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
+        ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
@@ -277,6 +279,16 @@ cp -r $SOURCE_DIR/* $OUTPUT_DIR
 cp -r $OUTPUT_DIR/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so $OUTPUT_DIR/make_predictions_rust.so
 rm -rf $OUTPUT_DIR/C
 rm -rf $OUTPUT_DIR/Rust
+
+# Stage NHL mock fixtures into the zip for dev only, so deployed dev lambdas
+# can serve frozen NHL data when the mock flag is on. Prod stays clean.
+if [ "$ENV" = "dev" ]; then
+  echo "Staging NHL fixtures for dev..."
+  mkdir -p $OUTPUT_DIR/fixtures
+  cp -r tests/fixtures/nhl $OUTPUT_DIR/fixtures/
+else
+  echo "Skipping NHL fixtures for non-dev environment ($ENV)."
+fi
 
 # remove unnecessary artifacts before zipping
 prune_output_dir

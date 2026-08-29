@@ -17,7 +17,8 @@ from smartscore_info_client.schemas.team import TEAM_MERGE_EXCLUDED_FIELDS
 from config import ENV
 from constants import DAYS_TO_KEEP_HISTORIC_DATA, LAMBDA_API_NAME, NUM_EXPECTED_PLAYERS, WEIGHTS
 from email_utility import send_email
-from feature_flags import is_feature_enabled
+from feature_flags import NHL_MOCK_FLAG, is_feature_enabled
+from mock_nhl_client import MockNHLClient
 from utility import (
     get_cur_pick_pct,
     get_emails,
@@ -33,7 +34,17 @@ from utility import (
 
 logger = Logger()
 
-NHL_CLIENT = NHLClient()
+
+def get_nhl_client():
+    """Return the NHL client appropriate for the current feature flag state.
+
+    When the ``mock-nhl-api`` flag is enabled (e.g. for off-season dev work
+    or integration tests), a :class:`MockNHLClient` serving frozen fixtures is
+    returned instead of the live ``NHLClient``.
+    """
+    if is_feature_enabled(NHL_MOCK_FLAG):
+        return MockNHLClient()
+    return NHLClient()
 
 
 def get_date(hour=False, add_days=0, subtract_days=0):
@@ -53,7 +64,7 @@ def get_todays_schedule():
     date = get_date()
     logger.info(f"Getting players for date: {date}")
 
-    return NHL_CLIENT.get_schedule(date)
+    return get_nhl_client().get_schedule(date)
 
 
 def get_teams(data):
@@ -102,10 +113,11 @@ def get_teams(data):
 
 def enrich_teams(teams):
     """Attach team stats to each game team, fetched once per season."""
+    nhl_client = get_nhl_client()
     return [
         TeamInfo(
             team=team,
-            stats=NHL_CLIENT.get_team_stats(team.season, team.team_id, team.opponent_id),
+            stats=nhl_client.get_team_stats(team.season, team.team_id, team.opponent_id),
         )
         for team in teams
     ]
@@ -113,8 +125,9 @@ def enrich_teams(teams):
 
 def get_players_from_team(team):
     players = []
+    nhl_client = get_nhl_client()
 
-    roster = NHL_CLIENT.get_roster(team.team_abbr)
+    roster = nhl_client.get_roster(team.team_abbr)
 
     player_types = ["forwards", "defensemen"]
     for player_type in player_types:
@@ -126,7 +139,7 @@ def get_players_from_team(team):
                         id=player["id"],
                         team_id=team.team_id,
                     ),
-                    stats=NHL_CLIENT.get_player_stats(player["id"]),
+                    stats=nhl_client.get_player_stats(player["id"]),
                 )
             )
 
@@ -226,8 +239,9 @@ def backfill_dates():
         return
 
     scorers_dict = {}
+    nhl_client = get_nhl_client()
     for date in dates_no_scored:
-        data = NHL_CLIENT.get_score(date)
+        data = nhl_client.get_score(date)
 
         # get players who actually played
         players = []

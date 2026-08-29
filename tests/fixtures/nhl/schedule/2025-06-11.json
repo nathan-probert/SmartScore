@@ -1,0 +1,27 @@
+{
+  "gameWeek": [
+    {
+      "games": [
+        {
+          "id": 500001,
+          "startTimeUTC": "2025-06-11T23:00:00Z",
+          "season": "20242025",
+          "gameType": 2,
+          "gameDate": "2025-06-11",
+          "homeTeam": {
+            "id": 1,
+            "abbrev": "TOR",
+            "placeName": { "default": "Toronto" },
+            "commonName": { "default": "Maple Leafs" }
+          },
+          "awayTeam": {
+            "id": 2,
+            "abbrev": "EDM",
+            "placeName": { "default": "Edmonton" },
+            "commonName": { "default": "Oilers" }
+          }
+        }
+      ]
+    }
+  ]
+}

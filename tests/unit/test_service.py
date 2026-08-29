@@ -2,12 +2,16 @@ from datetime import datetime
 from unittest.mock import patch
 
 import pytz
+from smartscore_info_client.api.nhle import NHLClient
 from smartscore_info_client.models.player import PlayerInfo, PlayerStats
 from smartscore_info_client.models.team import GameTeam
 
+from mock_nhl_client import MockNHLClient
 from service import (
+    backfill_dates,
     choose_picks,
     get_date,
+    get_nhl_client,
     get_players_from_team,
     merge_injury_data,
     merge_players_and_teams,
@@ -65,6 +69,21 @@ def test_get_date_subtract_days(mock_datetime):
     result = get_date(subtract_days=3)
 
     assert result == "2024-01-12"
+
+
+@patch("service.is_feature_enabled", return_value=False)
+def test_get_nhl_client_returns_real_client_when_flag_off(mock_flag):
+    """With the mock flag off, get_nhl_client returns a live NHLClient."""
+    client = get_nhl_client()
+    assert isinstance(client, NHLClient)
+    assert not isinstance(client, MockNHLClient)
+
+
+@patch("service.is_feature_enabled", return_value=True)
+def test_get_nhl_client_returns_mock_client_when_flag_on(mock_flag):
+    """With the mock flag on, get_nhl_client returns a MockNHLClient."""
+    client = get_nhl_client()
+    assert isinstance(client, MockNHLClient)
 
 
 def test_merge_players_and_teams_merges_player_and_team_data():
@@ -164,17 +183,17 @@ def test_merge_players_and_teams_empty():
     assert result == []
 
 
-@patch("service.NHL_CLIENT")
+@patch("service.get_nhl_client")
 def test_get_players_from_team_builds_player_info(mock_client):
     """Test that get_players_from_team fetches roster and stats explicitly."""
-    mock_client.get_roster.return_value = {
+    mock_client.return_value.get_roster.return_value = {
         "forwards": [
             {"id": 1, "firstName": {"default": "John"}, "lastName": {"default": "Doe"}},
             {"id": 2, "firstName": {"default": "Jane"}, "lastName": {"default": "Roe"}},
         ],
         "defensemen": [],
     }
-    mock_client.get_player_stats.side_effect = lambda player_id: PlayerStats(
+    mock_client.return_value.get_player_stats.side_effect = lambda player_id: PlayerStats(
         gpg=float(player_id), hgpg=0.5, five_gpg=0.4, hppg=0.3
     )
 
@@ -197,8 +216,8 @@ def test_get_players_from_team_builds_player_info(mock_client):
     assert players[0].gpg == 1.0
     assert players[1].name == "Jane Roe"
     assert players[1].id == 2
-    mock_client.get_roster.assert_called_once_with("TA")
-    assert mock_client.get_player_stats.call_count == 2
+    mock_client.return_value.get_roster.assert_called_once_with("TA")
+    assert mock_client.return_value.get_player_stats.call_count == 2
 
 
 def test_choose_picks_basic():
@@ -334,3 +353,49 @@ def test_send_emails_sends_when_feature_flag_enabled(mock_feature_enabled, mock_
     mock_feature_enabled.assert_called_once_with("send_emails")
     mock_get_date.assert_called_once()
     mock_send_email.assert_called_once_with("test@example.com", picks, "Tester", "2026-04-16")
+
+
+@patch("service.datetime")
+@patch("service.invoke_lambda")
+@patch("service.get_nhl_client")
+def test_backfill_dates_fetches_score_via_client_and_builds_scorers(mock_client, mock_invoke, mock_datetime):
+    """Test backfill_dates drives the NHL client's get_score and reports scorers.
+
+    Exercises the refactored ``_get_score`` path (via ``get_nhl_client()``) that
+    the backfill flow relies on, plus scorer extraction from the score payload.
+    """
+    # Freeze "today" so yesterday resolves to 2025-06-11 (the backfill date).
+    mock_now = datetime(2025, 6, 12, 12, 0, 0, tzinfo=pytz.timezone("America/Toronto"))
+    mock_datetime.datetime.now.return_value = mock_now
+    import datetime as real_datetime
+
+    mock_datetime.timedelta = real_datetime.timedelta
+
+    # GET_DATES_NO_SCORED returns a single date to backfill; POST_BACKFILL returns 200.
+    mock_invoke.side_effect = [
+        {"body": {"dates": '["2025-06-11"]'}},  # Api-{ENV} GET_DATES_NO_SCORED
+        {"statusCode": 200},  # LAMBDA_API_NAME POST_BACKFILL
+    ]
+
+    client = mock_client.return_value
+    client.get_score.return_value = {
+        "games": [
+            {
+                "gameScheduleState": "OK",
+                "gameOutcome": {"lastPeriod": 3},
+                "goals": [{"playerId": 100}, {"playerId": 100}, {"playerId": 200}],
+            }
+        ]
+    }
+
+    backfill_dates()
+
+    # The backfill path must fetch the score through the (mock-selecting) client.
+    client.get_score.assert_called_once_with("2025-06-11")
+
+    # POST_BACKFILL receives the deduplicated scorer ids per date.
+    backfill_calls = [c for c in mock_invoke.call_args_list if c.args[1]["method"] == "POST_BACKFILL"]
+    assert len(backfill_calls) == 1
+    reported = backfill_calls[0].args[1]["data"]
+    # Scorer ids come from a set, so compare ignoring order.
+    assert set(reported["2025-06-11"]) == {100, 200}

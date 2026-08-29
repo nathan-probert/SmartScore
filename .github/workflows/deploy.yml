@@ -151,9 +151,15 @@ jobs:
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy'))
       )
+    outputs:
+      env_was_dev: ${{ steps.env-detect.outputs.is_dev }}
     env:
       ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
     steps:
+      - name: Detect environment
+        id: env-detect
+        run: echo "is_dev=${{ github.ref != 'refs/heads/main' && 'true' || 'false' }}" >> $GITHUB_OUTPUT
+
       - name: Checkout code
         uses: actions/checkout@v6
 
@@ -183,6 +189,7 @@ jobs:
           echo "BREVO_SMTP_KEY=${{ secrets.BREVO_SMTP_KEY }}" >> $GITHUB_ENV
           echo "BREVO_FROM_EMAIL=${{ secrets.BREVO_FROM_EMAIL }}" >> $GITHUB_ENV
           echo "FEATURE_SEND_EMAILS=${{ secrets.FEATURE_SEND_EMAILS }}" >> $GITHUB_ENV
+          echo "POSTHOG_FEATURE_FLAG_KEY=${{ secrets.POSTHOG_FEATURE_FLAG_KEY }}" >> $GITHUB_ENV
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -199,3 +206,47 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+
+  dev-integration:
+    needs: deploy
+    runs-on: ubuntu-latest
+    # Only run the mock-NHL integration suite against the dev stack (PRs with
+    # the deploy label), never against prod.
+    if: |
+      needs.deploy.result == 'success' &&
+      needs.deploy.outputs.env_was_dev == 'true'
+    env:
+      ENV: dev
+      AWS_REGION: us-east-1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.12
+
+      - name: Install Poetry
+        run: |
+          curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Install dependencies
+        run: poetry install --no-root
+
+      - name: Set environment variables
+        run: |
+          echo "POSTHOG_FEATURE_FLAG_KEY=${{ secrets.POSTHOG_FEATURE_FLAG_KEY }}" >> $GITHUB_ENV
+          echo "POSTHOG_PERSONAL_API_KEY=${{ secrets.POSTHOG_PERSONAL_API_KEY }}" >> $GITHUB_ENV
+          echo "POSTHOG_PROJECT_ID=${{ secrets.POSTHOG_PROJECT_ID }}" >> $GITHUB_ENV
+          echo "AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}" >> $GITHUB_ENV
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Run dev integration tests (mocked NHL)
+        run: make integration
