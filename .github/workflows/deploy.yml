@@ -51,17 +51,26 @@ jobs:
           restore-keys: |
             rust-build-${{ runner.os }}-
 
-      - name: Compile Rust code
-        run: make compile
+      - name: Compile C code
+        run: make compile_c
+
+      - name: Compile Rust code (Linux Lambda target)
+        run: cargo build --release --target x86_64-unknown-linux-gnu --manifest-path smartscore/Rust/make_predictions/Cargo.toml
+
+      - name: Install compiled Rust module into venv
+        run: |
+          SITE_PACKAGES=$(find .venv -type d -name site-packages | head -1)
+          cp smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so \
+            "$SITE_PACKAGES/make_predictions_rust.so"
+          uv run python -c "import make_predictions_rust; print('make_predictions_rust import OK')"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v5
         with:
           name: build-artifacts
           path: |
-            smartscore/Rust/make_predictions/target/release/*.dll
-            smartscore/Rust/make_predictions/target/release/*.so
-            smartscore/Rust/make_predictions/target/release/*.dylib
+            smartscore/compiled_code.so
+            smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so
           retention-days: 1
 
   lint:
@@ -88,11 +97,6 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --all-groups
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v6
-        with:
-          name: build-artifacts
 
       - name: Run lint
         run: uv run make lint
@@ -122,17 +126,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-groups
 
-      - name: Cache Rust build
-        uses: actions/cache@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
         with:
-          path: |
-            smartscore/Rust/make_predictions/target
-          key: rust-build-${{ runner.os }}-${{ hashFiles('smartscore/Rust/make_predictions/Cargo.lock') }}
-          restore-keys: |
-            rust-build-${{ runner.os }}-
+          name: build-artifacts
 
-      - name: Compile Rust code
-        run: make compile_rust
+      - name: Install compiled Rust module into venv
+        run: |
+          SITE_PACKAGES=$(find .venv -type d -name site-packages | head -1)
+          cp smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so \
+            "$SITE_PACKAGES/make_predictions_rust.so"
 
       - name: Run tests
         run: make test
@@ -149,6 +152,7 @@ jobs:
       env_was_dev: ${{ steps.env-detect.outputs.is_dev }}
     env:
       ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+      DEPLOY_SKIP_BUILD: "1"
     steps:
       - name: Detect environment
         id: env-detect
@@ -156,11 +160,6 @@ jobs:
 
       - name: Checkout code
         uses: actions/checkout@v6
-
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential  # Install gcc and make
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -172,6 +171,11 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --no-dev
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: build-artifacts
 
       - name: Set environment variables
         run: |

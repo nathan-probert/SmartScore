@@ -280,20 +280,31 @@ if [ $? -ne 0 ]; then
 fi
 rm -f $OUTPUT_DIR/requirements.txt
 
-# compile C code
-echo "Compiling C code..."
-sh build_scripts/compile.sh
-if [ $? -ne 0 ]; then
-  echo "Error: Compilation failed. Ensure docker is running."
-  exit 1
-fi
+# compile C and Rust. When the CI "setup" job has already built the artifacts
+# (see DEPLOY_SKIP_BUILD in .github/workflows/deploy.yml), reuse them instead.
+if [ "${DEPLOY_SKIP_BUILD:-0}" = "1" ]; then
+    if [ ! -f "$SOURCE_DIR/compiled_code.so" ] || \
+       [ ! -f "$SOURCE_DIR/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so" ]; then
+        echo "Error: DEPLOY_SKIP_BUILD is set but prebuilt artifacts are missing (compile in setup first)."
+        exit 1
+    fi
+    echo "Skipping C/Rust compilation (reusing artifacts from CI setup job)..."
+else
+    # compile C code
+    echo "Compiling C code..."
+    sh build_scripts/compile.sh
+    if [ $? -ne 0 ]; then
+      echo "Error: Compilation failed. Ensure docker is running."
+      exit 1
+    fi
 
-# compile Rust code
-echo "Compiling Rust code..."
-sh build_scripts/rust_compile.sh
-if [ $? -ne 0 ]; then
-  echo "Error: Compilation failed. Ensure docker is running."
-  exit 1
+    # compile Rust code
+    echo "Compiling Rust code..."
+    sh build_scripts/rust_compile.sh
+    if [ $? -ne 0 ]; then
+      echo "Error: Compilation failed. Ensure docker is running."
+      exit 1
+    fi
 fi
 
 # update the code
