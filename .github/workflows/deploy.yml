@@ -34,7 +34,7 @@ jobs:
       - name: Cache uv
         uses: actions/cache@v4
         with:
-          path: ~/.cache/uv
+          path: ${{ runner.temp }}/setup-uv-cache
           key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
           restore-keys: |
             uv-${{ runner.os }}-
@@ -98,7 +98,7 @@ jobs:
       - name: Cache uv
         uses: actions/cache@v4
         with:
-          path: ~/.cache/uv
+          path: ${{ runner.temp }}/setup-uv-cache
           key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
 
       - name: Install dependencies
@@ -126,7 +126,7 @@ jobs:
       - name: Cache uv
         uses: actions/cache@v4
         with:
-          path: ~/.cache/uv
+          path: ${{ runner.temp }}/setup-uv-cache
           key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
 
       - name: Install dependencies
@@ -178,7 +178,7 @@ jobs:
       - name: Cache uv
         uses: actions/cache@v4
         with:
-          path: ~/.cache/uv
+          path: ${{ runner.temp }}/setup-uv-cache
           key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
           restore-keys: |
             uv-${{ runner.os }}-
