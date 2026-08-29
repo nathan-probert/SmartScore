@@ -8,6 +8,7 @@ from smartscore_info_client.models.team import GameTeam
 
 from mock_nhl_client import MockNHLClient
 from service import (
+    backfill_dates,
     choose_picks,
     get_date,
     get_nhl_client,
@@ -352,3 +353,49 @@ def test_send_emails_sends_when_feature_flag_enabled(mock_feature_enabled, mock_
     mock_feature_enabled.assert_called_once_with("send_emails")
     mock_get_date.assert_called_once()
     mock_send_email.assert_called_once_with("test@example.com", picks, "Tester", "2026-04-16")
+
+
+@patch("service.datetime")
+@patch("service.invoke_lambda")
+@patch("service.get_nhl_client")
+def test_backfill_dates_fetches_score_via_client_and_builds_scorers(mock_client, mock_invoke, mock_datetime):
+    """Test backfill_dates drives the NHL client's get_score and reports scorers.
+
+    Exercises the refactored ``_get_score`` path (via ``get_nhl_client()``) that
+    the backfill flow relies on, plus scorer extraction from the score payload.
+    """
+    # Freeze "today" so yesterday resolves to 2025-06-11 (the backfill date).
+    mock_now = datetime(2025, 6, 12, 12, 0, 0, tzinfo=pytz.timezone("America/Toronto"))
+    mock_datetime.datetime.now.return_value = mock_now
+    import datetime as real_datetime
+
+    mock_datetime.timedelta = real_datetime.timedelta
+
+    # GET_DATES_NO_SCORED returns a single date to backfill; POST_BACKFILL returns 200.
+    mock_invoke.side_effect = [
+        {"body": {"dates": '["2025-06-11"]'}},  # Api-{ENV} GET_DATES_NO_SCORED
+        {"statusCode": 200},  # LAMBDA_API_NAME POST_BACKFILL
+    ]
+
+    client = mock_client.return_value
+    client.get_score.return_value = {
+        "games": [
+            {
+                "gameScheduleState": "OK",
+                "gameOutcome": {"lastPeriod": 3},
+                "goals": [{"playerId": 100}, {"playerId": 100}, {"playerId": 200}],
+            }
+        ]
+    }
+
+    backfill_dates()
+
+    # The backfill path must fetch the score through the (mock-selecting) client.
+    client.get_score.assert_called_once_with("2025-06-11")
+
+    # POST_BACKFILL receives the deduplicated scorer ids per date.
+    backfill_calls = [c for c in mock_invoke.call_args_list if c.args[1]["method"] == "POST_BACKFILL"]
+    assert len(backfill_calls) == 1
+    reported = backfill_calls[0].args[1]["data"]
+    # Scorer ids come from a set, so compare ignoring order.
+    assert set(reported["2025-06-11"]) == {100, 200}
