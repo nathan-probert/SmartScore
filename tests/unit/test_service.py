@@ -2,13 +2,16 @@ from datetime import datetime
 from unittest.mock import patch
 
 import pytz
+from smartscore_info_client.models.player import PlayerInfo, PlayerStats
+from smartscore_info_client.models.team import GameTeam
 
 from service import (
     choose_picks,
     get_date,
+    get_players_from_team,
     merge_injury_data,
+    merge_players_and_teams,
     send_emails,
-    separate_players,
 )
 
 
@@ -64,86 +67,87 @@ def test_get_date_subtract_days(mock_datetime):
     assert result == "2024-01-12"
 
 
-@patch("service.PLAYER_INFO_SCHEMA")
-@patch("service.TEAM_INFO_SCHEMA")
-def test_separate_players_basic(mock_team_schema, mock_player_schema):
-    """Test that separate_players correctly combines player and team data."""
-    # Mock dump to return expected dicts
-    mock_player_schema.dump.side_effect = lambda p: {"name": p.name, "id": p.id}
-    mock_team_schema.dump.side_effect = lambda t: {
-        "team_name": t.team_name,
-        "team_id": t.team_id,
-        "home": t.home,
-        "tgpg": getattr(t, "tgpg", 0.0),
-    }
-
-    class Player:
-        def __init__(self, name, id, team_id):
-            self.name = name
-            self.id = id
-            self.team_id = team_id
-
-    players = [
-        Player("Player One", 1, 10),
-        Player("Player Two", 2, 20),
-    ]
-
-    class Team:
-        def __init__(self, team_name, team_id, home, tgpg):
-            self.team_name = team_name
-            self.team_id = team_id
-            self.home = home
-            self.tgpg = tgpg
-
+def test_merge_players_and_teams_merges_player_and_team_data():
+    """Test that merge_players_and_teams correctly combines player and team data."""
     teams = [
-        Team("Team A", 10, True, 3.0),
-        Team("Team B", 20, False, 2.8),
+        {
+            "team_name": "Team A",
+            "team_abbr": "TA",
+            "season": "20242025",
+            "team_id": 10,
+            "opponent_id": 11,
+            "home": True,
+            "tgpg": 3.0,
+            "otga": 2.8,
+            "otshga": 0.4,
+            "players": [
+                {
+                    "name": "Player One",
+                    "id": 1,
+                    "team_id": 10,
+                    "gpg": 0.5,
+                    "hgpg": 0.4,
+                    "five_gpg": 0.45,
+                    "hppg": 0.1,
+                },
+            ],
+        },
+        {
+            "team_name": "Team B",
+            "team_abbr": "TB",
+            "season": "20242025",
+            "team_id": 20,
+            "opponent_id": 10,
+            "home": False,
+            "tgpg": 2.7,
+            "otga": 3.1,
+            "otshga": 0.5,
+            "players": [
+                {
+                    "name": "Player Two",
+                    "id": 2,
+                    "team_id": 20,
+                    "gpg": 0.6,
+                    "hgpg": 0.5,
+                    "five_gpg": 0.5,
+                    "hppg": 0.2,
+                },
+            ],
+        },
     ]
-    result = separate_players(players, teams)
+
+    result = merge_players_and_teams(teams)
     assert len(result) == 2
     assert result[0]["name"] == "Player One"
     assert result[0]["id"] == 1
     assert result[0]["team_name"] == "Team A"
     assert result[0]["home"] is True
     assert result[0]["tgpg"] == 3.0
+    assert result[0]["otga"] == 2.8
+    assert result[0]["otshga"] == 0.4
     assert result[1]["name"] == "Player Two"
     assert result[1]["id"] == 2
     assert result[1]["team_name"] == "Team B"
     assert result[1]["home"] is False
-    assert result[1]["tgpg"] == 2.8
 
 
-@patch("service.PLAYER_INFO_SCHEMA")
-@patch("service.TEAM_INFO_SCHEMA")
-def test_separate_players_excludes_fields(mock_team_schema, mock_player_schema):
+def test_merge_players_and_teams_excludes_fields():
     """Test that certain fields are excluded from the result."""
-    mock_player_schema.dump.side_effect = lambda p: {"name": p.name, "id": p.id}
-    mock_team_schema.dump.side_effect = lambda t: {
-        "team_name": t.team_name,
-        "team_id": t.team_id,
-        "home": t.home,
-    }
-
-    class Player:
-        def __init__(self, name, id, team_id):
-            self.name = name
-            self.id = id
-            self.team_id = team_id
-
-    players = [
-        Player("Player One", 1, 10),
-    ]
-
-    class Team:
-        def __init__(self, team_name, team_id, home):
-            self.team_name = team_name
-            self.team_id = team_id
-            self.home = home
-
     teams = [
-        Team("Team A", 10, True),
+        {
+            "team_name": "Team A",
+            "team_abbr": "TA",
+            "season": "20242025",
+            "team_id": 10,
+            "opponent_id": 11,
+            "home": True,
+            "players": [
+                {"name": "Player One", "id": 1, "team_id": 10, "odds": None, "stat": 0.8},
+            ],
+        },
     ]
-    result = separate_players(players, teams)
+
+    result = merge_players_and_teams(teams)
     for entry in result:
         assert "team_id" not in entry
         assert "opponent_id" not in entry
@@ -153,11 +157,48 @@ def test_separate_players_excludes_fields(mock_team_schema, mock_player_schema):
         assert "stat" not in entry
 
 
-def test_separate_players_empty_lists():
-    """Test separate_players with empty lists."""
-    result = separate_players([], [])
+def test_merge_players_and_teams_empty():
+    """Test merge_players_and_teams with empty lists."""
+    result = merge_players_and_teams([])
 
     assert result == []
+
+
+@patch("service.NHL_CLIENT")
+def test_get_players_from_team_builds_player_info(mock_client):
+    """Test that get_players_from_team fetches roster and stats explicitly."""
+    mock_client.get_roster.return_value = {
+        "forwards": [
+            {"id": 1, "firstName": {"default": "John"}, "lastName": {"default": "Doe"}},
+            {"id": 2, "firstName": {"default": "Jane"}, "lastName": {"default": "Roe"}},
+        ],
+        "defensemen": [],
+    }
+    mock_client.get_player_stats.side_effect = lambda player_id: PlayerStats(
+        gpg=float(player_id), hgpg=0.5, five_gpg=0.4, hppg=0.3
+    )
+
+    team = GameTeam(
+        team_name="Team A",
+        team_abbr="TA",
+        season="20242025",
+        team_id=10,
+        opponent_id=11,
+        home=True,
+    )
+
+    players = get_players_from_team(team)
+
+    assert len(players) == 2
+    assert all(isinstance(player, PlayerInfo) for player in players)
+    assert players[0].name == "John Doe"
+    assert players[0].id == 1
+    assert players[0].team_id == 10
+    assert players[0].gpg == 1.0
+    assert players[1].name == "Jane Roe"
+    assert players[1].id == 2
+    mock_client.get_roster.assert_called_once_with("TA")
+    assert mock_client.get_player_stats.call_count == 2
 
 
 def test_choose_picks_basic():

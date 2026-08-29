@@ -7,7 +7,7 @@ import requests
 from utility import create_cron_schedule, exponential_backoff_request
 
 
-@patch("utility.requests.get")
+@patch("smartscore_info_client.utility.requests.get")
 def test_exponential_backoff_request_success(mock_get):
     """Test successful GET request."""
     mock_response = MagicMock()
@@ -20,7 +20,7 @@ def test_exponential_backoff_request_success(mock_get):
     mock_get.assert_called_once()
 
 
-@patch("utility.requests.post")
+@patch("smartscore_info_client.utility.requests.post")
 def test_exponential_backoff_request_post_success(mock_post):
     """Test successful POST request."""
     mock_response = MagicMock()
@@ -33,7 +33,7 @@ def test_exponential_backoff_request_post_success(mock_post):
     mock_post.assert_called_once()
 
 
-@patch("utility.requests.post")
+@patch("smartscore_info_client.utility.requests.post")
 def test_exponential_backoff_request_with_form_data(mock_post):
     """Test POST request with form data."""
     mock_response = MagicMock()
@@ -46,8 +46,8 @@ def test_exponential_backoff_request_with_form_data(mock_post):
     assert mock_post.call_args[1]["data"] == {"form": "data"}
 
 
-@patch("utility.time.sleep")
-@patch("utility.requests.get")
+@patch("smartscore_info_client.utility.time.sleep")
+@patch("smartscore_info_client.utility.requests.get")
 def test_exponential_backoff_request_retry(mock_get, mock_sleep):
     """Test retry logic on failure."""
     mock_get.side_effect = [
@@ -66,8 +66,8 @@ def test_exponential_backoff_request_retry(mock_get, mock_sleep):
     assert mock_sleep.call_args_list[1][0][0] == 2  # 1 * 2^1
 
 
-@patch("utility.time.sleep")
-@patch("utility.requests.get")
+@patch("smartscore_info_client.utility.time.sleep")
+@patch("smartscore_info_client.utility.requests.get")
 def test_exponential_backoff_request_max_retries_exceeded(mock_get, mock_sleep):
     """Test when max retries are exceeded."""
     mock_get.side_effect = requests.exceptions.Timeout("Timeout")
@@ -79,7 +79,7 @@ def test_exponential_backoff_request_max_retries_exceeded(mock_get, mock_sleep):
     assert mock_sleep.call_count == 3
 
 
-@patch("utility.requests.get")
+@patch("smartscore_info_client.utility.requests.get")
 def test_exponential_backoff_request_with_headers(mock_get):
     """Test request with custom headers."""
     mock_response = MagicMock()
@@ -99,8 +99,8 @@ def test_exponential_backoff_request_invalid_method():
         exponential_backoff_request("http://test.com", method="delete")
 
 
-@patch("utility.time.sleep")
-@patch("utility.requests.get")
+@patch("smartscore_info_client.utility.time.sleep")
+@patch("smartscore_info_client.utility.requests.get")
 def test_exponential_backoff_request_connection_error(mock_get, mock_sleep):
     """Test retry on connection error."""
     mock_get.side_effect = [
@@ -114,8 +114,8 @@ def test_exponential_backoff_request_connection_error(mock_get, mock_sleep):
     assert mock_get.call_count == 2
 
 
-@patch("utility.time.sleep")
-@patch("utility.requests.get")
+@patch("smartscore_info_client.utility.time.sleep")
+@patch("smartscore_info_client.utility.requests.get")
 def test_exponential_backoff_request_http_error(mock_get, mock_sleep):
     """Test retry on HTTP error status."""
     mock_response = MagicMock()
@@ -131,8 +131,8 @@ def test_exponential_backoff_request_http_error(mock_get, mock_sleep):
     assert result == {"data": "success"}
 
 
-@patch("utility.time.sleep")
-@patch("utility.requests.get")
+@patch("smartscore_info_client.utility.time.sleep")
+@patch("smartscore_info_client.utility.requests.get")
 def test_exponential_backoff_request_custom_base_delay(mock_get, mock_sleep):
     """Test custom base delay."""
     mock_get.side_effect = [
