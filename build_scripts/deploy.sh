@@ -172,13 +172,15 @@ update_lambda_code() {
   for FUNCTION in "${LAMBDA_FUNCTIONS[@]}"; do
     (
       echo "Updating Lambda function code: $FUNCTION..."
-      if ! aws lambda update-function-code \
+      if ERROR_OUTPUT=$(aws lambda update-function-code \
           --function-name "$FUNCTION" \
-          --zip-file fileb://$OUTPUT_DIR/$KEY &>/dev/null; then
+          --zip-file fileb://$OUTPUT_DIR/$KEY 2>&1); then
+        echo "Lambda function code updated successfully: $FUNCTION."
+      else
         echo "Error: Failed to update Lambda function code: $FUNCTION."
+        echo "$ERROR_OUTPUT"
         exit 1
       fi
-      echo "Lambda function code updated successfully: $FUNCTION."
     ) &
     PIDS+=($!)
     UPDATE_COUNT=$((UPDATE_COUNT + 1))
@@ -273,7 +275,7 @@ if [ $? -ne 0 ]; then
   echo "Error: Dependency export failed."
   exit 1
 fi
-uv run pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
+uv pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
 if [ $? -ne 0 ]; then
   echo "Error: Dependency install failed."
   exit 1
