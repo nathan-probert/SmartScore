@@ -122,10 +122,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-groups
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v6
+      - name: Cache Rust build
+        uses: actions/cache@v4
         with:
-          name: build-artifacts
+          path: |
+            smartscore/Rust/make_predictions/target
+          key: rust-build-${{ runner.os }}-${{ hashFiles('smartscore/Rust/make_predictions/Cargo.lock') }}
+          restore-keys: |
+            rust-build-${{ runner.os }}-
+
+      - name: Compile Rust code
+        run: make compile_rust
 
       - name: Run tests
         run: make test
@@ -216,7 +223,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
-        run: uv sync --no-dev
+        run: uv sync --all-groups
 
       - name: Set environment variables
         run: |
