@@ -48,3 +48,39 @@ get_odds:
 watch_live:
 	@echo "Running live"
 	@uv run python smartscore/scripts/live_updates.py
+
+# --- Local Floci development ---
+local-up:
+	@docker compose up -d
+	@echo "Waiting for Floci..."
+	@sleep 3
+	@echo "Floci ready at http://localhost:4566"
+
+local-down:
+	@docker compose down
+
+local-deploy:
+	@LOCAL_MODE=1 ENV=local ./build_scripts/deploy.sh
+
+local-status:
+	@AWS_ENDPOINT_URL=http://localhost:4566 aws cloudformation describe-stacks \
+		--stack-name "SmartScore-local" \
+		--query "Stacks[0].StackStatus" \
+		--output text 2>/dev/null || echo "Stack not deployed"
+
+local-stepfunctions:
+	@AWS_ENDPOINT_URL=http://localhost:4566 aws stepfunctions start-execution \
+		--state-machine-arn "arn:aws:states:us-east-1:000000000000:stateMachine:$(SM)-local" \
+		--input '$(INPUT)'
+
+local-invoke:
+	@AWS_ENDPOINT_URL=http://localhost:4566 aws lambda invoke \
+		--function-name "$(FUNC)-local" \
+		--payload '$(PAYLOAD)' \
+		--cli-binary-format raw-in-base64-out \
+		response.json
+	@cat response.json
+
+local-logs:
+	@AWS_ENDPOINT_URL=http://localhost:4566 aws logs tail \
+		"/aws/lambda/$(FUNC)-local" --follow

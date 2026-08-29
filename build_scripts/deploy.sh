@@ -5,6 +5,13 @@ ENV=${ENV:-dev}  # If ENV is not set, default to "dev"
 
 AWS_REGION=${AWS_REGION:-us-east-1}
 
+# --- Local mode support (Floci) ---
+LOCAL_MODE=${LOCAL_MODE:-0}
+AWSCLI="aws"
+if [ "$LOCAL_MODE" = "1" ]; then
+  AWSCLI="aws --endpoint-url ${AWS_ENDPOINT_URL:-http://localhost:4566}"
+fi
+
 MAX_ZIP_SIZE_MB=50
 
 SOURCE_DIR="smartscore"
@@ -55,9 +62,9 @@ generate_smartscore_stack() {
     exit 1
   fi
 
-  if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
+  if $AWSCLI cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
-    UPDATE_OUTPUT=$(aws cloudformation update-stack \
+    UPDATE_OUTPUT=$($AWSCLI cloudformation update-stack \
       --stack-name "$STACK_NAME" \
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
@@ -75,11 +82,11 @@ generate_smartscore_stack() {
       echo "No updates needed. Skipping wait."
     else
       echo "Waiting for CloudFormation stack update to complete..."
-      aws cloudformation wait stack-update-complete --stack-name "$STACK_NAME"
+      $AWSCLI cloudformation wait stack-update-complete --stack-name "$STACK_NAME"
     fi
   else
     echo "Creating CloudFormation stack $STACK_NAME..."
-    aws cloudformation create-stack \
+    $AWSCLI cloudformation create-stack \
       --stack-name "$STACK_NAME" \
       --template-body file://"$TEMPLATE_FILE" \
       --parameters ParameterKey=ENV,ParameterValue="$ENV" \
@@ -94,11 +101,11 @@ generate_smartscore_stack() {
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
-    aws cloudformation wait stack-create-complete --stack-name "$STACK_NAME"
+    $AWSCLI cloudformation wait stack-create-complete --stack-name "$STACK_NAME"
   fi
 
   # Check the final status of the stack
-  STACK_STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].StackStatus" --output text)
+  STACK_STATUS=$($AWSCLI cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].StackStatus" --output text)
 
   if [[ "$STACK_STATUS" != "CREATE_COMPLETE" && "$STACK_STATUS" != "UPDATE_COMPLETE" ]]; then
     echo "CloudFormation stack operation failed with status: $STACK_STATUS."
@@ -108,9 +115,9 @@ generate_smartscore_stack() {
   echo "CloudFormation stack $STACK_NAME completed successfully with status: $STACK_STATUS."
 
   # Get the EventBridge Invoke Role ARN from stack outputs and store in SSM
-  EVENTBRIDGE_ROLE_ARN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='EventBridgeInvokeRoleArn'].OutputValue" --output text)
+  EVENTBRIDGE_ROLE_ARN=$($AWSCLI cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='EventBridgeInvokeRoleArn'].OutputValue" --output text)
   if [ -n "$EVENTBRIDGE_ROLE_ARN" ] && [ "$EVENTBRIDGE_ROLE_ARN" != "None" ]; then
-    aws ssm put-parameter --name "/event_bridge_role/arn/$ENV" --value "$EVENTBRIDGE_ROLE_ARN" --type String --overwrite
+    $AWSCLI ssm put-parameter --name "/event_bridge_role/arn/$ENV" --value "$EVENTBRIDGE_ROLE_ARN" --type String --overwrite
     echo "Stored EventBridge Invoke Role ARN in SSM parameter /event_bridge_role/arn/$ENV"
   else
     echo "Warning: Could not retrieve EventBridgeInvokeRoleArn from stack outputs"
@@ -172,7 +179,7 @@ update_lambda_code() {
   for FUNCTION in "${LAMBDA_FUNCTIONS[@]}"; do
     (
       echo "Updating Lambda function code: $FUNCTION..."
-      if ERROR_OUTPUT=$(aws lambda update-function-code \
+      if ERROR_OUTPUT=$($AWSCLI lambda update-function-code \
           --function-name "$FUNCTION" \
           --zip-file fileb://$OUTPUT_DIR/$KEY 2>&1); then
         echo "Lambda function code updated successfully: $FUNCTION."
@@ -230,7 +237,7 @@ deploy_state_machine() {
   envsubst < "$DEFINITION_FILE" > "$PATCHED_FILE"
 
   # Get the role ARN from CloudFormation outputs
-  local ROLE_ARN=$(aws cloudformation describe-stacks \
+  local ROLE_ARN=$($AWSCLI cloudformation describe-stacks \
     --stack-name "$STACK_NAME" \
     --query "Stacks[0].Outputs[?OutputKey=='StepFunctionExecutionRoleArn'].OutputValue" \
     --output text)
@@ -241,16 +248,16 @@ deploy_state_machine() {
   fi
 
   # Deploy the state machine
-  if aws stepfunctions describe-state-machine \
+  if $AWSCLI stepfunctions describe-state-machine \
       --state-machine-arn "$STATE_MACHINE_ARN" &>/dev/null; then
     echo "Updating Step Function: $STATE_MACHINE_NAME..."
-    aws stepfunctions update-state-machine \
+    $AWSCLI stepfunctions update-state-machine \
       --state-machine-arn "$STATE_MACHINE_ARN" \
       --definition file://"$PATCHED_FILE" \
       --role-arn "$ROLE_ARN"
   else
     echo "Creating Step Function: $STATE_MACHINE_NAME..."
-    aws stepfunctions create-state-machine \
+    $AWSCLI stepfunctions create-state-machine \
       --name "$STATE_MACHINE_NAME" \
       --definition file://"$PATCHED_FILE" \
       --role-arn "$ROLE_ARN" \
