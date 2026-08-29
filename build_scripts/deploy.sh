@@ -290,17 +290,9 @@ if [ "${DEPLOY_SKIP_BUILD:-0}" = "1" ]; then
     fi
     echo "Skipping C/Rust compilation (reusing artifacts from CI setup job)..."
 else
-    # compile C code
-    echo "Compiling C code..."
-    sh build_scripts/compile.sh
-    if [ $? -ne 0 ]; then
-      echo "Error: Compilation failed. Ensure docker is running."
-      exit 1
-    fi
-
-    # compile Rust code
-    echo "Compiling Rust code..."
-    sh build_scripts/rust_compile.sh
+    # compile C and Rust code
+    echo "Compiling C and Rust code..."
+    sh build_scripts/build.sh
     if [ $? -ne 0 ]; then
       echo "Error: Compilation failed. Ensure docker is running."
       exit 1
