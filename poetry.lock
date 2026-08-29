@@ -2571,8 +2571,8 @@ requests = "^2.32.3"
 [package.source]
 type = "git"
 url = "https://github.com/nathan-probert/smartscore-info-client.git"
-reference = "player/team/nhlapi-refactor"
-resolved_reference = "279f8710ddc6eb9de6d7c77e9a1e1f8cb41c44d9"
+reference = "v3.0.0"
+resolved_reference = "bfa0686ca680bc162719c7904628a56e59e402a1"
 
 [[package]]
 name = "sortedcontainers"
@@ -3096,4 +3096,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12, <3.13"
-content-hash = "13dddef3ca26159c1feacfe509214bd0d64d615ae6585e4de5544504eb1e3c96"
+content-hash = "b0ff56d05de2a73906b6d9175258eeb6425f103f89eb2a5735455c823ce3940f"
