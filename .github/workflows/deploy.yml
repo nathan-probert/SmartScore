@@ -7,6 +7,12 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
 
+# Serialize runs per ref so two concurrent runs never deploy the same stack at
+# once (AWS Lambda allows only one in-flight code update per function).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   setup:
     runs-on: ubuntu-latest
