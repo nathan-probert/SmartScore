@@ -1,0 +1,16 @@
+{
+  "forwards": [
+    {
+      "id": 100,
+      "firstName": { "default": "John" },
+      "lastName": { "default": "Tavares" }
+    },
+    {
+      "id": 101,
+      "firstName": { "default": "Mitch" },
+      "lastName": { "default": "Marner" }
+    }
+  ],
+  "defensemen": [],
+  "goalies": []
+}

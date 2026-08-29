@@ -93,19 +93,13 @@ def test_handle_parse_teams_empty_event():
     assert result == []
 
 
-@patch("event_handler.separate_players")
-@patch("event_handler.PlayerInfo")
-@patch("event_handler.TeamInfo")
-def test_handle_parse_teams_with_data(mock_teaminfo, mock_playerinfo, mock_separate):
+@patch("event_handler.merge_players_and_teams")
+def test_handle_parse_teams_with_data(mock_merge):
     """Test parsing teams with player and team data."""
-    mock_separate.return_value = [
+    mock_merge.return_value = [
         {"name": "Player 1", "team_name": "Team A", "stat": 0.8},
         {"name": "Player 2", "team_name": "Team B", "stat": 0.9},
     ]
-
-    # Mock PlayerInfo and TeamInfo to just return dicts
-    mock_playerinfo.side_effect = lambda **kwargs: kwargs
-    mock_teaminfo.side_effect = lambda **kwargs: kwargs
 
     event = [
         {
@@ -131,7 +125,7 @@ def test_handle_parse_teams_with_data(mock_teaminfo, mock_playerinfo, mock_separ
     result = handle_parse_teams(event, {})
 
     assert len(result) == 2
-    mock_separate.assert_called_once()
+    mock_merge.assert_called_once_with(event)
 
 
 @patch("event_handler.make_predictions_teams")

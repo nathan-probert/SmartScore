@@ -25,6 +25,10 @@ test-no-cov:
 	@echo "Running tests without coverage"
 	@poetry run pytest -v
 
+integration:
+	@echo "Running AWS-dev integration tests with mocked NHL data"
+	@poetry run pytest -v tests/integration
+
 compile:
 	@$(MAKE) compile_rust
 	@$(MAKE) compile_c

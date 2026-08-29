@@ -1,6 +1,7 @@
 from aws_lambda_powertools import Logger
-from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
-from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
+from smartscore_info_client.models.team import GameTeam
+from smartscore_info_client.schemas.player import PLAYER_INFO_SCHEMA
+from smartscore_info_client.schemas.team import TEAM_INFO_SCHEMA
 
 from decorators import lambda_handler_error_responder
 from service import (
@@ -8,6 +9,7 @@ from service import (
     calculate_metrics,
     check_db_for_date,
     choose_picks,
+    enrich_teams,
     get_all_emails,
     get_date,
     get_injury_data,
@@ -17,9 +19,9 @@ from service import (
     get_todays_schedule,
     make_predictions_teams,
     merge_injury_data,
+    merge_players_and_teams,
     publish_public_db,
     send_emails,
-    separate_players,
     update_metrics,
     write_historic_db,
 )
@@ -90,7 +92,7 @@ def handle_get_teams(event, context):
     """
     data = get_todays_schedule()
 
-    teams = get_teams(data)
+    teams = enrich_teams(get_teams(data))
     logger.info(f"Found [{len(teams)}] teams")
 
     return {"statusCode": 200, "teams": TEAM_INFO_SCHEMA.dump(teams, many=True)}
@@ -115,21 +117,16 @@ def handle_get_players_from_team(event, context):
             - "home" (bool): Whether team is playing at home.
             - "players" (list): Retrieved player data for the given team.
     """
-    team = TeamInfo(**event)
+    team = GameTeam.from_mapping(event)
 
     logger.info(f"Getting players for team: {team.team_name}")
     players = get_players_from_team(team)
     logger.info(f"Found [{len(players)}] players for team")
 
-    return {
-        "team_name": event.get("team_name"),
-        "team_abbr": event.get("team_abbr"),
-        "season": event.get("season"),
-        "team_id": event.get("team_id"),
-        "opponent_id": event.get("opponent_id"),
-        "home": event.get("home"),
-        "players": PLAYER_INFO_SCHEMA.dump(players, many=True),
-    }
+    output = {key: event[key] for key in TEAM_INFO_SCHEMA.fields if key in event}
+    output["players"] = PLAYER_INFO_SCHEMA.dump(players, many=True)
+
+    return output
 
 
 @lambda_handler_error_responder
@@ -209,12 +206,7 @@ def handle_parse_teams(event, context):
     if event == []:
         return []
 
-    players = [PlayerInfo(**player) for team in event for player in team.pop("players")]
-    teams = [TeamInfo(**team) for team in event]
-
-    all_players = separate_players(players, teams)
-
-    return all_players
+    return merge_players_and_teams(event)
 
 
 @lambda_handler_error_responder

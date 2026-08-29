@@ -58,15 +58,30 @@ def get_players_with_names():
 
 def main():
     # Create Weights object
+
+    # accuracy = 27.8
     weights = make_predictions_rust.Weights(
-        gpg=0.76,
-        hgpg=0.06,
-        five_gpg=0.0,
-        tgpg=0.0,
-        otga=0.04,
-        is_home=0.06,
-        hppg_otshga=0.08,
+        gpg=0.190,
+        five_gpg=0.060,
+        hgpg=0.600,
+        tgpg=0.110,
+        otga=0.040,
+        hppg_otshga=0.000,
+        is_home=0.000,
     )
+
+    # accuracy = 24.0
+    # weights = make_predictions_rust.Weights(
+    #     gpg=0.76,
+    #     hgpg=0.06,
+    #     five_gpg=0.0,
+    #     tgpg=0.0,
+    #     otga=0.04,
+    #     is_home=0.06,
+    #     hppg_otshga=0.08,
+    # )
+
+    # accuracy = 26.0
     # weights = make_predictions_rust.Weights(
     #     gpg=0.3,
     #     five_gpg=0.4,
