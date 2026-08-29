@@ -17,3 +17,5 @@ output
 .coverage
 preview_email.html
 secret_readme.md
+.ocx/
+.opencode/
