@@ -273,7 +273,7 @@ if [ $? -ne 0 ]; then
   echo "Error: Dependency export failed."
   exit 1
 fi
-uv run pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
+uv pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
 if [ $? -ne 0 ]; then
   echo "Error: Dependency install failed."
   exit 1
