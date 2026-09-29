@@ -23,6 +23,8 @@ from utility import (
     get_cur_pick_pct,
     get_emails,
     get_historical_data,
+    get_season_id,
+    get_season_pick_pct,
     get_tims_players,
     get_today_db,
     invoke_lambda,
@@ -30,6 +32,7 @@ from utility import (
     schedule_run,
     update_historical_data,
     upload_metrics,
+    upload_season_metrics,
 )
 
 logger = Logger()
@@ -497,6 +500,68 @@ def update_metrics(new_metrics: List[Dict]) -> None:
         return
 
     upload_metrics(new_metrics)
+
+
+def resolve_season_id(yesterday_results=None, fallback_date=None):
+    """Resolve NHL season id for yesterday's results.
+
+    Prefers the date on the result rows so a season boundary doesn't
+    misattribute old-season results to the new season row.
+    """
+    result_date = None
+    if yesterday_results:
+        for player in yesterday_results:
+            if player.get("date"):
+                result_date = player.get("date")
+                break
+    if result_date:
+        return get_season_id(result_date)
+    if fallback_date:
+        return get_season_id(fallback_date)
+    return get_season_id(get_date(subtract_days=1))
+
+
+def calculate_season_metrics(yesterday_results: List[Dict], season_id=None) -> List[Dict]:
+    """Season-scoped cumulative accuracy, parallel to lifetime calculate_metrics.
+
+    Lifetime flow is left untouched. When no season row exists yet (new season),
+    initializes from yesterday only instead of returning "-" placeholders.
+    """
+    if not yesterday_results or len(yesterday_results) != NUM_EXPECTED_PLAYERS:
+        logger.warning(
+            f"Yesterday's results do not have exactly {NUM_EXPECTED_PLAYERS} players, skipping season metrics"
+        )
+        return []
+
+    if season_id is None:
+        season_id = resolve_season_id(yesterday_results)
+
+    cur_season = get_season_pick_pct(season_id)
+    correct_picks = sum(1 for player in yesterday_results if player.get("Scored") == 1)
+
+    if not cur_season:
+        new_total = NUM_EXPECTED_PLAYERS
+        new_correct = correct_picks
+    else:
+        new_total = cur_season["total"] + NUM_EXPECTED_PLAYERS
+        new_correct = cur_season["correct"] + correct_picks
+
+    return {
+        "value": round((new_correct / new_total) * 100, 2) if new_total else 0.0,
+        "total": new_total,
+        "correct": new_correct,
+    }
+
+
+def update_season_metrics(new_metrics: List[Dict], season_id) -> None:
+    if not new_metrics:
+        logger.warning("No new season metrics to update")
+        return
+    if not season_id:
+        logger.warning("No season_id for season metrics, skipping")
+        return
+
+    upload_season_metrics(new_metrics, season_id)
 
 
 def get_all_emails() -> List[str]:
