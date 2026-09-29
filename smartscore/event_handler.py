@@ -7,6 +7,7 @@ from decorators import lambda_handler_error_responder
 from service import (
     backfill_dates,
     calculate_metrics,
+    calculate_season_metrics,
     check_db_for_date,
     choose_picks,
     enrich_teams,
@@ -21,8 +22,10 @@ from service import (
     merge_injury_data,
     merge_players_and_teams,
     publish_public_db,
+    resolve_season_id,
     send_emails,
     update_metrics,
+    update_season_metrics,
     write_historic_db,
 )
 
@@ -222,6 +225,11 @@ def handle_save_historic_db(event, context):
 
     new_metrics = calculate_metrics(yesterday_results)
     update_metrics(new_metrics)
+
+    # Season flow runs alongside lifetime; lifetime is left untouched.
+    season_id = resolve_season_id(yesterday_results)
+    new_season_metrics = calculate_season_metrics(yesterday_results, season_id)
+    update_season_metrics(new_season_metrics, season_id)
 
     return {"statusCode": 200, "players": players}
 
