@@ -363,6 +363,30 @@ def write_historic_db(picks):
     return yesterdays_entries
 
 
+ROTOWIRE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/91.0.4472.124 Safari/537.36"
+    )
+}
+
+ROTOWIRE_GOALIE_TABLE_URL = "https://www.rotowire.com/hockey/tables/projected-goalies.php"
+
+# RotoWire team abbreviations that differ from the official NHL API abbreviations.
+ROTOWIRE_TEAM_ABBR_MAP = {
+    "MON": "MTL",
+    "LAS": "VGK",
+}
+
+
+def normalize_rotowire_team_abbr(abbr: str | None) -> str:
+    """Normalize a RotoWire team abbreviation to the official NHL API abbreviation."""
+    if not abbr:
+        return ""
+    return ROTOWIRE_TEAM_ABBR_MAP.get(abbr.upper(), abbr.upper())
+
+
 def get_injury_data() -> List[Dict[str, str]]:
     """
     Get current injury data from RotoWire.
@@ -375,17 +399,8 @@ def get_injury_data() -> List[Dict[str, str]]:
     """
     url = "https://www.rotowire.com/hockey/tables/injury-report.php?team=ALL&pos=ALL"
 
-    # Set a user agent to avoid being blocked
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/91.0.4472.124 Safari/537.36"
-        )
-    }
-
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=ROTOWIRE_HEADERS, timeout=10)
         response.raise_for_status()
         data = response.json()
     except requests.RequestException as e:
@@ -441,6 +456,237 @@ def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]]) -> Li
         else:
             player["injury_status"] = "HEALTHY"
             player["injury_desc"] = ""
+
+    return players
+
+
+def get_starting_goalies(date: str | None = None) -> List[Dict]:
+    """
+    Get projected/confirmed starting goalies for a date from RotoWire.
+
+    Uses the same tables JSON pattern as the injury report
+    (`/hockey/tables/projected-goalies.php?date=YYYY-MM-DD`).
+
+    Args:
+        date: Date in YYYY-MM-DD format. Defaults to today (Toronto time).
+
+    Returns:
+        List of starter dictionaries with keys:
+        - date, team_abbr (NHL-normalized), home (bool),
+          goalie_name, rotowire_id, status (e.g. Confirmed/Expected/Unknown)
+    """
+    date = date or get_date()
+    url = f"{ROTOWIRE_GOALIE_TABLE_URL}?date={date}"
+
+    try:
+        data = exponential_backoff_request(url, headers=ROTOWIRE_HEADERS)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error fetching starting goalie data: {e}")
+        return []
+
+    if not isinstance(data, list):
+        logger.error(f"Unexpected starting goalie payload type: {type(data)}")
+        return []
+
+    starters = []
+    for game in data:
+        if not isinstance(game, dict):
+            continue
+        for side, home in (("home", True), ("visit", False)):
+            try:
+                name = (game.get(f"{side}Player") or "").strip()
+                team = normalize_rotowire_team_abbr(game.get(f"{side}team", ""))
+                status = (game.get(f"{side}Status") or "").strip()
+                if not name or not team:
+                    continue
+                starters.append(
+                    {
+                        "date": date,
+                        "team_abbr": team,
+                        "home": home,
+                        "goalie_name": name,
+                        "rotowire_id": game.get(f"{side}PlayerID"),
+                        "status": status or "Unknown",
+                    }
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Error extracting starting goalie data: {e}")
+                continue
+
+    logger.info(f"Scraped {len(starters)} starting goalies for {date}")
+    return starters
+
+
+def get_goalie_stats_for_team(team_abbr: str) -> Dict[str, Dict]:
+    """
+    Get current season stats for all goalies on a team from the official NHL API.
+
+    Args:
+        team_abbr: Official NHL team abbreviation (e.g. TOR).
+
+    Returns:
+        Mapping of lowercase goalie name to stats dict with keys:
+        nhl_id, gaa, save_pct, wins, losses, ot_losses, record,
+        shutouts, games_played, games_started.
+    """
+    url = f"https://api-web.nhle.com/v1/club-stats/{team_abbr}/now"
+
+    try:
+        data = exponential_backoff_request(url)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error fetching goalie stats for {team_abbr}: {e}")
+        return {}
+
+    stats = {}
+    for goalie in data.get("goalies", []):
+        try:
+            first = ((goalie.get("firstName") or {}).get("default") or "").strip()
+            last = ((goalie.get("lastName") or {}).get("default") or "").strip()
+            name = f"{first} {last}".strip()
+            if not name:
+                continue
+            wins = goalie.get("wins", 0) or 0
+            losses = goalie.get("losses", 0) or 0
+            ot_losses = goalie.get("overtimeLosses", 0) or 0
+            stats[name.lower()] = {
+                "nhl_id": goalie.get("playerId"),
+                "gaa": goalie.get("goalsAgainstAverage"),
+                "save_pct": goalie.get("savePercentage"),
+                "wins": wins,
+                "losses": losses,
+                "ot_losses": ot_losses,
+                "record": f"{wins}-{losses}-{ot_losses}",
+                "shutouts": goalie.get("shutouts", 0) or 0,
+                "games_played": goalie.get("gamesPlayed", 0) or 0,
+                "games_started": goalie.get("gamesStarted", 0) or 0,
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error extracting goalie stats for {team_abbr}: {e}")
+            continue
+
+    return stats
+
+
+def enrich_starting_goalies(date: str | None = None) -> List[Dict]:
+    """
+    Get starting goalies for a date enriched with official NHL stats.
+
+    Club stats are fetched once per team.
+
+    Args:
+        date: Date in YYYY-MM-DD format. Defaults to today (Toronto time).
+
+    Returns:
+        List of starter dictionaries including gaa, save_pct, record, etc.
+    """
+    starters = get_starting_goalies(date)
+    teams = sorted({starter["team_abbr"] for starter in starters})
+    stats_by_team = {team: get_goalie_stats_for_team(team) for team in teams}
+
+    enriched = []
+    for starter in starters:
+        info = dict(starter)
+        stat = stats_by_team.get(starter["team_abbr"], {}).get(starter["goalie_name"].lower(), {})
+        info.update(
+            {
+                "nhl_id": stat.get("nhl_id"),
+                "gaa": stat.get("gaa"),
+                "save_pct": stat.get("save_pct"),
+                "wins": stat.get("wins"),
+                "losses": stat.get("losses"),
+                "ot_losses": stat.get("ot_losses"),
+                "record": stat.get("record"),
+                "shutouts": stat.get("shutouts"),
+                "games_played": stat.get("games_played"),
+                "games_started": stat.get("games_started"),
+            }
+        )
+        enriched.append(info)
+
+    return enriched
+
+
+def build_team_name_map(schedule_data: Dict) -> Dict[str, str]:
+    """
+    Map NHL team display name to abbreviation using the same logic as get_teams.
+
+    Args:
+        schedule_data: Raw response from the NHL schedule endpoint.
+
+    Returns:
+        Mapping of team display name to team abbreviation.
+    """
+    mapping = {}
+    try:
+        games = schedule_data.get("gameWeek", [])[0].get("games", [])
+    except (AttributeError, IndexError, KeyError, TypeError):
+        logger.error("Unexpected schedule payload when building team name map")
+        return {}
+
+    for game in games:
+        for side in ("homeTeam", "awayTeam"):
+            team = game.get(side, {})
+            place = ((team.get("placeName") or {}).get("default") or "").strip()
+            if place and place != " ":
+                name = place
+            else:
+                name = ((team.get("commonName") or {}).get("default") or "").strip()
+            abbr = team.get("abbrev", "")
+            if not name or not abbr:
+                continue
+            if name in mapping and mapping[name] != abbr:
+                logger.warning(f"Ambiguous team name in schedule: {name}")
+            mapping[name] = abbr
+
+    return mapping
+
+
+def merge_goalie_data(players: List[Dict], starters: List[Dict], schedule_data: Dict) -> List[Dict]:
+    """
+    Merge opposing starting goalie info into the player list.
+
+    Each skater is annotated with the other team's starter for today, so the
+    picks table records who started in net and what their season stats were.
+
+    Args:
+        players: List of player dictionaries (must include team_name).
+        starters: Enriched starter dictionaries from enrich_starting_goalies.
+        schedule_data: Raw response from the NHL schedule endpoint.
+
+    Returns:
+        List of players with added opp_goalie_* fields.
+    """
+    starters_by_team = {starter["team_abbr"]: starter for starter in starters}
+
+    try:
+        games = schedule_data.get("gameWeek", [])[0].get("games", [])
+    except (AttributeError, IndexError, KeyError, TypeError):
+        games = []
+    opp_by_team = {}
+    for game in games:
+        try:
+            home = game["homeTeam"]["abbrev"]
+            away = game["awayTeam"]["abbrev"]
+        except (KeyError, TypeError):
+            continue
+        opp_by_team[home] = away
+        opp_by_team[away] = home
+
+    name_map = build_team_name_map(schedule_data)
+
+    for player in players:
+        team_abbr = name_map.get(player.get("team_name", ""))
+        opp = starters_by_team.get(opp_by_team.get(team_abbr, ""), {}) if team_abbr else {}
+        player["opp_goalie_name"] = opp.get("goalie_name")
+        player["opp_goalie_team"] = opp.get("team_abbr")
+        player["opp_goalie_status"] = (opp.get("status") or "UNKNOWN").upper() if opp else "UNKNOWN"
+        player["opp_goalie_confirmed"] = bool(opp) and (opp.get("status") or "").lower() == "confirmed"
+        player["opp_goalie_nhl_id"] = opp.get("nhl_id")
+        player["opp_goalie_gaa"] = opp.get("gaa")
+        player["opp_goalie_save_pct"] = opp.get("save_pct")
+        player["opp_goalie_record"] = opp.get("record")
+        player["opp_goalie_shutouts"] = opp.get("shutouts")
+        player["opp_goalie_games_played"] = opp.get("games_played")
 
     return players
 

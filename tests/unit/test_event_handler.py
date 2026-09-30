@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 from event_handler import (
     handle_check_completed,
+    handle_get_goalies,
     handle_get_injuries,
     handle_make_predictions,
     handle_parse_teams,
@@ -220,3 +221,60 @@ def test_handle_get_injuries_no_injuries_found(mock_get_injuries, mock_merge):
 
     assert result == {"statusCode": 200, "players": healthy_players}
     mock_merge.assert_called_once_with(players, [])
+
+
+@patch("event_handler.merge_goalie_data")
+@patch("event_handler.enrich_starting_goalies")
+@patch("event_handler.get_todays_schedule")
+def test_handle_get_goalies_with_data(mock_schedule, mock_enrich, mock_merge):
+    """Test handling starting goalie retrieval and merging."""
+    players = [
+        {"name": "Player 1", "stat": 0.8},
+        {"name": "Player 2", "stat": 0.9},
+    ]
+    schedule = {"gameWeek": []}
+    starters = [{"team_abbr": "CAR", "goalie_name": "Brandon Bussi"}]
+    merged_players = [
+        {"name": "Player 1", "opp_goalie_name": "Jacob Markstrom"},
+        {"name": "Player 2", "opp_goalie_name": "Brandon Bussi"},
+    ]
+
+    mock_schedule.return_value = schedule
+    mock_enrich.return_value = starters
+    mock_merge.return_value = merged_players
+
+    event = {"players": players}
+    result = handle_get_goalies(event, {})
+
+    assert result == {"statusCode": 200, "players": merged_players}
+    mock_schedule.assert_called_once()
+    mock_enrich.assert_called_once()
+    mock_merge.assert_called_once_with(players, starters, schedule)
+
+
+@patch("event_handler.merge_goalie_data")
+@patch("event_handler.enrich_starting_goalies")
+@patch("event_handler.get_todays_schedule")
+def test_handle_get_goalies_empty_players(mock_schedule, mock_enrich, mock_merge):
+    """Test handling goalie data with empty player list."""
+    mock_schedule.return_value = {"gameWeek": []}
+    mock_enrich.return_value = []
+    mock_merge.return_value = []
+
+    event = {}
+    result = handle_get_goalies(event, {})
+
+    assert result == {"statusCode": 200, "players": []}
+    mock_merge.assert_called_once_with([], [], {"gameWeek": []})
+
+
+@patch("event_handler.enrich_starting_goalies")
+@patch("event_handler.get_todays_schedule", side_effect=Exception("boom"))
+def test_handle_get_goalies_schedule_failure(mock_schedule, mock_enrich):
+    """Test players pass through unchanged when the schedule fetch fails."""
+    players = [{"name": "Player 1", "stat": 0.8}]
+
+    result = handle_get_goalies({"players": players}, {})
+
+    assert result == {"statusCode": 200, "players": players}
+    mock_enrich.assert_not_called()

@@ -76,6 +76,11 @@
         "GetInjuries": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetInjuries-${ENV}",
+            "Next": "GetGoalies"
+        },
+        "GetGoalies": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetGoalies-${ENV}",
             "Next": "GetTims"
         },
         "GetTims": {
