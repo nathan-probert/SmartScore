@@ -102,6 +102,7 @@ Resources:
                   - !GetAtt ParseData.Arn
                   - !GetAtt UpdateHistoryFunction.Arn
                   - !GetAtt GetInjuriesFunction.Arn
+                  - !GetAtt GetGoaliesFunction.Arn
                   - !GetAtt SendEmailsFunction.Arn
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
               - Effect: Allow
@@ -404,6 +405,27 @@ Resources:
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
 
+  GetGoaliesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "GetGoalies-${ENV}"
+      Handler: event_handler.handle_get_goalies
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 120
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+
   # IAM Role for EventBridge to invoke Step Function
   EventBridgeInvokeRole:
     Type: AWS::IAM::Role
@@ -512,6 +534,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/GetInjuries-${ENV}"
+      RetentionInDays: 1
+
+  GetGoaliesLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/GetGoalies-${ENV}"
       RetentionInDays: 1
 
 Outputs:

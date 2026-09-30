@@ -26,6 +26,7 @@ LAMBDA_FUNCTIONS=(
   "ParseData-$ENV"
   "UpdateHistory-$ENV"
   "GetInjuries-$ENV"
+  "GetGoalies-$ENV"
   "SendEmails-$ENV"
 )
 

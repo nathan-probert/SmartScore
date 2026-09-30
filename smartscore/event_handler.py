@@ -10,6 +10,7 @@ from service import (
     calculate_season_metrics,
     check_db_for_date,
     choose_picks,
+    enrich_starting_goalies,
     enrich_teams,
     get_all_emails,
     get_date,
@@ -19,6 +20,7 @@ from service import (
     get_tims,
     get_todays_schedule,
     make_predictions_teams,
+    merge_goalie_data,
     merge_injury_data,
     merge_players_and_teams,
     publish_public_db,
@@ -250,6 +252,39 @@ def handle_get_injuries(event, context):
 
     injuries = get_injury_data()
     merged_info = merge_injury_data(players, injuries)
+
+    return {
+        "statusCode": 200,
+        "players": merged_info,
+    }
+
+
+@lambda_handler_error_responder
+def handle_get_goalies(event, context):
+    """
+    Fetch starting goalies from RotoWire, enrich with NHL stats, and merge the
+    opposing starter into each skater.
+
+    Args:
+        event (dict): A dictionary containing player data.
+        context (dict): Unused Lambda context.
+
+    Returns:
+        dict: A dictionary containing player data with opp_goalie_* fields.
+    """
+    players = event.get("players", [])
+
+    try:
+        schedule_data = get_todays_schedule()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error fetching schedule for goalie merge: {e}")
+        return {
+            "statusCode": 200,
+            "players": players,
+        }
+
+    starters = enrich_starting_goalies()
+    merged_info = merge_goalie_data(players, starters, schedule_data)
 
     return {
         "statusCode": 200,
