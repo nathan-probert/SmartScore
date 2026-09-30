@@ -1,7 +1,7 @@
 # SmartScore
 
 ## About this Program
-You can find more information about this program on the [website](https://nathanprobert.ca/smartscore/help)!
+You can find more information about this program on the [website](https://smartscore.nathanprobert.ca/help)!
 
 ## Calculating the probability
 The current method for calculating the probability takes into account a variety of individual statistics:
