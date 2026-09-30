@@ -424,6 +424,7 @@ Resources:
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
 
   # IAM Role for EventBridge to invoke Step Function
   EventBridgeInvokeRole:

@@ -142,6 +142,18 @@ def test_get_goalie_stats_for_team_handles_failure(mock_request):
     assert get_goalie_stats_for_team("CAR") == {}
 
 
+@patch("service.exponential_backoff_request")
+def test_get_goalie_stats_for_team_rejects_malformed_payloads(mock_request):
+    mock_request.return_value = ["not", "a", "dict"]
+    assert get_goalie_stats_for_team("CAR") == {}
+
+    mock_request.return_value = {"goalies": None}
+    assert get_goalie_stats_for_team("CAR") == {}
+
+    mock_request.return_value = {"goalies": ["not-a-dict", 42, None]}
+    assert get_goalie_stats_for_team("CAR") == {}
+
+
 @patch("service.get_goalie_stats_for_team")
 @patch("service.get_starting_goalies")
 def test_enrich_starting_goalies_fetches_once_per_team(mock_starters, mock_stats):
@@ -239,6 +251,19 @@ def test_merge_goalie_data_unknown_team():
     assert result[0]["opp_goalie_name"] is None
     assert result[0]["opp_goalie_status"] == "UNKNOWN"
     assert result[0]["opp_goalie_confirmed"] is False
+
+
+def test_merge_goalie_data_duplicate_team_keeps_last():
+    players = [{"name": "Skater One", "team_name": "Florida"}]
+    starters = [
+        {"team_abbr": "CAR", "goalie_name": "First Goalie", "status": "Expected"},
+        {"team_abbr": "CAR", "goalie_name": "Second Goalie", "status": "Confirmed"},
+    ]
+
+    result = merge_goalie_data(players, starters, _schedule_payload())
+
+    assert result[0]["opp_goalie_name"] == "Second Goalie"
+    assert result[0]["opp_goalie_status"] == "CONFIRMED"
 
 
 def test_merge_goalie_data_empty_players():

@@ -561,9 +561,15 @@ def get_goalie_stats_for_team(team_abbr: str) -> Dict[str, Dict]:
         logger.error(f"Error fetching goalie stats for {team_abbr}: {e}")
         return {}
 
+    if not isinstance(data, dict):
+        logger.error(f"Unexpected goalie stats payload type for {team_abbr}: {type(data)}")
+        return {}
+
     stats = {}
-    for goalie in data.get("goalies", []):
+    for goalie in data.get("goalies") or []:
         try:
+            if not isinstance(goalie, dict):
+                continue
             first = ((goalie.get("firstName") or {}).get("default") or "").strip()
             last = ((goalie.get("lastName") or {}).get("default") or "").strip()
             name = f"{first} {last}".strip()
@@ -680,7 +686,14 @@ def merge_goalie_data(players: List[Dict], starters: List[Dict], schedule_data: 
     Returns:
         List of players with added opp_goalie_* fields.
     """
-    starters_by_team = {starter["team_abbr"]: starter for starter in starters}
+    starters_by_team = {}
+    for starter in starters:
+        team = starter.get("team_abbr", "")
+        if not team:
+            continue
+        if team in starters_by_team:
+            logger.warning(f"Multiple starters listed for {team}, keeping the last one")
+        starters_by_team[team] = starter
 
     try:
         games = schedule_data.get("gameWeek", [])[0].get("games", [])
