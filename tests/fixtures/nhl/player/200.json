@@ -1,0 +1,28 @@
+{
+  "playerId": 200,
+  "firstName": { "default": "Connor" },
+  "lastName": { "default": "McDavid" },
+  "seasonTotals": [
+    {
+      "season": 20242025,
+      "leagueAbbrev": "NHL",
+      "goals": 40,
+      "gamesPlayed": 76,
+      "powerPlayGoals": 14
+    },
+    {
+      "season": 20232024,
+      "leagueAbbrev": "NHL",
+      "goals": 45,
+      "gamesPlayed": 82,
+      "powerPlayGoals": 15
+    }
+  ],
+  "last5Games": [
+    { "goals": 2 },
+    { "goals": 1 },
+    { "goals": 0 },
+    { "goals": 1 },
+    { "goals": 1 }
+  ]
+}

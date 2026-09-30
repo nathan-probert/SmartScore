@@ -1,15 +1,16 @@
 import json
 import time
+from datetime import date as _date
 from datetime import timedelta
 
 import boto3
-import requests
 from aws_lambda_powertools import Logger
 from dateutil import parser
 from postgrest.exceptions import APIError
+from smartscore_info_client.utility import exponential_backoff_request
 
 from config import ENV, SUPABASE_ADMIN_AUTH_CLIENT, SUPABASE_CLIENT
-from constants import CURRENT_PICK_ACCURACY
+from constants import CURRENT_PICK_ACCURACY, SEASON_CUTOFF_MONTH, SEASON_PICK_ACCURACY_PREFIX
 
 logger = Logger()
 
@@ -173,42 +174,6 @@ def schedule_run(times):
         print(f"Scheduled event for {trigger_time} with rule name {rule_name}")
 
 
-def exponential_backoff_request(
-    url, method="get", data=None, json_data=None, headers=None, max_retries=5, base_delay=1
-):
-    """
-    Makes HTTP requests with exponential backoff retry strategy.
-
-    Args:
-        url: URL to send the request to
-        method: HTTP method ("get" or "post")
-        data: Form data for POST requests
-        json_data: JSON data for POST requests
-        max_retries: Maximum number of retry attempts
-        base_delay: Base delay between retries in seconds
-
-    Returns:
-        Parsed JSON response
-    """
-    method = method.lower()
-    for attempt in range(max_retries):
-        try:
-            if method == "get":
-                response = requests.get(url, headers=headers, timeout=10)
-            elif method == "post":
-                response = requests.post(url, data=data, json=json_data, headers=headers, timeout=10)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            wait_time = base_delay * (2**attempt)
-            print(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time} seconds...")
-            time.sleep(wait_time)
-    raise Exception("Max retries reached. Request failed.")
-
-
 def exponential_backoff_supabase_request(
     table_name, method="get", data=None, json_data=None, max_retries=5, base_delay=1, select="*", eq=None
 ):
@@ -239,8 +204,14 @@ def exponential_backoff_supabase_request(
                     query = query.eq(col, val)
                 response = query.execute().data
             elif method == "POST":
-                # Clear the table before inserting new data
-                SUPABASE_CLIENT.table(table_name).delete().neq("id", 0).execute()
+                # Scoped delete when eq is given (e.g. Metrics rows share a table),
+                # otherwise legacy full-table wipe (e.g. Picks / Historic-Picks).
+                if eq is not None:
+                    col, val = eq
+                    SUPABASE_CLIENT.table(table_name).delete().eq(col, val).execute()
+                else:
+                    # Clear the table before inserting new data
+                    SUPABASE_CLIENT.table(table_name).delete().neq("id", 0).execute()
                 if json_data is not None and len(json_data) > 0:
                     response = SUPABASE_CLIENT.table(table_name).upsert(json_data).execute()
                 else:
@@ -289,11 +260,32 @@ def adjust_name(df_name):
     return df_name
 
 
-def get_cur_pick_pct():
+def get_season_id(date_str=None):
+    """Derive NHL season id (e.g. "20252026") from a YYYY-MM-DD date.
+
+    Season spans Oct-June: Aug-Dec -> f"{year}{year+1}", Jan-Jul -> f"{year-1}{year}".
+    Defaults to today when no date is given.
+    """
+    if date_str is None:
+        today = _date.today()
+        year, month = today.year, today.month
+    else:
+        parts = str(date_str).split("-")
+        year, month = int(parts[0]), int(parts[1])
+    if month >= SEASON_CUTOFF_MONTH:
+        return f"{year}{year + 1}"
+    return f"{year - 1}{year}"
+
+
+def get_season_metric_id(season_id):
+    return f"{SEASON_PICK_ACCURACY_PREFIX}{season_id}"
+
+
+def get_metric_by_id(metric_id):
     response = exponential_backoff_supabase_request(
         f"Metrics-{ENV}",
         method="get",
-        eq=("id", CURRENT_PICK_ACCURACY),
+        eq=("id", metric_id),
     )
     if not response:
         return
@@ -305,9 +297,25 @@ def get_cur_pick_pct():
     }
 
 
+def get_cur_pick_pct(metric_id=CURRENT_PICK_ACCURACY):
+    return get_metric_by_id(metric_id)
+
+
+def get_season_pick_pct(season_id):
+    return get_metric_by_id(get_season_metric_id(season_id))
+
+
 def upload_metrics(metrics) -> None:
     metrics["id"] = CURRENT_PICK_ACCURACY
-    exponential_backoff_supabase_request(f"Metrics-{ENV}", method="post", json_data=metrics)
+    exponential_backoff_supabase_request(
+        f"Metrics-{ENV}", method="post", json_data=metrics, eq=("id", CURRENT_PICK_ACCURACY)
+    )
+
+
+def upload_season_metrics(metrics, season_id) -> None:
+    metric_id = get_season_metric_id(season_id)
+    metrics["id"] = metric_id
+    exponential_backoff_supabase_request(f"Metrics-{ENV}", method="post", json_data=metrics, eq=("id", metric_id))
 
 
 def get_emails():
@@ -332,6 +340,6 @@ def get_emails():
         ]
         logger.info(f"Found {len(users)} users with notifications enabled")
         return users
-    except (KeyError, AttributeError, Exception) as e:
+    except Exception as e:  # noqa: BLE001 - a failure fetching emails must not crash the send-emails pipeline
         logger.error(f"Failed to fetch opted-in emails: {e.__class__.__name__}: {e}")
         return []

@@ -26,6 +26,13 @@ NUM_EXPECTED_PLAYERS = 3
 # Add constant for current pick accuracy
 CURRENT_PICK_ACCURACY = "current_pick_accuracy"
 
+# Prefix for per-season pick accuracy rows, e.g. "season_pick_accuracy_20252026".
+# Lifetime row above is left untouched; season rows live alongside it in Metrics-{ENV}.
+SEASON_PICK_ACCURACY_PREFIX = "season_pick_accuracy_"
+
+# Month (1-12) at which a new NHL season id starts. Aug-Dec -> f"{year}{year+1}".
+SEASON_CUTOFF_MONTH = 8
+
 # This includes the current day
 DAYS_TO_KEEP_HISTORIC_DATA = 8
 

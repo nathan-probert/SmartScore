@@ -1,6 +1,5 @@
 import datetime
 import json
-import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List
@@ -9,18 +8,24 @@ import make_predictions_rust
 import pytz
 import requests
 from aws_lambda_powertools import Logger
-from smartscore_info_client.schemas.player_info import PLAYER_INFO_SCHEMA, PlayerInfo
-from smartscore_info_client.schemas.team_info import TEAM_INFO_SCHEMA, TeamInfo
+from smartscore_info_client.api.nhle import NHLClient
+from smartscore_info_client.models.player import Player, PlayerInfo
+from smartscore_info_client.models.team import GameTeam, TeamInfo
+from smartscore_info_client.schemas.player import PLAYER_MERGE_EXCLUDED_FIELDS
+from smartscore_info_client.schemas.team import TEAM_MERGE_EXCLUDED_FIELDS
+from smartscore_info_client.utility import exponential_backoff_request
 
 from config import ENV
 from constants import DAYS_TO_KEEP_HISTORIC_DATA, LAMBDA_API_NAME, NUM_EXPECTED_PLAYERS, WEIGHTS
 from email_utility import send_email
-from feature_flags import is_feature_enabled
+from feature_flags import NHL_MOCK_FLAG, is_feature_enabled
+from mock_nhl_client import MockNHLClient
 from utility import (
-    exponential_backoff_request,
     get_cur_pick_pct,
     get_emails,
     get_historical_data,
+    get_season_id,
+    get_season_pick_pct,
     get_tims_players,
     get_today_db,
     invoke_lambda,
@@ -28,9 +33,22 @@ from utility import (
     schedule_run,
     update_historical_data,
     upload_metrics,
+    upload_season_metrics,
 )
 
 logger = Logger()
+
+
+def get_nhl_client():
+    """Return the NHL client appropriate for the current feature flag state.
+
+    When the ``mock-nhl-api`` flag is enabled (e.g. for off-season dev work
+    or integration tests), a :class:`MockNHLClient` serving frozen fixtures is
+    returned instead of the live ``NHLClient``.
+    """
+    if is_feature_enabled(NHL_MOCK_FLAG):
+        return MockNHLClient()
+    return NHLClient()
 
 
 def get_date(hour=False, add_days=0, subtract_days=0):
@@ -50,8 +68,7 @@ def get_todays_schedule():
     date = get_date()
     logger.info(f"Getting players for date: {date}")
 
-    URL = f"https://api-web.nhle.com/v1/schedule/{date}"
-    return exponential_backoff_request(URL)
+    return get_nhl_client().get_schedule(date)
 
 
 def get_teams(data):
@@ -70,7 +87,7 @@ def get_teams(data):
         if away_name == " ":
             away_name = game["awayTeam"]["commonName"]["default"]
 
-        home_team = TeamInfo(
+        home_team = GameTeam(
             team_name=home_name,
             team_abbr=game["homeTeam"]["abbrev"],
             season=game["season"],
@@ -78,7 +95,7 @@ def get_teams(data):
             opponent_id=game["awayTeam"]["id"],
             home=True,
         )
-        away_team = TeamInfo(
+        away_team = GameTeam(
             team_name=away_name,
             team_abbr=game["awayTeam"]["abbrev"],
             season=game["season"],
@@ -98,23 +115,38 @@ def get_teams(data):
     return teams
 
 
+def enrich_teams(teams):
+    """Attach team stats to each game team, fetched once per season."""
+    nhl_client = get_nhl_client()
+    return [
+        TeamInfo(
+            team=team,
+            stats=nhl_client.get_team_stats(team.season, team.team_id, team.opponent_id),
+        )
+        for team in teams
+    ]
+
+
 def get_players_from_team(team):
     players = []
+    nhl_client = get_nhl_client()
 
-    URL = f"https://api-web.nhle.com/v1/roster/{team.team_abbr}/current"
-    data = exponential_backoff_request(URL)
+    roster = nhl_client.get_roster(team.team_abbr)
 
-    types = ["forwards", "defensemen"]
-    for player_type in types:
-        for player in data[player_type]:
-            player_info = PlayerInfo(
-                name=f"{player["firstName"]["default"]} {player["lastName"]["default"]}",
-                id=player["id"],
-                team_id=team.team_id,
+    player_types = ["forwards", "defensemen"]
+    for player_type in player_types:
+        for player in roster[player_type]:
+            players.append(
+                PlayerInfo(
+                    player=Player(
+                        name=f"{player['firstName']['default']} {player['lastName']['default']}",
+                        id=player["id"],
+                        team_id=team.team_id,
+                    ),
+                    stats=nhl_client.get_player_stats(player["id"]),
+                )
             )
-            players.append(player_info)
 
-    time.sleep(30)  # to avoid rate limiting
     return players
 
 
@@ -211,8 +243,9 @@ def backfill_dates():
         return
 
     scorers_dict = {}
+    nhl_client = get_nhl_client()
     for date in dates_no_scored:
-        data = exponential_backoff_request(f"https://api-web.nhle.com/v1/score/{date}")
+        data = nhl_client.get_score(date)
 
         # get players who actually played
         players = []
@@ -220,11 +253,9 @@ def backfill_dates():
             if game.get("gameScheduleState") == "OK":
                 if not game.get("gameOutcome"):
                     logger.info(
-                        f"Game not completed: {
-                        game.get('homeTeam', {}).get('abbrev')
-                    } vs {
-                        game.get('awayTeam', {}).get('abbrev')
-                    }"
+                        f"Game not completed: {game.get('homeTeam', {}).get('abbrev')} vs {
+                            game.get('awayTeam', {}).get('abbrev')
+                        }"
                     )
                     return
             if game.get("gameScheduleState") == "PPD":
@@ -270,23 +301,16 @@ def check_db_for_date():
     return None
 
 
-def separate_players(players, teams):
+def merge_players_and_teams(team_payloads):
+    """Flatten a list of team payloads into one merged entry per player."""
     entries = []
-    team_table = {team.team_id: TEAM_INFO_SCHEMA.dump(team) for team in teams}
-    for player in players:
-        team_info = team_table[player.team_id]
-        team_info_filtered = {
-            key: value
-            for key, value in team_info.items()
-            if key not in ("team_id", "opponent_id", "season", "team_abbr")
-        }
+    for team in team_payloads:
+        team_players = team.pop("players", [])
+        team_info = {key: value for key, value in team.items() if key not in TEAM_MERGE_EXCLUDED_FIELDS}
 
-        player_data = PLAYER_INFO_SCHEMA.dump(player)
-        player_info_filtered = {
-            key: value for key, value in player_data.items() if key not in ("team_id", "odds", "stat")
-        }
-
-        entries.append({**player_info_filtered, **team_info_filtered})
+        for player in team_players:
+            player_info = {key: value for key, value in player.items() if key not in PLAYER_MERGE_EXCLUDED_FIELDS}
+            entries.append({**player_info, **team_info})
 
     return entries
 
@@ -723,6 +747,68 @@ def update_metrics(new_metrics: List[Dict]) -> None:
         return
 
     upload_metrics(new_metrics)
+
+
+def resolve_season_id(yesterday_results=None, fallback_date=None):
+    """Resolve NHL season id for yesterday's results.
+
+    Prefers the date on the result rows so a season boundary doesn't
+    misattribute old-season results to the new season row.
+    """
+    result_date = None
+    if yesterday_results:
+        for player in yesterday_results:
+            if player.get("date"):
+                result_date = player.get("date")
+                break
+    if result_date:
+        return get_season_id(result_date)
+    if fallback_date:
+        return get_season_id(fallback_date)
+    return get_season_id(get_date(subtract_days=1))
+
+
+def calculate_season_metrics(yesterday_results: List[Dict], season_id=None) -> List[Dict]:
+    """Season-scoped cumulative accuracy, parallel to lifetime calculate_metrics.
+
+    Lifetime flow is left untouched. When no season row exists yet (new season),
+    initializes from yesterday only instead of returning "-" placeholders.
+    """
+    if not yesterday_results or len(yesterday_results) != NUM_EXPECTED_PLAYERS:
+        logger.warning(
+            f"Yesterday's results do not have exactly {NUM_EXPECTED_PLAYERS} players, skipping season metrics"
+        )
+        return []
+
+    if season_id is None:
+        season_id = resolve_season_id(yesterday_results)
+
+    cur_season = get_season_pick_pct(season_id)
+    correct_picks = sum(1 for player in yesterday_results if player.get("Scored") == 1)
+
+    if not cur_season:
+        new_total = NUM_EXPECTED_PLAYERS
+        new_correct = correct_picks
+    else:
+        new_total = cur_season["total"] + NUM_EXPECTED_PLAYERS
+        new_correct = cur_season["correct"] + correct_picks
+
+    return {
+        "value": round((new_correct / new_total) * 100, 2) if new_total else 0.0,
+        "total": new_total,
+        "correct": new_correct,
+    }
+
+
+def update_season_metrics(new_metrics: List[Dict], season_id) -> None:
+    if not new_metrics:
+        logger.warning("No new season metrics to update")
+        return
+    if not season_id:
+        logger.warning("No season_id for season metrics, skipping")
+        return
+
+    upload_season_metrics(new_metrics, season_id)
 
 
 def get_all_emails() -> List[str]:

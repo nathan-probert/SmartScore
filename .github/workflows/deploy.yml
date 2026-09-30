@@ -5,6 +5,13 @@ on:
     branches:
       - main
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+# Serialize runs per ref so two concurrent runs never deploy the same stack at
+# once (AWS Lambda allows only one in-flight code update per function).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   setup:
@@ -15,41 +22,32 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-      
+
       - name: Install build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential
-      
+
       - name: Set up Python
         id: setup-python
         uses: actions/setup-python@v6
         with:
           python-version: 3.12
-      
-      - name: Cache Poetry installation
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Cache uv
         uses: actions/cache@v4
         with:
-          path: ~/.local
-          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-      
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-      
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pypoetry
-            .venv
-          key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+          path: ${{ runner.temp }}/setup-uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
           restore-keys: |
-            poetry-deps-${{ runner.os }}-
-      
+            uv-${{ runner.os }}-
+
       - name: Install dependencies
-        run: poetry install --with dev
-      
+        run: uv sync --all-groups
+
       - name: Cache Rust build
         uses: actions/cache@v4
         with:
@@ -58,18 +56,33 @@ jobs:
           key: rust-build-${{ runner.os }}-${{ hashFiles('smartscore/Rust/make_predictions/Cargo.lock') }}
           restore-keys: |
             rust-build-${{ runner.os }}-
-      
-      - name: Compile Rust code
-        run: make compile
-      
+
+      - name: Compile C code
+        run: make compile_c
+
+      - name: Compile Rust code (Linux Lambda target)
+        run: cargo build --release --target x86_64-unknown-linux-gnu --manifest-path smartscore/Rust/make_predictions/Cargo.toml
+
+      - name: Install compiled Rust module into venv
+        run: |
+          SITE_PACKAGES=$(find .venv -type d -name site-packages | head -1)
+          cp smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so \
+            "$SITE_PACKAGES/make_predictions_rust.so"
+          uv run python -c "import make_predictions_rust; print('make_predictions_rust import OK')"
+
+      - name: Stage build artifacts
+        run: |
+          mkdir -p build_artifacts/smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release
+          cp smartscore/compiled_code.so build_artifacts/smartscore/compiled_code.so
+          cp smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so \
+            build_artifacts/smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v5
         with:
           name: build-artifacts
-          path: |
-            smartscore/Rust/make_predictions/target/release/*.dll
-            smartscore/Rust/make_predictions/target/release/*.so
-            smartscore/Rust/make_predictions/target/release/*.dylib
+          path: build_artifacts/
+          if-no-files-found: error
           retention-days: 1
 
   lint:
@@ -79,33 +92,26 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-      
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: ${{ needs.setup.outputs.python-version }}
-      
-      - name: Cache Poetry installation
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Cache uv
         uses: actions/cache@v4
         with:
-          path: ~/.local
-          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-      
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pypoetry
-            .venv
-          key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-      
-      - name: Download build artifacts
-        uses: actions/download-artifact@v6
-        with:
-          name: build-artifacts
-      
+          path: ${{ runner.temp }}/setup-uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
       - name: Run lint
-        run: poetry run make lint
+        run: uv run make lint
 
   test:
     needs: setup
@@ -114,30 +120,34 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-      
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: ${{ needs.setup.outputs.python-version }}
-      
-      - name: Cache Poetry installation
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Cache uv
         uses: actions/cache@v4
         with:
-          path: ~/.local
-          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-      
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pypoetry
-            .venv
-          key: poetry-deps-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-      
+          path: ${{ runner.temp }}/setup-uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
       - name: Download build artifacts
         uses: actions/download-artifact@v6
         with:
           name: build-artifacts
+
+      - name: Install compiled Rust module into venv
+        run: |
+          SITE_PACKAGES=$(find .venv -type d -name site-packages | head -1)
+          cp smartscore/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so \
+            "$SITE_PACKAGES/make_predictions_rust.so"
 
       - name: Run tests
         run: make test
@@ -150,29 +160,43 @@ jobs:
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy'))
       )
+    outputs:
+      env_was_dev: ${{ steps.env-detect.outputs.is_dev }}
     env:
       ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+      DEPLOY_SKIP_BUILD: "1"
     steps:
+      - name: Detect environment
+        id: env-detect
+        run: echo "is_dev=${{ github.ref != 'refs/heads/main' && 'true' || 'false' }}" >> $GITHUB_OUTPUT
+
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential  # Install gcc and make
-      
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: 3.12
 
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/setup-uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
 
       - name: Install dependencies
-        run: poetry install --no-root
-      
+        run: uv sync --no-dev
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: build-artifacts
+
       - name: Set environment variables
         run: |
           echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> $GITHUB_ENV
@@ -182,6 +206,7 @@ jobs:
           echo "BREVO_SMTP_KEY=${{ secrets.BREVO_SMTP_KEY }}" >> $GITHUB_ENV
           echo "BREVO_FROM_EMAIL=${{ secrets.BREVO_FROM_EMAIL }}" >> $GITHUB_ENV
           echo "FEATURE_SEND_EMAILS=${{ secrets.FEATURE_SEND_EMAILS }}" >> $GITHUB_ENV
+          echo "POSTHOG_FEATURE_FLAG_KEY=${{ secrets.POSTHOG_FEATURE_FLAG_KEY }}" >> $GITHUB_ENV
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -191,10 +216,52 @@ jobs:
           aws-region: us-east-1
       - name: Run deploy script
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
           chmod +x build_scripts/deploy.sh
           ./build_scripts/deploy.sh
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+
+  dev-integration:
+    needs: deploy
+    runs-on: ubuntu-latest
+    # Only run the mock-NHL integration suite against the dev stack (PRs with
+    # the deploy label), never against prod.
+    if: |
+      needs.deploy.result == 'success' &&
+      needs.deploy.outputs.env_was_dev == 'true'
+    env:
+      ENV: dev
+      AWS_REGION: us-east-1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.12
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Set environment variables
+        run: |
+          echo "POSTHOG_FEATURE_FLAG_KEY=${{ secrets.POSTHOG_FEATURE_FLAG_KEY }}" >> $GITHUB_ENV
+          echo "POSTHOG_PERSONAL_API_KEY=${{ secrets.POSTHOG_PERSONAL_API_KEY }}" >> $GITHUB_ENV
+          echo "POSTHOG_PROJECT_ID=${{ secrets.POSTHOG_PROJECT_ID }}" >> $GITHUB_ENV
+          echo "AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}" >> $GITHUB_ENV
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Run dev integration tests (mocked NHL)
+        run: make integration

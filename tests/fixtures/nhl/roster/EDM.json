@@ -1,0 +1,16 @@
+{
+  "forwards": [
+    {
+      "id": 200,
+      "firstName": { "default": "Connor" },
+      "lastName": { "default": "McDavid" }
+    },
+    {
+      "id": 201,
+      "firstName": { "default": "Leon" },
+      "lastName": { "default": "Draisaitl" }
+    }
+  ],
+  "defensemen": [],
+  "goalies": []
+}

@@ -1,0 +1,28 @@
+{
+  "playerId": 201,
+  "firstName": { "default": "Leon" },
+  "lastName": { "default": "Draisaitl" },
+  "seasonTotals": [
+    {
+      "season": 20242025,
+      "leagueAbbrev": "NHL",
+      "goals": 35,
+      "gamesPlayed": 80,
+      "powerPlayGoals": 12
+    },
+    {
+      "season": 20232024,
+      "leagueAbbrev": "NHL",
+      "goals": 38,
+      "gamesPlayed": 81,
+      "powerPlayGoals": 11
+    }
+  ],
+  "last5Games": [
+    { "goals": 1 },
+    { "goals": 0 },
+    { "goals": 1 },
+    { "goals": 0 },
+    { "goals": 0 }
+  ]
+}

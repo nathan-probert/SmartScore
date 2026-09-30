@@ -10,10 +10,11 @@ smartscore/Rust/weight_optimizer/target/*
 .env
 node_modules
 .venv
-.poetry
 .pytest_cache
 .ruff_cache
 output
 .coverage
 preview_email.html
 secret_readme.md
+.ocx/
+.opencode/

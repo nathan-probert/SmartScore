@@ -1,0 +1,20 @@
+{
+  "games": [
+    {
+      "id": 500001,
+      "season": 20242025,
+      "gameDate": "2025-06-11",
+      "gameScheduleState": "OK",
+      "gameOutcome": { "lastPeriod": 3 },
+      "homeTeam": { "id": 1, "abbrev": "TOR", "score": 3 },
+      "awayTeam": { "id": 2, "abbrev": "EDM", "score": 2 },
+      "goals": [
+        { "playerId": 100, "teamAbbrev": { "default": "TOR" } },
+        { "playerId": 100, "teamAbbrev": { "default": "TOR" } },
+        { "playerId": 101, "teamAbbrev": { "default": "TOR" } },
+        { "playerId": 200, "teamAbbrev": { "default": "EDM" } },
+        { "playerId": 200, "teamAbbrev": { "default": "EDM" } }
+      ]
+    }
+  ]
+}

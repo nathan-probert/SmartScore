@@ -69,6 +69,7 @@ generate_smartscore_stack() {
         ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
+        ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -90,6 +91,7 @@ generate_smartscore_stack() {
         ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
+        ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
@@ -165,20 +167,37 @@ prune_output_dir() {
 
 
 update_lambda_code() {
+  local PIDS=()
+  local UPDATE_COUNT=0
+
   for FUNCTION in "${LAMBDA_FUNCTIONS[@]}"; do
-    echo "Updating Lambda function code: $FUNCTION..."
-
-    aws lambda update-function-code \
-      --function-name "$FUNCTION" \
-      --zip-file fileb://$OUTPUT_DIR/$KEY &>/dev/null  # Suppress all output
-
-    if [ $? -ne 0 ]; then
-      echo "Error: Failed to update Lambda function code: $FUNCTION."
-      exit 1
-    fi
-
-    echo "Lambda function code updated successfully: $FUNCTION."
+    (
+      echo "Updating Lambda function code: $FUNCTION..."
+      if ERROR_OUTPUT=$(aws lambda update-function-code \
+          --function-name "$FUNCTION" \
+          --zip-file fileb://$OUTPUT_DIR/$KEY 2>&1); then
+        echo "Lambda function code updated successfully: $FUNCTION."
+      else
+        echo "Error: Failed to update Lambda function code: $FUNCTION."
+        echo "$ERROR_OUTPUT"
+        exit 1
+      fi
+    ) &
+    PIDS+=($!)
+    UPDATE_COUNT=$((UPDATE_COUNT + 1))
   done
+
+  echo "Updating $UPDATE_COUNT Lambda function(s) in parallel..."
+
+  local FAILED=0
+  for PID in "${PIDS[@]}"; do
+    wait "$PID" || FAILED=1
+  done
+
+  if [ $FAILED -ne 0 ]; then
+    echo "Error: One or more Lambda function updates failed."
+    exit 1
+  fi
 }
 
 
@@ -252,24 +271,43 @@ mkdir -p $OUTPUT_DIR
 
 # update dependencies
 echo "Updating dependencies..."
-poetry export -f requirements.txt --output $OUTPUT_DIR/requirements.txt --without-hashes
-poetry run pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
-rm -f $OUTPUT_DIR/requirements.txt
-
-# compile C code
-echo "Compiling C code..."
-sh build_scripts/compile.sh
+uv export --no-dev --format requirements-txt --output-file $OUTPUT_DIR/requirements.txt --no-hashes
 if [ $? -ne 0 ]; then
-  echo "Error: Compilation failed. Ensure docker is running."
+  echo "Error: Dependency export failed."
   exit 1
 fi
-
-# compile Rust code
-echo "Compiling Rust code..."
-sh build_scripts/rust_compile.sh
+uv pip install --no-deps -r $OUTPUT_DIR/requirements.txt -t $OUTPUT_DIR
 if [ $? -ne 0 ]; then
-  echo "Error: Compilation failed. Ensure docker is running."
+  echo "Error: Dependency install failed."
   exit 1
+fi
+rm -f $OUTPUT_DIR/requirements.txt
+
+# compile C and Rust. When the CI "setup" job has already built the artifacts
+# (see DEPLOY_SKIP_BUILD in .github/workflows/deploy.yml), reuse them instead.
+if [ "${DEPLOY_SKIP_BUILD:-0}" = "1" ]; then
+    if [ ! -f "$SOURCE_DIR/compiled_code.so" ] || \
+       [ ! -f "$SOURCE_DIR/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so" ]; then
+        echo "Error: DEPLOY_SKIP_BUILD is set but prebuilt artifacts are missing (compile in setup first)."
+        exit 1
+    fi
+    echo "Skipping C/Rust compilation (reusing artifacts from CI setup job)..."
+else
+    # compile C code
+    echo "Compiling C code..."
+    sh build_scripts/compile.sh
+    if [ $? -ne 0 ]; then
+      echo "Error: Compilation failed. Ensure docker is running."
+      exit 1
+    fi
+
+    # compile Rust code
+    echo "Compiling Rust code..."
+    sh build_scripts/rust_compile.sh
+    if [ $? -ne 0 ]; then
+      echo "Error: Compilation failed. Ensure docker is running."
+      exit 1
+    fi
 fi
 
 # update the code
@@ -278,6 +316,18 @@ cp -r $SOURCE_DIR/* $OUTPUT_DIR
 cp -r $OUTPUT_DIR/Rust/make_predictions/target/x86_64-unknown-linux-gnu/release/libmake_predictions_rust.so $OUTPUT_DIR/make_predictions_rust.so
 rm -rf $OUTPUT_DIR/C
 rm -rf $OUTPUT_DIR/Rust
+# Dev/research tooling in smartscore/scripts is not imported at Lambda runtime.
+rm -rf $OUTPUT_DIR/scripts
+
+# Stage NHL mock fixtures into the zip for dev only, so deployed dev lambdas
+# can serve frozen NHL data when the mock flag is on. Prod stays clean.
+if [ "$ENV" = "dev" ]; then
+  echo "Staging NHL fixtures for dev..."
+  mkdir -p $OUTPUT_DIR/fixtures
+  cp -r tests/fixtures/nhl $OUTPUT_DIR/fixtures/
+else
+  echo "Skipping NHL fixtures for non-dev environment ($ENV)."
+fi
 
 # remove unnecessary artifacts before zipping
 prune_output_dir

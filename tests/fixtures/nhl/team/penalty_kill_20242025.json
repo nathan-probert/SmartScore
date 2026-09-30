@@ -1,0 +1,14 @@
+{
+  "data": [
+    {
+      "teamId": 1,
+      "shorthandedGoalsAgainst": 4,
+      "gamesPlayed": 80
+    },
+    {
+      "teamId": 2,
+      "shorthandedGoalsAgainst": 5,
+      "gamesPlayed": 80
+    }
+  ]
+}

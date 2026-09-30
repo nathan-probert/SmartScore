@@ -1,0 +1,14 @@
+{
+  "data": [
+    {
+      "teamId": 1,
+      "goalsForPerGame": 3.4,
+      "goalsAgainstPerGame": 2.5
+    },
+    {
+      "teamId": 2,
+      "goalsForPerGame": 3.6,
+      "goalsAgainstPerGame": 2.8
+    }
+  ]
+}

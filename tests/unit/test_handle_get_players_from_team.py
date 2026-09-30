@@ -1,8 +1,8 @@
 from unittest.mock import patch
 
 import pytest
-from smartscore_info_client.schemas.player_info import PlayerInfo
-from smartscore_info_client.schemas.team_info import TeamInfo
+from smartscore_info_client.models.player import Player, PlayerInfo
+from smartscore_info_client.models.team import GameTeam
 
 from event_handler import handle_get_players_from_team
 
@@ -31,21 +31,9 @@ def sample_team_event():
 @pytest.fixture
 def sample_players():
     return [
-        PlayerInfo(
-            name="Aleksander Barkov",
-            id=8477493,
-            team_id=13,
-        ),
-        PlayerInfo(
-            name="Sam Bennett",
-            id=8477935,
-            team_id=13,
-        ),
-        PlayerInfo(
-            name="Matthew Tkachuk",
-            id=8479314,
-            team_id=13,
-        ),
+        PlayerInfo(player=Player(name="Aleksander Barkov", id=8477493, team_id=13)),
+        PlayerInfo(player=Player(name="Sam Bennett", id=8477935, team_id=13)),
+        PlayerInfo(player=Player(name="Matthew Tkachuk", id=8479314, team_id=13)),
     ]
 
 
@@ -57,10 +45,10 @@ def test_handle_get_players_from_team_returns_complete_structure(
 
     result = handle_get_players_from_team(sample_team_event, {})
 
-    # Verify the service was called with correct TeamInfo
+    # Verify the service was called with correct GameTeam
     mock_get_players_from_team.assert_called_once()
     called_team = mock_get_players_from_team.call_args[0][0]
-    assert isinstance(called_team, TeamInfo)
+    assert isinstance(called_team, GameTeam)
     assert called_team.team_name == "Florida Panthers"
     assert called_team.team_id == 13
 
@@ -124,8 +112,8 @@ def test_handle_get_players_from_team_away_team(mock_get_players_from_team, samp
 
     # Update sample players to have different team_id
     away_players = [
-        PlayerInfo(name="Nikita Kucherov", id=8476453, team_id=14),
-        PlayerInfo(name="Brayden Point", id=8478010, team_id=14),
+        PlayerInfo(player=Player(name="Nikita Kucherov", id=8476453, team_id=14)),
+        PlayerInfo(player=Player(name="Brayden Point", id=8478010, team_id=14)),
     ]
     mock_get_players_from_team.return_value = away_players
 
@@ -163,8 +151,19 @@ def test_handle_get_players_from_team_preserves_all_event_fields(mock_get_player
 
     result = handle_get_players_from_team(event_with_extra_fields, {})
 
-    # Verify all expected fields are present
-    expected_keys = {"team_name", "team_abbr", "season", "team_id", "opponent_id", "home", "players"}
+    # Verify all expected fields are preserved along with the team stats
+    expected_keys = {
+        "team_name",
+        "team_abbr",
+        "season",
+        "team_id",
+        "opponent_id",
+        "home",
+        "tgpg",
+        "otga",
+        "otshga",
+        "players",
+    }
     assert set(result.keys()) == expected_keys
 
     # Verify values

@@ -1,0 +1,28 @@
+{
+  "playerId": 100,
+  "firstName": { "default": "John" },
+  "lastName": { "default": "Tavares" },
+  "seasonTotals": [
+    {
+      "season": 20242025,
+      "leagueAbbrev": "NHL",
+      "goals": 30,
+      "gamesPlayed": 80,
+      "powerPlayGoals": 10
+    },
+    {
+      "season": 20232024,
+      "leagueAbbrev": "NHL",
+      "goals": 28,
+      "gamesPlayed": 82,
+      "powerPlayGoals": 9
+    }
+  ],
+  "last5Games": [
+    { "goals": 1 },
+    { "goals": 0 },
+    { "goals": 1 },
+    { "goals": 0 },
+    { "goals": 1 }
+  ]
+}
