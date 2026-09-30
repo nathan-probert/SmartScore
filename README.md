@@ -14,6 +14,14 @@ The current method for calculating the probability takes into account a variety 
  - Player's power play goals per game over the last 3 NHL seasons (HPPG)
  - Other team's short handed goals per game (OTSHGA)
 
+## Data Sources
+
+- Injuries: `https://www.rotowire.com/hockey/tables/injury-report.php?team=ALL&pos=ALL` (JSON, no auth)
+- Starting goalies: `https://www.rotowire.com/hockey/tables/projected-goalies.php?date=YYYY-MM-DD` (JSON, no auth, `Confirmed / Expected / Unknown`)
+- Goalie + skater stats: official NHL API `api-web.nhle.com` (`goalie-stats-leaders/current`, `player/{id}/landing`, `player/{id}/game-log/now`, `club-stats/{team}/now`, `gamecenter/{gameId}/boxscore` with `starter=true` for backfill)
+
+> If RotoWire tables endpoints ever change/break (undocumented, embedded via `loadTableRW` in `starting-goalies.php` / `injury-report.php`), use [DailyFaceoff](https://www.dailyfaceoff.com/starting-goalies/) as fallback for both starting goalies (`Confirmed / Likely` + timestamp + source, server-rendered HTML, scrapable with BeautifulSoup) and injuries ([line combos / injury list](https://www.dailyfaceoff.com/teams/)). Note RotoWire team codes differ from NHL API (`MON` vs `MTL`, `LAS` vs `VGK`) so keep the map in sync.
+
 ## Running this Program
 
 First install all necessary packages:<br/>
