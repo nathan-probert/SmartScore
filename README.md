@@ -18,7 +18,7 @@ The current method for calculating the probability takes into account a variety 
 
 - Injuries: `https://www.rotowire.com/hockey/tables/injury-report.php?team=ALL&pos=ALL` (JSON, no auth)
 - Starting goalies: `https://www.rotowire.com/hockey/tables/projected-goalies.php?date=YYYY-MM-DD` (JSON, no auth, `Confirmed / Expected / Unknown`)
-- Goalie + skater stats: official NHL API `api-web.nhle.com` (`goalie-stats-leaders/current`, `player/{id}/landing`, `player/{id}/game-log/now`, `club-stats/{team}/now`, `gamecenter/{gameId}/boxscore` with `starter=true` for backfill)
+- Goalie + skater stats: official NHL API `api-web.nhle.com` (`goalie-stats-leaders/current`, `player/{id}/landing`, `player/{id}/game-log/now`, `club-stats/{team}/now`, `gamecenter/{gameId}/boxscore` with `starter=true` for backfill). `club-stats/{team}/now` returns the *in-progress* season, so it has no goalies before the season starts; `get_goalie_stats_for_team` falls back to `club-stats/{team}/{priorSeason}/2` so preseason rows still carry last-season context
 - Recorded per skater as `opp_goalie_*` fields (name, team, status, GAA, save %, record) via `handle_get_goalies` between `GetInjuries` and `GetTims`
 - DB: apply `supabase/migrations/20260930_add_starting_goalie_columns.sql` in the Supabase SQL editor (Picks + Historic tables, dev + prod) before deploying, or upserts will fail on the new columns
 

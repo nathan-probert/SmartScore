@@ -4,6 +4,7 @@ from service import (
     build_team_name_map,
     enrich_starting_goalies,
     get_goalie_stats_for_team,
+    get_previous_season,
     get_starting_goalies,
     merge_goalie_data,
     normalize_rotowire_team_abbr,
@@ -154,6 +155,56 @@ def test_get_goalie_stats_for_team_rejects_malformed_payloads(mock_request):
     assert get_goalie_stats_for_team("CAR") == {}
 
 
+def test_get_previous_season():
+    assert get_previous_season("20262027") == "20252026"
+    assert get_previous_season("20252026") == "20242025"
+    assert get_previous_season("20262028") is None
+    assert get_previous_season("20262") is None
+    assert get_previous_season("") is None
+    assert get_previous_season(None) is None
+
+
+@patch("service.exponential_backoff_request")
+def test_get_goalie_stats_for_team_falls_back_to_previous_season(mock_request):
+    """Preseason: /now reports the new season with no games, so stats must come from last season."""
+    empty_current = {"season": "20262027", "gameType": 2, "skaters": [], "goalies": []}
+    mock_request.side_effect = [empty_current, _club_stats_payload()]
+
+    result = get_goalie_stats_for_team("CAR")
+
+    assert result["brandon bussi"]["record"] == "31-6-2"
+    assert result["brandon bussi"]["season"] == "20252026"
+    assert mock_request.call_args_list[1][0][0].endswith("/club-stats/CAR/20252026/2")
+
+
+@patch("service.exponential_backoff_request")
+def test_get_goalie_stats_for_team_does_not_fall_back_when_season_present(mock_request):
+    mock_request.return_value = _club_stats_payload()
+
+    result = get_goalie_stats_for_team("CAR")
+
+    assert result["brandon bussi"]["season"] == "20252026"
+    assert mock_request.call_count == 1
+
+
+@patch("service.exponential_backoff_request")
+def test_get_goalie_stats_for_team_returns_empty_when_fallback_also_empty(mock_request):
+    mock_request.side_effect = [
+        {"season": "20262027", "goalies": []},
+        {"season": "20252026", "goalies": []},
+    ]
+
+    assert get_goalie_stats_for_team("CAR") == {}
+
+
+@patch("service.exponential_backoff_request")
+def test_get_goalie_stats_for_team_no_fallback_without_derivable_season(mock_request):
+    mock_request.return_value = {"goalies": []}
+
+    assert get_goalie_stats_for_team("CAR") == {}
+    assert mock_request.call_count == 1
+
+
 @patch("service.get_goalie_stats_for_team")
 @patch("service.get_starting_goalies")
 def test_enrich_starting_goalies_fetches_once_per_team(mock_starters, mock_stats):
@@ -168,6 +219,35 @@ def test_enrich_starting_goalies_fetches_once_per_team(mock_starters, mock_stats
     assert mock_stats.call_count == 2
     assert result[0]["record"] == "31-6-2"
     assert result[1]["record"] is None
+
+
+@patch("service.get_goalie_stats_for_team")
+@patch("service.get_starting_goalies")
+def test_enrich_starting_goalies_propagates_stats_season(mock_starters, mock_stats):
+    mock_starters.return_value = [
+        {"team_abbr": "CAR", "goalie_name": "Brandon Bussi", "status": "Confirmed"},
+    ]
+    mock_stats.return_value = {"brandon bussi": {"record": "31-6-2", "season": "20252026"}}
+
+    result = enrich_starting_goalies("2026-09-29")
+
+    assert result[0]["stats_season"] == "20252026"
+
+
+@patch("service.get_goalie_stats_for_team")
+@patch("service.get_starting_goalies")
+def test_enrich_starting_goalies_warns_on_name_miss(mock_starters, mock_stats, caplog):
+    mock_starters.return_value = [
+        {"team_abbr": "CAR", "goalie_name": "Brandon Bussie", "status": "Expected"},
+    ]
+    mock_stats.return_value = {"brandon bussi": {"record": "31-6-2", "season": "20252026"}}
+
+    with caplog.at_level("WARNING"):
+        result = enrich_starting_goalies("2026-09-29")
+
+    assert result[0]["gaa"] is None
+    assert result[0]["stats_season"] is None
+    assert "Brandon Bussie" in caplog.text
 
 
 def test_build_team_name_map_uses_common_name_fallback():
