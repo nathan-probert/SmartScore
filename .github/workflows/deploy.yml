@@ -152,11 +152,81 @@ jobs:
       - name: Run tests
         run: make test
 
-  deploy:
+  migrate:
     needs: [lint, test]
     runs-on: ubuntu-latest
+    # Same gate as deploy: apply pending migrations to the dev tables for a
+    # deploy-labelled PR, to the prod tables on a merge to main.
     if: |
       needs.lint.result == 'success' && needs.test.result == 'success' && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy'))
+      )
+    env:
+      ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+      DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Guard migration files
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(supabase/migrations/*.sql)
+          status=0
+          for file in "${files[@]}"; do
+            # Applied to the substituted text: a placeholder the sed above does
+            # not recognise (a different spelling, e.g. {{ENV}} or __ENV) would
+            # survive into psql and target a table that does not exist. Matches
+            # any __UPPER_CASE__ or {{mustache}} token, so it catches typos in
+            # the placeholder itself rather than only the exact token.
+            if sed "s/__ENV__/$ENV/g" "$file" \
+              | grep -niE '__[a-z0-9_]+__|\{\{[^}]+\}\}' > /dev/null; then
+              echo "::error file=$file::Placeholder token survived substitution. Use the exact __ENV__ token in every table name so the migrate step can scope it to $ENV."
+              status=1
+            fi
+            # Checked against the raw file: this is what catches a migration
+            # that hardcodes one environment's tables and would silently hit
+            # prod during a dev deploy. Quote the table name for the suffix to
+            # match, e.g. "Picks-<env>", or use the __ENV__ placeholder.
+            if grep -nE '"[^"]*-(dev|prod)"' "$file"; then
+              echo "::error file=$file::Hardcoded dev/prod table-name suffix. Write the suffix as the __ENV__ placeholder so CI scopes the migration to $ENV."
+              status=1
+            fi
+          done
+          exit $status
+
+      # psql is preinstalled on ubuntu-latest, so no client install step.
+      #
+      # There is no migration history here: psql applies every file in
+      # supabase/migrations/ on every run, so an already-applied migration is a
+      # no-op only because it is idempotent. A non-idempotent file (plain ADD
+      # COLUMN, an unconditional UPDATE, a CREATE TABLE) would be re-applied on
+      # every deploy and fail once the first run landed. Follow-up options:
+      # keep every migration idempotent with IF NOT EXISTS / IF EXISTS, or
+      # switch to `supabase db push --db-url` with SUPABASE_ACCESS_TOKEN and a
+      # project ref, which records applied migrations in a history table.
+      - name: Apply migrations
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(supabase/migrations/*.sql)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No migrations in supabase/migrations/; nothing to apply."
+            exit 0
+          fi
+          for file in $(printf '%s\n' "${files[@]}" | sort); do
+            echo "Applying $file (ENV=$ENV)"
+            sed "s/__ENV__/$ENV/g" "$file" \
+              | psql -v ON_ERROR_STOP=1 --single-transaction "$DATABASE_URL"
+          done
+
+  deploy:
+    needs: [lint, test, migrate]
+    runs-on: ubuntu-latest
+    if: |
+      needs.lint.result == 'success' && needs.test.result == 'success' && needs.migrate.result == 'success' && (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy'))
       )

@@ -20,7 +20,7 @@ The current method for calculating the probability takes into account a variety 
 - Starting goalies: `https://www.rotowire.com/hockey/tables/projected-goalies.php?date=YYYY-MM-DD` (JSON, no auth, `Confirmed / Expected / Unknown`)
 - Goalie + skater stats: official NHL API `api-web.nhle.com` (`goalie-stats-leaders/current`, `player/{id}/landing`, `player/{id}/game-log/now`, `club-stats/{team}/now`, `gamecenter/{gameId}/boxscore` with `starter=true` for backfill). `club-stats/{team}/now` is **current season only** and returns no goalies until the team plays a regular-season game, so `opp_goalie_*` stats are legitimately null in preseason — a goalie with no games this season has no current-season stats, and prior-season numbers are deliberately not backfilled
 - Recorded per skater as `opp_goalie_*` fields (name, team, status, GAA, save %, record) via `handle_get_goalies` between `GetInjuries` and `GetTims`
-- DB: apply `supabase/migrations/20260930_add_starting_goalie_columns.sql` in the Supabase SQL editor (Picks + Historic tables, dev + prod) before deploying, or upserts will fail on the new columns
+- DB: migrations in `supabase/migrations/*.sql` are applied automatically by CI before the Lambda deploy. Each file is scoped with an `__ENV__` table-name placeholder that CI substitutes — PRs with the `deploy` label apply to the `dev` tables, merges to `main` apply to the `prod` tables. psql keeps no migration history, so every file is re-applied on each run and must be idempotent.
 
 > If RotoWire tables endpoints ever change/break (undocumented, embedded via `loadTableRW` in `starting-goalies.php` / `injury-report.php`), use [DailyFaceoff](https://www.dailyfaceoff.com/starting-goalies/) as fallback for both starting goalies (`Confirmed / Likely` + timestamp + source, server-rendered HTML, scrapable with BeautifulSoup) and injuries ([line combos / injury list](https://www.dailyfaceoff.com/teams/)). Note RotoWire team codes differ from NHL API (`MON` vs `MTL`, `LAS` vs `VGK`) so keep the map in sync.
 
@@ -57,6 +57,7 @@ The deployment pipeline expects the following GitHub repository secrets to be co
 - `BREVO_SMTP_LOGIN`: Brevo SMTP login/username used with the SMTP key.
 - `FEATURE_SEND_EMAILS`: Feature flag that enables or disables sending emails at runtime.
 - `SUPABASE_API_KEY`: Supabase anon/public API key used by the default client.
+- `SUPABASE_DB_URL`: Postgres connection string for the Supabase project, used by CI to apply `supabase/migrations/*.sql`.
 - `SUPABASE_SERVICE_ROLE_KEY`: Supabase service-role key used for privileged server-side operations.
 - `SUPABASE_URL`: Base URL for the Supabase project used by application clients.
 
