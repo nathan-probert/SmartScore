@@ -18,12 +18,6 @@ logger = Logger()
 _boto3_clients = {}
 
 
-def get_lambda_client():
-    if "lambda" not in _boto3_clients:
-        _boto3_clients["lambda"] = boto3.client("lambda")
-    return _boto3_clients["lambda"]
-
-
 def get_sts_client():
     if "sts" not in _boto3_clients:
         _boto3_clients["sts"] = boto3.client("sts")
@@ -40,22 +34,6 @@ def get_ssm_client():
     if "ssm" not in _boto3_clients:
         _boto3_clients["ssm"] = boto3.client("ssm")
     return _boto3_clients["ssm"]
-
-
-def invoke_lambda(function_name, payload, wait=True):
-    session = boto3.session.Session()
-    region = session.region_name
-    account_id = get_sts_client().get_caller_identity()["Account"]
-    invocation_type = "RequestResponse" if wait else "Event"
-
-    function_arn = f"arn:aws:lambda:{region}:{account_id}:function:{function_name}"
-    response = get_lambda_client().invoke(
-        FunctionName=function_arn, InvocationType=invocation_type, Payload=json.dumps(payload)
-    )
-    if wait:
-        response_payload = json.loads(response["Payload"].read())
-        return response_payload
-    return None
 
 
 def get_tims_players():
