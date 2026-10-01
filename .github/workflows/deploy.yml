@@ -176,10 +176,14 @@ jobs:
           files=(supabase/migrations/*.sql)
           status=0
           for file in "${files[@]}"; do
-            # An unsubstituted __ENV__ would target a nonexistent table, so
-            # check the substituted text rather than the file on disk.
-            if sed "s/__ENV__/$ENV/g" "$file" | grep -n '__ENV__' > /dev/null; then
-              echo "::error file=$file::Unsubstituted __ENV__ token. Use the plain token in every table name so the migrate step can scope it to $ENV."
+            # Applied to the substituted text: a placeholder the sed above does
+            # not recognise (a different spelling, e.g. {{ENV}} or __ENV) would
+            # survive into psql and target a table that does not exist. Matches
+            # any __UPPER_CASE__ or {{mustache}} token, so it catches typos in
+            # the placeholder itself rather than only the exact token.
+            if sed "s/__ENV__/$ENV/g" "$file" \
+              | grep -niE '__[a-z0-9_]+__|\{\{[^}]+\}\}' > /dev/null; then
+              echo "::error file=$file::Placeholder token survived substitution. Use the exact __ENV__ token in every table name so the migrate step can scope it to $ENV."
               status=1
             fi
             # Checked against the raw file: this is what catches a migration
