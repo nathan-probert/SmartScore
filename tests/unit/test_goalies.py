@@ -154,6 +154,27 @@ def test_get_goalie_stats_for_team_rejects_malformed_payloads(mock_request):
     assert get_goalie_stats_for_team("CAR") == {}
 
 
+@patch("service.exponential_backoff_request")
+def test_get_goalie_stats_for_team_uses_now_endpoint_only(mock_request):
+    """Stats are current-season only; a prior season must never be backfilled in."""
+    mock_request.return_value = _club_stats_payload()
+
+    result = get_goalie_stats_for_team("CAR")
+
+    assert result["brandon bussi"]["record"] == "31-6-2"
+    assert mock_request.call_count == 1
+    assert mock_request.call_args[0][0].endswith("/club-stats/CAR/now")
+
+
+@patch("service.exponential_backoff_request")
+def test_get_goalie_stats_for_team_empty_preseason(mock_request):
+    """Before a season starts /now has no goalies; that is expected, not an error."""
+    mock_request.return_value = {"season": "20262027", "gameType": 2, "skaters": [], "goalies": []}
+
+    assert get_goalie_stats_for_team("CAR") == {}
+    assert mock_request.call_count == 1
+
+
 @patch("service.get_goalie_stats_for_team")
 @patch("service.get_starting_goalies")
 def test_enrich_starting_goalies_fetches_once_per_team(mock_starters, mock_stats):
@@ -168,6 +189,21 @@ def test_enrich_starting_goalies_fetches_once_per_team(mock_starters, mock_stats
     assert mock_stats.call_count == 2
     assert result[0]["record"] == "31-6-2"
     assert result[1]["record"] is None
+
+
+@patch("service.get_goalie_stats_for_team")
+@patch("service.get_starting_goalies")
+def test_enrich_starting_goalies_warns_on_name_miss(mock_starters, mock_stats, caplog):
+    mock_starters.return_value = [
+        {"team_abbr": "CAR", "goalie_name": "Brandon Bussie", "status": "Expected"},
+    ]
+    mock_stats.return_value = {"brandon bussi": {"record": "31-6-2"}}
+
+    with caplog.at_level("WARNING"):
+        result = enrich_starting_goalies("2026-09-29")
+
+    assert result[0]["gaa"] is None
+    assert "Brandon Bussie" in caplog.text
 
 
 def test_build_team_name_map_uses_common_name_fallback():

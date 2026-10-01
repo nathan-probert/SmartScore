@@ -541,26 +541,18 @@ def get_starting_goalies(date: str | None = None) -> List[Dict]:
     return starters
 
 
-def get_goalie_stats_for_team(team_abbr: str) -> Dict[str, Dict]:
+def _parse_goalie_stats(data: object, team_abbr: str) -> Dict[str, Dict]:
     """
-    Get current season stats for all goalies on a team from the official NHL API.
+    Parse a club-stats payload into a mapping of lowercase goalie name to stats.
 
     Args:
-        team_abbr: Official NHL team abbreviation (e.g. TOR).
+        data: Decoded JSON body from the club-stats endpoint.
+        team_abbr: Team abbreviation, used only for log messages.
 
     Returns:
-        Mapping of lowercase goalie name to stats dict with keys:
-        nhl_id, gaa, save_pct, wins, losses, ot_losses, record,
-        shutouts, games_played, games_started.
+        Mapping of lowercase goalie name to stats dict. Empty if the payload has
+        no goalies, which is expected before a season starts.
     """
-    url = f"https://api-web.nhle.com/v1/club-stats/{team_abbr}/now"
-
-    try:
-        data = exponential_backoff_request(url)
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"Error fetching goalie stats for {team_abbr}: {e}")
-        return {}
-
     if not isinstance(data, dict):
         logger.error(f"Unexpected goalie stats payload type for {team_abbr}: {type(data)}")
         return {}
@@ -597,6 +589,40 @@ def get_goalie_stats_for_team(team_abbr: str) -> Dict[str, Dict]:
     return stats
 
 
+def get_goalie_stats_for_team(team_abbr: str) -> Dict[str, Dict]:
+    """
+    Get current season stats for all goalies on a team from the official NHL API.
+
+    The ``/now`` endpoint reports the in-progress season only. Before a season
+    starts it legitimately returns no goalies (e.g. September, when the new
+    season is 20262027 but no regular-season games have been played), and stats
+    are left null rather than backfilled from a prior season -- a goalie with no
+    games played this season genuinely has no current-season stats.
+
+    Args:
+        team_abbr: Official NHL team abbreviation (e.g. TOR).
+
+    Returns:
+        Mapping of lowercase goalie name to stats dict with keys:
+        nhl_id, gaa, save_pct, wins, losses, ot_losses, record,
+        shutouts, games_played, games_started. Empty before a season starts.
+    """
+    url = f"https://api-web.nhle.com/v1/club-stats/{team_abbr}/now"
+
+    try:
+        data = exponential_backoff_request(url)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error fetching goalie stats for {team_abbr}: {e}")
+        return {}
+
+    stats = _parse_goalie_stats(data, team_abbr)
+    if not stats and isinstance(data, dict):
+        # Not an error: /now has no rows until the team plays a regular-season game.
+        logger.info(f"No current-season goalie stats for {team_abbr} (season {data.get('season')} has no games yet)")
+
+    return stats
+
+
 def enrich_starting_goalies(date: str | None = None) -> List[Dict]:
     """
     Get starting goalies for a date enriched with official NHL stats.
@@ -616,7 +642,13 @@ def enrich_starting_goalies(date: str | None = None) -> List[Dict]:
     enriched = []
     for starter in starters:
         info = dict(starter)
-        stat = stats_by_team.get(starter["team_abbr"], {}).get(starter["goalie_name"].lower(), {})
+        team_stats = stats_by_team.get(starter["team_abbr"], {})
+        stat = team_stats.get(starter["goalie_name"].lower(), {})
+        if not stat and team_stats:
+            logger.warning(
+                f"Goalie '{starter['goalie_name']}' ({starter['team_abbr']}) not found in NHL club stats "
+                f"(have: {sorted(team_stats)})"
+            )
         info.update(
             {
                 "nhl_id": stat.get("nhl_id"),
