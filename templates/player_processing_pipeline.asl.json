@@ -105,11 +105,10 @@
         },
         "SaveToDb": {
             "Type": "Task",
-            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:Api-${ENV}",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:SavePlayers-${ENV}",
             "Parameters": {
                 "players.$": "$.players",
-                "date.$": "$.date",
-                "method": "POST_BATCH"
+                "date.$": "$.date"
             },
             "Next": "UpdateHistory"
         },
