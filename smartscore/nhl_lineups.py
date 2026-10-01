@@ -77,7 +77,7 @@ def _strip_markdown(text: str) -> str:
     text = text.replace("\xa0", " ")
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"\*{1,3}", "", text)
-    return text.strip()
+    return _repair_mojibake(text).strip()
 
 
 def _split_people(text: str) -> List[str]:
@@ -99,16 +99,41 @@ def _name_from_slug(slug: str) -> str:
     return " ".join(part.capitalize() for part in parts)
 
 
+# A latin-1 mojibake marker is a UTF-8 lead byte rendered in U+00C0-U+00FF
+# (e.g. the 'a-circumflex' of a mangled right single quote) immediately
+# followed by a C1 control byte U+0080-U+00BF.
+_MOJIBAKE_MARKER = re.compile("[\u00c0-\u00ff][\u0080-\u00bf]")
+
+
+def _repair_mojibake(text: str) -> str:
+    """Undo UTF-8 bytes that were decoded as latin-1 somewhere upstream.
+
+    The NHL.com article body carries apostrophes as ``Oâ€™Reilly`` (the UTF-8
+    bytes for ``’`` re-read as latin-1). Transliterating that directly yields
+    ``OaReilly``, which can never match a real ``O'Reilly``. Recovering the
+    original characters first is what makes the join work.
+    """
+    if not _MOJIBAKE_MARKER.search(text):
+        return text
+    try:
+        return text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        # Not actually latin-1 mojibake; leave the text untouched.
+        return text
+
+
 def normalize_player_name(name: str) -> str:
     """
     Reduce a player name to a join key.
 
-    Downstream joins in this service match players by lowercased name, and sources
-    disagree on hyphens, apostrophes and accents (``Ukko-Pekka Luukkonen`` vs
-    ``Ukko Pekka Luukkonen``, ``Ryan O'Reilly`` vs ``Ryan O’Reilly``). Fold those
-    away so a cosmetic difference cannot break a match.
+    Downstream joins in this service match players by name, and sources disagree on
+    hyphens, apostrophes, accents and character encoding (``Ukko-Pekka Luukkonen``
+    vs ``Ukko Pekka Luukkonen``, ``Ryan O'Reilly`` vs ``Ryan O’Reilly`` vs the
+    double-encoded ``Ryan Oâ€™Reilly``). Fold all of those away so a cosmetic
+    difference cannot break a match.
     """
-    folded = unidecode(name or "").lower()
+    folded = _repair_mojibake(name or "")
+    folded = unidecode(folded).lower()
     folded = folded.replace("’", "'").replace("`", "'")
     return re.sub(r"[^a-z0-9]+", "", folded)
 

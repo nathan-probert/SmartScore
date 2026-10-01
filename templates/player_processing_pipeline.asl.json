@@ -81,6 +81,11 @@
         "GetGoalies": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetGoalies-${ENV}",
+            "Next": "GetLineups"
+        },
+        "GetLineups": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetLineups-${ENV}",
             "Next": "GetTims"
         },
         "GetTims": {

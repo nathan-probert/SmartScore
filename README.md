@@ -26,9 +26,9 @@ The current method for calculating the probability takes into account a variety 
 
 ## Starting lineups
 
-`smartscore/nhl_lineups.py` retrieves line combinations from two sources. Both are parsed
-deterministically — no LLM extraction — and nothing is persisted yet, so both can be
-adopted independently.
+`smartscore/nhl_lineups.py` retrieves line combinations from two sources, and
+`handle_get_lineups` merges them into the player list. Both sources are parsed
+deterministically — no LLM extraction.
 
 - **Forward lines, defence pairs, goalies, scratches, injuries:** the NHL.com daily
   projections article (`https://www.nhl.com/news/nhl-lineup-projections-2026-27-season`).
@@ -43,18 +43,44 @@ adopted independently.
   `lineup__*` class names). RotoWire does not publish forward lines publicly, so this
   is complementary to the NHL.com article, which omits PP units.
 
-Notes:
+### Persisted fields
+
+`handle_get_lineups` writes four columns, added by
+`supabase/migrations/20261001_add_lineup_columns.sql`:
+
+| Field | Meaning |
+|---|---|
+| `lineup_unit` | Forward line only (`F1`-`F4`) |
+| `lineup_position_group` | `F` / `D` / `G`, whichever unit the player sits in |
+| `pp_unit` | `POWER PLAY #1` / `POWER PLAY #2`, or null |
+| `lineup_status` | `PROJECTED` when a forward line matched, else `UNKNOWN` |
+
+A forward can carry both `lineup_unit` and `pp_unit` (typically ~117 players per slate).
+`lineup_status` is deliberately `UNKNOWN` rather than absent on a miss, so an empty or
+failed fetch is distinguishable from a genuine non-match.
+
+Defence pairings and goalie designations are parsed and available on the source payload
+but not stored per skater, since the picks table is skater-scoped.
+
+### Notes
 
 - `_log_structure` logs how many teams matched the expected 4F/6D/2G shape on every
   fetch and warns per-team on deviations, so a partial parse is visible instead of silent.
   Expect occasional "0 goalies" warnings: the article genuinely omits goalies for some teams.
+- `merge_lineup_data` logs the match rate and warns below full coverage. It also warns
+  when the article lists one player on two lines at once (seen live with Elias Pettersson
+  on both F1 and F2) — the name-keyed lookup can only keep one, so this says so rather
+  than looking like a clean parse.
+- **The article double-encodes some characters.** `Ryan O’Reilly` arrives as UTF-8 bytes
+  read back as latin-1, which transliterates to `OaReilly` and can never match. `_repair_mojibake`
+  undoes this before transliteration; keep it ahead of `unidecode` in any name handling.
 - These are **projected** lineups, published in the morning; they are not confirmed.
   `opp_goalie_*` continues to come from the RotoWire goalies table, which carries
   `Confirmed / Expected`.
-- RotoWire player names are rebuilt from URL slugs and are lossy (`Ukko Pekka
-  Luukkonen` for `Ukko-Pekka Luukkonen`). Use `normalize_player_name` when joining these
-  names against the player list, since the existing joins match on lowercased name.
+- Joins use `normalize_player_name` (folds hyphens, apostrophes, accents and mojibake)
+  because the existing joins match on name, not id.
 - Neither source publishes an archive; only the current slate is available.
+
 
 
 ## Running this Program

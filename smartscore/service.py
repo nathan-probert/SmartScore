@@ -20,6 +20,7 @@ from constants import DAYS_TO_KEEP_HISTORIC_DATA, NUM_EXPECTED_PLAYERS, WEIGHTS
 from email_utility import send_email
 from feature_flags import NHL_MOCK_FLAG, is_feature_enabled
 from mock_nhl_client import MockNHLClient
+from nhl_lineups import normalize_player_name
 from utility import (
     get_cur_pick_pct,
     get_emails,
@@ -758,6 +759,120 @@ def merge_goalie_data(players: List[Dict], starters: List[Dict], schedule_data: 
         player["opp_goalie_record"] = opp.get("record")
         player["opp_goalie_shutouts"] = opp.get("shutouts")
         player["opp_goalie_games_played"] = opp.get("games_played")
+
+    return players
+
+
+def _build_lineup_lookup(nhl_games: List[Dict], rotowire_games: List[Dict]) -> Dict[str, Dict[str, Dict]]:
+    """
+    Build ``team name -> {normalized player name: unit info}`` from both sources.
+
+    Even-strength units (F1-F4 forward lines, D1-D3 pairs, G1/G2 goalies) come from
+    the NHL.com projections article; power play units come from RotoWire, which
+    publishes them where NHL.com does not. The two are kept as separate keys so a
+    player can carry both, which is the normal case for a top-six forward.
+
+    Team names are keyed exactly as the sources report them ("Blue Jackets"), and
+    players are matched on ``team_name`` from the same NHL schedule, so no
+    cross-source team-name translation is needed.
+
+    Returns:
+        Mapping of team name to a mapping of normalized player name to
+        ``{"unit": str|None, "pp_unit": str|None}``.
+    """
+    lookup: Dict[str, Dict[str, Dict]] = {}
+
+    def team_entry(team_name: str) -> Dict[str, Dict]:
+        return lookup.setdefault(team_name, {})
+
+    def assign_unit(team_name: str, player_name: str, label: str) -> None:
+        key = normalize_player_name(player_name)
+        if not key:
+            return
+        entries = team_entry(team_name)
+        existing = entries.setdefault(key, {}).get("unit")
+        if existing and existing != label:
+            # The article occasionally lists a player on two lines at once. The
+            # lookup is name-keyed so only one can survive; say so rather than
+            # letting it look like a clean parse.
+            logger.warning(f"{team_name}: {player_name} listed on both {existing} and {label}; keeping {existing}")
+            return
+        entries[key]["unit"] = label
+
+    def assign_pp_unit(team_name: str, player_name: str, label: str) -> None:
+        key = normalize_player_name(player_name)
+        if key:
+            team_entry(team_name).setdefault(key, {})["pp_unit"] = label
+
+    for game in nhl_games or []:
+        for team in game.get("teams", []):
+            team_name = team.get("name", "")
+            if not team_name:
+                continue
+            for unit in team.get("units", []):
+                for player_name in unit.get("players", []):
+                    assign_unit(team_name, player_name, unit.get("label", ""))
+
+    for game in rotowire_games or []:
+        for team in game.get("teams", []):
+            team_name = team.get("name", "")
+            if not team_name:
+                continue
+            for unit in team.get("pp_units", []):
+                for player in unit.get("players", []):
+                    assign_pp_unit(team_name, player.get("name", ""), unit.get("label", ""))
+
+    return lookup
+
+
+def merge_lineup_data(
+    players: List[Dict],
+    nhl_games: List[Dict],
+    rotowire_games: List[Dict],
+) -> List[Dict]:
+    """
+    Annotate each player with their projected starting lineup units.
+
+    Args:
+        players: List of player dictionaries (must include name and team_name).
+        nhl_games: Games from get_nhl_com_lineups.
+        rotowire_games: Games from get_rotowire_lineups.
+
+    Returns:
+        List of players with added ``lineup_unit``, ``lineup_position_group``,
+        ``pp_unit`` and ``lineup_status`` fields.
+
+        ``lineup_unit`` is only set for forwards (F1-F4); defence pairings and
+        goalie designations are parsed and available on the source payload but not
+        stored per skater, since the picks table is skater-scoped. ``lineup_status``
+        is PROJECTED when a forward line matched and UNKNOWN otherwise, so an empty
+        fetch is distinguishable from a genuine miss.
+    """
+    lookup = _build_lineup_lookup(nhl_games, rotowire_games)
+
+    matched = total = 0
+    for player in players:
+        entries = lookup.get(player.get("team_name", ""), {})
+        entry = entries.get(normalize_player_name(player.get("name", "")), {})
+
+        unit = entry.get("unit") or ""
+        is_forward = unit.startswith("F")
+        pp_unit = entry.get("pp_unit")
+
+        player["lineup_unit"] = unit if is_forward else None
+        player["lineup_position_group"] = unit[:1] if unit else None
+        player["pp_unit"] = pp_unit
+        player["lineup_status"] = "PROJECTED" if is_forward else "UNKNOWN"
+
+        total += 1
+        matched += bool(is_forward)
+
+    logger.info(f"Matched {matched}/{total} players to a projected forward line")
+    if total and matched < total:
+        logger.warning(
+            f"Only {matched}/{total} players matched a projected line; check that the "
+            "NHL.com article and the player list refer to the same slate of games"
+        )
 
     return players
 

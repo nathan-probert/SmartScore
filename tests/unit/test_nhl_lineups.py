@@ -15,6 +15,7 @@ from nhl_lineups import (
     _name_from_slug,
     _parse_nhl_article_body,
     _parse_rotowire_team,
+    _repair_mojibake,
     get_nhl_com_lineups,
     get_rotowire_lineups,
     normalize_player_name,
@@ -314,3 +315,29 @@ def test_normalize_player_name_folds_hyphens_apostrophes_and_accents():
     assert normalize_player_name("Ryan O'Reilly") == normalize_player_name("Ryan O’Reilly")
     assert normalize_player_name("J.T. Miller") == normalize_player_name("J T Miller")
     assert normalize_player_name("") == ""
+
+
+def test_normalize_player_name_repairs_double_encoded_apostrophe():
+    """The live article encodes O’Reilly as UTF-8 bytes read back as latin-1.
+
+    Transliterating that directly yields "OaReilly", which can never match a real
+    "O'Reilly" — this is a real join-breaking bug, not a hypothetical one.
+    """
+    # U+2019 encoded as UTF-8 then decoded as latin-1, exactly as the live article has it.
+    mojibake = "Ryan O\u00e2\u0080\u0099Reilly"
+
+    assert normalize_player_name(mojibake) == normalize_player_name("Ryan O'Reilly")
+
+
+def test_normalize_player_name_repairs_accents_left_intact():
+    assert normalize_player_name("Zdeněk Čermák") == "zdenekcermak"
+
+
+def test_repair_mojibake_leaves_clean_text_alone():
+    assert _repair_mojibake("Ryan O'Reilly") == "Ryan O'Reilly"
+    assert _repair_mojibake("") == ""
+
+
+def test_repair_mojibake_survives_unencodable_text():
+    """Text that is not latin-1 mojibake must come back unchanged, not raise."""
+    assert _repair_mojibake("John �|NAME") == "John �|NAME"
