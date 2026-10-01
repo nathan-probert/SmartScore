@@ -24,6 +24,10 @@ SUPABASE_ADMIN_AUTH_CLIENT: Client = create_client(
     SUPABASE_SERVICE_ROLE_KEY,
 )
 
+# Cloudflare smartscore-api auth token (GitHub secret SMARTSCORE_API_TOKEN -> Lambda env var).
+# The value itself is never committed; wire the plumbing and set it in GitHub.
+SMARTSCORE_API_TOKEN = os.environ.get("SMARTSCORE_API_TOKEN")
+
 # Email
 GMAIL_EMAIL = os.environ.get("GMAIL_EMAIL")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")

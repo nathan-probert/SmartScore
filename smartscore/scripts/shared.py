@@ -1,11 +1,14 @@
-import base64
 import csv
-import gzip
-import json
 import os
+import sys
 
-import boto3
 import pandas as pd
+
+# cloudflare_client pulls in config.py, which builds Supabase clients at import
+# time. These scripts already import service (same dependency chain), so the
+# Supabase env vars have always been required to run them locally.
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from cloudflare_client import get_all_players  # noqa: E402
 
 PATH = "smartscore\\lib"
 DATA_PATH = f"{PATH}\\data.csv"
@@ -14,34 +17,8 @@ DATA_PATH = f"{PATH}\\data.csv"
 FEATURES = ["gpg", "hgpg", "five_gpg", "tgpg", "otga", "hppg", "otshga", "home"]
 
 
-def invoke_lambda(function_name, payload, wait=True):
-    sts_client = boto3.client("sts")
-    lambda_client = boto3.client("lambda")
-
-    session = boto3.session.Session()
-    region = session.region_name
-    account_id = sts_client.get_caller_identity()["Account"]
-    invocation_type = "RequestResponse" if wait else "Event"
-
-    function_arn = f"arn:aws:lambda:{region}:{account_id}:function:{function_name}"
-    response = lambda_client.invoke(
-        FunctionName=function_arn, InvocationType=invocation_type, Payload=json.dumps(payload)
-    )
-    response_payload = json.loads(response["Payload"].read())
-    return response_payload
-
-
-def unpack_response(body):
-    compressed_data = base64.b64decode(body)
-    decompressed_data = gzip.decompress(compressed_data).decode("utf-8")
-    original_data = json.loads(decompressed_data)
-
-    return original_data
-
-
 def create_csv():
-    response = invoke_lambda("Api-prod", {"method": "GET_ALL"})
-    data = unpack_response(response.get("entries"))
+    data = get_all_players()
 
     # Get the fields from the last entry (which should have all fields), set missing fields to None
     all_fields = data[-1].keys()

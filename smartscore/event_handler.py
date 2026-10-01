@@ -3,6 +3,7 @@ from smartscore_info_client.models.team import GameTeam
 from smartscore_info_client.schemas.player import PLAYER_INFO_SCHEMA
 from smartscore_info_client.schemas.team import TEAM_INFO_SCHEMA
 
+from cloudflare_client import upload_players
 from decorators import lambda_handler_error_responder
 from service import (
     backfill_dates,
@@ -203,6 +204,34 @@ def handle_publish_db(event, context):
     publish_public_db(entries)
 
     return {"statusCode": 200}
+
+
+@lambda_handler_error_responder
+def handle_save_players(event, context):
+    """
+    Uploads a batch of players to the Cloudflare smartscore-api (Step Functions SaveToDb).
+
+    Args:
+        event (dict): A dictionary containing:
+            - "players" (list): Player data for today.
+            - "date" (str): The date the players are for (attached to each player,
+              since the worker expects the date inside each player object).
+        context (dict): Unused Lambda context.
+
+    Returns:
+        dict: A dictionary containing:
+            - "statusCode" (int): HTTP status code.
+            - "players" (list): Player data, passed through so the UpdateHistory
+              state keeps working on the same payload.
+    """
+
+    players = event.get("players") or []
+    date = event.get("date")
+
+    if players:
+        upload_players(players, date=date)
+
+    return {"statusCode": 200, "players": players}
 
 
 @lambda_handler_error_responder

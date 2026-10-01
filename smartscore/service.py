@@ -15,8 +15,8 @@ from smartscore_info_client.schemas.player import PLAYER_MERGE_EXCLUDED_FIELDS
 from smartscore_info_client.schemas.team import TEAM_MERGE_EXCLUDED_FIELDS
 from smartscore_info_client.utility import exponential_backoff_request
 
-from config import ENV
-from constants import DAYS_TO_KEEP_HISTORIC_DATA, LAMBDA_API_NAME, NUM_EXPECTED_PLAYERS, WEIGHTS
+from cloudflare_client import backfill_scored, delete_game, get_players_for_date, get_unscored_dates
+from constants import DAYS_TO_KEEP_HISTORIC_DATA, NUM_EXPECTED_PLAYERS, WEIGHTS
 from email_utility import send_email
 from feature_flags import NHL_MOCK_FLAG, is_feature_enabled
 from mock_nhl_client import MockNHLClient
@@ -28,7 +28,6 @@ from utility import (
     get_season_pick_pct,
     get_tims_players,
     get_today_db,
-    invoke_lambda,
     save_to_db,
     schedule_run,
     update_historical_data,
@@ -151,12 +150,6 @@ def get_players_from_team(team):
 
 
 def get_min_max():
-    # payload = {
-    #     "method": "GET_MIN_MAX",
-    # }
-    # data = invoke_lambda("Api", payload)
-    # min_max = data.get("body", {})
-
     # hardcoding min_max for now
     min_max = {
         "gpg": {"min": 0.0, "max": 2.0},
@@ -232,9 +225,7 @@ def get_tims(players):
 
 def backfill_dates():
     yesterday = get_date(subtract_days=1)
-    response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATES_NO_SCORED"})
-    body = response.get("body", {})
-    dates_no_scored = json.loads(body.get("dates", "[]"))
+    dates_no_scored = get_unscored_dates()
 
     # remove dates that are in the future (shouldn't happen, except maybe today's date)
     dates_no_scored = [date for date in dates_no_scored if date and date <= yesterday]
@@ -259,23 +250,36 @@ def backfill_dates():
                     )
                     return
             if game.get("gameScheduleState") == "PPD":
-                # Game was postponed, delete all entries
-                invoke_lambda(
-                    function_name=LAMBDA_API_NAME,
-                    payload={
-                        "method": "DELETE_GAME",
-                        "date": date,
-                        "home": game.get("homeTeam", {}).get("abbrev"),
-                        "away": game.get("awayTeam", {}).get("abbrev"),
-                    },
-                    wait=False,
-                )
+                # Game was postponed, delete all entries. Unlike the old
+                # fire-and-forget Lambda invoke, this is a blocking HTTP call, so
+                # failures are caught and logged rather than silently dropped.
+                try:
+                    delete_game(
+                        date,
+                        game.get("homeTeam", {}).get("abbrev"),
+                        game.get("awayTeam", {}).get("abbrev"),
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"Failed to delete postponed game on {date}: {e}")
                 continue
 
-            players.extend(list({goal.get("playerId") for goal in game.get("goals", {})}))
+            # Some goals carry no playerId (e.g. unassisted/empty net); the worker
+            # rejects non-string ids, so drop falsy values before stringifying.
+            players.extend(list({str(goal.get("playerId")) for goal in game.get("goals", {}) if goal.get("playerId")}))
         scorers_dict[date] = players
 
-    response = invoke_lambda(LAMBDA_API_NAME, {"method": "POST_BACKFILL", "data": scorers_dict})
+    # One request per date, so a window of dozens of dates is dozens of calls.
+    # The client retries internally with backoff; run them concurrently to keep
+    # the backfill inside the Lambda timeout.
+    with ThreadPoolExecutor() as executor:
+        futures = {
+            executor.submit(backfill_scored, date, player_ids): date for date, player_ids in scorers_dict.items()
+        }
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Error backfilling scored players for {futures[future]}: {e}")
     return
 
 
@@ -369,9 +373,7 @@ def write_historic_db(picks):
     ]
     logger.info(f"Updating scored column for dates: {dates_no_scored}")
     for date in dates_no_scored:
-        response = invoke_lambda(f"Api-{ENV}", {"method": "GET_DATE", "date": date})
-        body = response.get("body", "[]")
-        players = json.loads(body)
+        players = get_players_for_date(date)
 
         player_table = {player["id"]: player for player in players}
 

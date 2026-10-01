@@ -353,9 +353,12 @@ def test_send_emails_sends_when_feature_flag_enabled(mock_feature_enabled, mock_
 
 
 @patch("service.datetime")
-@patch("service.invoke_lambda")
+@patch("service.backfill_scored")
+@patch("service.get_unscored_dates")
 @patch("service.get_nhl_client")
-def test_backfill_dates_fetches_score_via_client_and_builds_scorers(mock_client, mock_invoke, mock_datetime):
+def test_backfill_dates_fetches_score_via_client_and_builds_scorers(
+    mock_client, mock_get_unscored_dates, mock_backfill_scored, mock_datetime
+):
     """Test backfill_dates drives the NHL client's get_score and reports scorers.
 
     Exercises the refactored ``_get_score`` path (via ``get_nhl_client()``) that
@@ -366,11 +369,8 @@ def test_backfill_dates_fetches_score_via_client_and_builds_scorers(mock_client,
     mock_datetime.datetime.now.return_value = mock_now
     mock_datetime.timedelta = real_datetime.timedelta
 
-    # GET_DATES_NO_SCORED returns a single date to backfill; POST_BACKFILL returns 200.
-    mock_invoke.side_effect = [
-        {"body": {"dates": '["2025-06-11"]'}},  # Api-{ENV} GET_DATES_NO_SCORED
-        {"statusCode": 200},  # LAMBDA_API_NAME POST_BACKFILL
-    ]
+    # The Cloudflare worker reports a single date to backfill.
+    mock_get_unscored_dates.return_value = ["2025-06-11"]
 
     client = mock_client.return_value
     client.get_score.return_value = {
@@ -378,7 +378,8 @@ def test_backfill_dates_fetches_score_via_client_and_builds_scorers(mock_client,
             {
                 "gameScheduleState": "OK",
                 "gameOutcome": {"lastPeriod": 3},
-                "goals": [{"playerId": 100}, {"playerId": 100}, {"playerId": 200}],
+                # The null playerId must be dropped, not stringified to "None".
+                "goals": [{"playerId": 100}, {"playerId": 100}, {"playerId": 200}, {"playerId": None}],
             }
         ]
     }
@@ -388,9 +389,35 @@ def test_backfill_dates_fetches_score_via_client_and_builds_scorers(mock_client,
     # The backfill path must fetch the score through the (mock-selecting) client.
     client.get_score.assert_called_once_with("2025-06-11")
 
-    # POST_BACKFILL receives the deduplicated scorer ids per date.
-    backfill_calls = [c for c in mock_invoke.call_args_list if c.args[1]["method"] == "POST_BACKFILL"]
-    assert len(backfill_calls) == 1
-    reported = backfill_calls[0].args[1]["data"]
+    # One backfill-scored call per date, with deduplicated stringified ids.
+    assert mock_backfill_scored.call_count == 1
+    date, player_ids = mock_backfill_scored.call_args[0]
+    assert date == "2025-06-11"
     # Scorer ids come from a set, so compare ignoring order.
-    assert set(reported["2025-06-11"]) == {100, 200}
+    assert set(player_ids) == {"100", "200"}
+
+
+@patch("service.datetime")
+@patch("service.delete_game")
+@patch("service.get_unscored_dates", return_value=["2025-06-11"])
+@patch("service.get_nhl_client")
+def test_backfill_dates_deletes_postponed_games(mock_client, mock_get_unscored_dates, mock_delete_game, mock_datetime):
+    """A postponed game deletes its entries instead of being scored."""
+    mock_now = datetime(2025, 6, 12, 12, 0, 0, tzinfo=pytz.timezone("America/Toronto"))
+    mock_datetime.datetime.now.return_value = mock_now
+    mock_datetime.timedelta = real_datetime.timedelta
+
+    client = mock_client.return_value
+    client.get_score.return_value = {
+        "games": [
+            {
+                "gameScheduleState": "PPD",
+                "homeTeam": {"abbrev": "TOR"},
+                "awayTeam": {"abbrev": "MTL"},
+            }
+        ]
+    }
+
+    backfill_dates()
+
+    mock_delete_game.assert_called_once_with("2025-06-11", "TOR", "MTL")

@@ -31,6 +31,10 @@ Parameters:
     Type: String
     Default: ""
     Description: PostHog project/personal API key for runtime feature-flag evaluation
+  SmartscoreApiToken:
+    Type: String
+    NoEcho: true
+    Description: Bearer token for the Cloudflare smartscore-api worker (same value as the worker's API_AUTH_TOKEN secret)
 
 Resources:
   # IAM Role for Lambda Execution
@@ -55,10 +59,6 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
-              - Effect: Allow
-                Action:
-                  - lambda:InvokeFunction
-                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
               - Effect: Allow
                 Action:
                   - events:* # Consider restricting this based on your actual requirements
@@ -104,7 +104,7 @@ Resources:
                   - !GetAtt GetInjuriesFunction.Arn
                   - !GetAtt GetGoaliesFunction.Arn
                   - !GetAtt SendEmailsFunction.Arn
-                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Api-${ENV}"
+                  - !GetAtt SavePlayersFunction.Arn
               - Effect: Allow
                 Action:
                   - states:StartExecution
@@ -190,6 +190,7 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
 
   GetPlayersFromTeamFunction:
     Type: AWS::Lambda::Function
@@ -211,6 +212,7 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
 
   MakePredictionsFunction:
     Type: AWS::Lambda::Function
@@ -232,6 +234,7 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
 
   GetTimsFunction:
     Type: AWS::Lambda::Function
@@ -253,6 +256,7 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
 
   PerformBackfillingFunction:
     Type: AWS::Lambda::Function
@@ -261,7 +265,7 @@ Resources:
       Handler: event_handler.handle_backfill
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 30
+      Timeout: 60
       MemorySize: 128
       Environment:
         Variables:
@@ -270,6 +274,7 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -291,6 +296,7 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -312,6 +318,31 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
+
+  # Uploads today's players to the Cloudflare smartscore-api worker, replacing
+  # the legacy Api-${ENV} POST_BATCH Lambda.
+  SavePlayersFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "SavePlayers-${ENV}"
+      Handler: event_handler.handle_save_players
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -333,6 +364,7 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
           BREVO_SMTP_LOGIN: !Ref BrevoSmtpLogin
           BREVO_SMTP_KEY: !Ref BrevoSmtpKey
           BREVO_FROM_EMAIL: !Ref BrevoFromEmail
@@ -358,6 +390,7 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
       Code:
         ZipFile: |
           def lambda_handler(event, context):
@@ -383,6 +416,7 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
 
   GetInjuriesFunction:
     Type: AWS::Lambda::Function
@@ -404,6 +438,7 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
 
   GetGoaliesFunction:
     Type: AWS::Lambda::Function
@@ -425,6 +460,7 @@ Resources:
           SUPABASE_API_KEY: !Ref SupabaseApiKey
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
 
   # IAM Role for EventBridge to invoke Step Function
   EventBridgeInvokeRole:
@@ -510,6 +546,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/CheckCompleted-${ENV}"
+      RetentionInDays: 1
+
+  SavePlayersLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/SavePlayers-${ENV}"
       RetentionInDays: 1
 
   SendEmailsLogGroup:
