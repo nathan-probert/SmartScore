@@ -4,16 +4,15 @@ from event_handler import handle_save_historic_db
 from service import choose_picks, get_date
 
 
-@patch("service.invoke_lambda")
+@patch("service.get_players_for_date", return_value=[])
 @patch("service.update_historical_data")
 @patch("service.get_historical_data")
 def test_handle_save_historic_db_with_players(
-    mock_get_historical_data, mock_update_historical_data, mock_invoke_lambda, players_input, old_entries
+    mock_get_historical_data, mock_update_historical_data, mock_get_players_for_date, players_input, old_entries
 ):
     today = get_date()
     picks = choose_picks(players_input)
     mock_get_historical_data.return_value = old_entries
-    mock_invoke_lambda.return_value = {"body": "[]"}
 
     event = {"players": players_input}
     context = {}
@@ -29,15 +28,14 @@ def test_handle_save_historic_db_with_players(
     assert response == {"statusCode": 200, "players": players_input}
 
 
-@patch("service.invoke_lambda")
+@patch("service.get_players_for_date", return_value=[])
 @patch("service.update_historical_data")
 @patch("service.get_historical_data")
 def test_handle_save_historic_db_with__no_players(
-    mock_get_historical_data, mock_update_historical_data, mock_invoke_lambda, old_entries
+    mock_get_historical_data, mock_update_historical_data, mock_get_players_for_date, old_entries
 ):
     today = get_date()
     mock_get_historical_data.return_value = old_entries
-    mock_invoke_lambda.return_value = {"body": "[]"}
 
     event = {"players": []}
     context = {}
