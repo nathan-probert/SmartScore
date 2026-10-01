@@ -265,7 +265,7 @@ Resources:
       Handler: event_handler.handle_backfill
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 30
+      Timeout: 60
       MemorySize: 128
       Environment:
         Variables:
