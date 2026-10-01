@@ -6,7 +6,11 @@ DRAFTKINGS_NHL_ID = 42133
 DRAFTKINGS_GOAL_SCORER_CATEGORY = 1190
 DRAFTKINGS_PROVIDER_ID = 2
 
-LAMBDA_API_NAME = f"Api-{ENV}"
+SMARTSCORE_API_BASE_URL = (
+    "https://smartscore-api-prod.nathanprobert.workers.dev"
+    if ENV == "prod"
+    else "https://smartscore-api-dev.nathanprobert.workers.dev"
+)
 
 # Expected number of players to choose in a game
 NUM_EXPECTED_PLAYERS = 3
