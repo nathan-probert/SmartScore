@@ -22,7 +22,40 @@ The current method for calculating the probability takes into account a variety 
 - Recorded per skater as `opp_goalie_*` fields (name, team, status, GAA, save %, record) via `handle_get_goalies` between `GetInjuries` and `GetTims`
 - DB: migrations in `supabase/migrations/*.sql` are applied automatically by CI before the Lambda deploy. Each file is scoped with an `__ENV__` table-name placeholder that CI substitutes — PRs with the `deploy` label apply to the `dev` tables, merges to `main` apply to the `prod` tables. psql keeps no migration history, so every file is re-applied on each run and must be idempotent.
 
-> If RotoWire tables endpoints ever change/break (undocumented, embedded via `loadTableRW` in `starting-goalies.php` / `injury-report.php`), use [DailyFaceoff](https://www.dailyfaceoff.com/starting-goalies/) as fallback for both starting goalies (`Confirmed / Likely` + timestamp + source, server-rendered HTML, scrapable with BeautifulSoup) and injuries ([line combos / injury list](https://www.dailyfaceoff.com/teams/)). Note RotoWire team codes differ from NHL API (`MON` vs `MTL`, `LAS` vs `VGK`) so keep the map in sync.
+> If RotoWire tables endpoints ever change/break (undocumented, embedded via `loadTableRW` in `starting-goalies.php` / `injury-report.php`), use [DailyFaceoff](https://www.dailyfaceoff.com/starting-goalies/) as fallback for both starting goalies (`Confirmed / Likely` + timestamp + source, server-rendered HTML, scrapable with BeautifulSoup) and injuries ([line combos / injury list](https://www.dailyfaceoff.com/teams/)). Note RotoWire team codes differ from NHL API (`MON` vs `MTL`, `LAS` vs `VGK`) so keep the map in sync. Its `/_next/data/.../line-combinations.json` endpoint referenced in older notes now returns 404.
+
+## Starting lineups
+
+`smartscore/nhl_lineups.py` retrieves line combinations from two sources. Both are parsed
+deterministically — no LLM extraction — and nothing is persisted yet, so both can be
+adopted independently.
+
+- **Forward lines, defence pairs, goalies, scratches, injuries:** the NHL.com daily
+  projections article (`https://www.nhl.com/news/nhl-lineup-projections-2026-27-season`).
+  The lineups ship inside a JSON-LD `NewsArticle` block, so this reads the
+  `articleBody` JSON field rather than scraping HTML. Units are identified by group
+  size and labelled positionally: `F1`-`F4` (trios), `D1`-`D3` (pairs), `G1`/`G2`.
+  `articleBody` is one flat markdown blob where each game header is appended to the
+  end of the preceding paragraph, so it must be segmented by regex match position —
+  splitting on newlines silently corrupts the result.
+- **Power play units, goalie designation, injuries:** the lineup section of
+  `https://www.rotowire.com/hockey/nhl-lineups.php` (BeautifulSoup over the stable
+  `lineup__*` class names). RotoWire does not publish forward lines publicly, so this
+  is complementary to the NHL.com article, which omits PP units.
+
+Notes:
+
+- `_log_structure` logs how many teams matched the expected 4F/6D/2G shape on every
+  fetch and warns per-team on deviations, so a partial parse is visible instead of silent.
+  Expect occasional "0 goalies" warnings: the article genuinely omits goalies for some teams.
+- These are **projected** lineups, published in the morning; they are not confirmed.
+  `opp_goalie_*` continues to come from the RotoWire goalies table, which carries
+  `Confirmed / Expected`.
+- RotoWire player names are rebuilt from URL slugs and are lossy (`Ukko Pekka
+  Luukkonen` for `Ukko-Pekka Luukkonen`). Use `normalize_player_name` when joining these
+  names against the player list, since the existing joins match on lowercased name.
+- Neither source publishes an archive; only the current slate is available.
+
 
 ## Running this Program
 
