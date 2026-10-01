@@ -62,6 +62,28 @@ failed fetch is distinguishable from a genuine non-match.
 Defence pairings and goalie designations are parsed and available on the source payload
 but not stored per skater, since the picks table is skater-scoped.
 
+### Using these for model training
+
+Verified end-to-end: all four fields reach `Picks-{ENV}` and `Historic-Picks-{ENV}`
+(`save_to_db` / `update_historical_data` pass whole dicts through, and the Mongo
+`POST_BATCH` path copies unknown fields via `[key: string]: unknown` + `filterPlayerFields`).
+
+Constraints worth knowing before training on this:
+
+- **Only 3 picks/date are recorded.** `choose_picks` reduces the pool to
+  `NUM_EXPECTED_PLAYERS` (3) before `write_historic_db`, so `Historic-Picks` holds
+  ~3 rows/day, not the full roster. `Picks-{ENV}` is the only table with every player.
+- **Only 8 days are retained** (`DAYS_TO_KEEP_HISTORIC_DATA`), and rows only earn a
+  `Scored` value once that date is finalised. Treat the historic table as a short
+  rolling window, not a training corpus — pull from `Picks-{ENV}` if you need volume.
+- **The Rust predictor does not read these fields.** `make_predictions_teams` builds
+  `make_predictions_rust.PlayerInfo` from an explicit field list (gpg/hgpg/tgpg/otga/
+  otshga/hppg/home), so lineup data is recorded but not yet a model input.
+  `MakePredictions` also runs *before* `GetLineups` in the state machine.
+- **`lineup_status` distinguishes outcomes.** `PROJECTED` vs `UNKNOWN` lets a training
+  job separate a real negative (not on a forward line) from a failed/empty fetch.
+  Filter on `PROJECTED` rather than treating null as "not a top-9 forward".
+
 ### Notes
 
 - `_log_structure` logs how many teams matched the expected 4F/6D/2G shape on every
