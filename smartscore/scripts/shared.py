@@ -4,11 +4,11 @@ import sys
 
 import pandas as pd
 
-# cloudflare_client pulls in config.py, which builds Supabase clients at import
+# player_archive pulls in config.py, which builds Supabase clients at import
 # time. These scripts already import service (same dependency chain), so the
 # Supabase env vars have always been required to run them locally.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from cloudflare_client import get_all_players  # noqa: E402
+from player_archive import get_all_player_snapshots  # noqa: E402
 
 PATH = "smartscore\\lib"
 DATA_PATH = f"{PATH}\\data.csv"
@@ -18,17 +18,23 @@ FEATURES = ["gpg", "hgpg", "five_gpg", "tgpg", "otga", "hppg", "otshga", "home"]
 
 
 def create_csv():
-    data = get_all_players()
+    # Archive rows key on player_id, not the positional id the Picks tables
+    # assign. The columns below are unchanged, so FEATURES and the `scored`
+    # label still land where they always did.
+    data = get_all_player_snapshots()
+    if not data:
+        raise SystemExit("No player snapshots found; refusing to overwrite the training CSV with an empty one")
 
-    # Get the fields from the last entry (which should have all fields), set missing fields to None
-    all_fields = data[-1].keys()
-    for entry in data:
-        for field in all_fields:
-            entry.setdefault(field, None)
+    # Union of every row's columns, in first-seen order. The archive pages by
+    # date, and later dates carry columns earlier ones predate (the lineup and
+    # opp_goalie_* fields), so a single row is no longer a safe source for the
+    # header. Missing values are written as empty cells, which get_data turns
+    # into NaN and drops, exactly as a missing field used to.
+    all_fields = list(dict.fromkeys(field for entry in data for field in entry))
 
     os.makedirs(PATH, exist_ok=True)
     with open(DATA_PATH, "w+", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=all_fields)
+        writer = csv.DictWriter(f, fieldnames=all_fields, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(data)
 

@@ -44,7 +44,6 @@ generate_smartscore_stack() {
     "BREVO_SMTP_KEY"
     "BREVO_FROM_EMAIL"
     "FEATURE_SEND_EMAILS"
-    "SMARTSCORE_API_TOKEN"
   )
 
   MISSING_VARS=()
@@ -73,7 +72,6 @@ generate_smartscore_stack() {
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
         ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
-        ParameterKey=SmartscoreApiToken,ParameterValue="$SMARTSCORE_API_TOKEN" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -96,7 +94,6 @@ generate_smartscore_stack() {
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
         ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
-        ParameterKey=SmartscoreApiToken,ParameterValue="$SMARTSCORE_API_TOKEN" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."

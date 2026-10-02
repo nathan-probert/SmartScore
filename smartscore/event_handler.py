@@ -3,9 +3,9 @@ from smartscore_info_client.models.team import GameTeam
 from smartscore_info_client.schemas.player import PLAYER_INFO_SCHEMA
 from smartscore_info_client.schemas.team import TEAM_INFO_SCHEMA
 
-from cloudflare_client import upload_players
 from decorators import lambda_handler_error_responder
 from nhl_lineups import get_nhl_com_lineups, get_rotowire_lineups
+from player_archive import save_player_snapshots
 from service import (
     backfill_dates,
     calculate_metrics,
@@ -212,13 +212,16 @@ def handle_publish_db(event, context):
 @lambda_handler_error_responder
 def handle_save_players(event, context):
     """
-    Uploads a batch of players to the Cloudflare smartscore-api (Step Functions SaveToDb).
+    Archives a batch of players to the Supabase Player-Snapshots table
+    (Step Functions SaveToDb).
+
+    Upserts on (date, player_id), so re-running the pipeline for a date
+    refreshes that date's rows in place instead of appending a duplicate roster.
 
     Args:
         event (dict): A dictionary containing:
             - "players" (list): Player data for today.
-            - "date" (str): The date the players are for (attached to each player,
-              since the worker expects the date inside each player object).
+            - "date" (str): The date the players are for, applied to each row.
         context (dict): Unused Lambda context.
 
     Returns:
@@ -232,7 +235,7 @@ def handle_save_players(event, context):
     date = event.get("date")
 
     if players:
-        upload_players(players, date=date)
+        save_player_snapshots(players, date=date)
 
     return {"statusCode": 200, "players": players}
 

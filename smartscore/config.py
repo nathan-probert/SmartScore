@@ -18,15 +18,12 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 # Default client (anon key)
 SUPABASE_CLIENT: Client = create_client(SUPABASE_URL, SUPABASE_API_KEY)
 
-# Admin client (service role key)
-SUPABASE_ADMIN_AUTH_CLIENT: Client = create_client(
+# Service role client. Bypasses RLS, so it can reach tables with no public
+# policies (Player-Snapshots) and call auth RPCs (get_opted_in_emails).
+SUPABASE_ADMIN_CLIENT: Client = create_client(
     SUPABASE_URL,
     SUPABASE_SERVICE_ROLE_KEY,
 )
-
-# Cloudflare smartscore-api auth token (GitHub secret SMARTSCORE_API_TOKEN -> Lambda env var).
-# The value itself is never committed; wire the plumbing and set it in GitHub.
-SMARTSCORE_API_TOKEN = os.environ.get("SMARTSCORE_API_TOKEN")
 
 # Email
 GMAIL_EMAIL = os.environ.get("GMAIL_EMAIL")

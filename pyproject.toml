@@ -36,6 +36,10 @@ dev = [
     "statelint>=2.0.0,<3.0.0",
     "warp-lang>=1.11.0,<2.0.0",
     "pyyaml>=6.0.1,<7.0.0",
+    # Only used by smartscore/scripts/port_mongo_snapshots.py, the one-off
+    # #113 data port. Kept out of the main dependencies so it does not ship in
+    # the Lambda zip (deploy.sh runs `uv export --no-dev`).
+    "pymongo>=4.16.0,<5.0.0",
 ]
 
 [tool.uv]

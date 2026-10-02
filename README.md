@@ -21,6 +21,7 @@ The current method for calculating the probability takes into account a variety 
 - Goalie + skater stats: official NHL API `api-web.nhle.com` (`goalie-stats-leaders/current`, `player/{id}/landing`, `player/{id}/game-log/now`, `club-stats/{team}/now`, `gamecenter/{gameId}/boxscore` with `starter=true` for backfill). `club-stats/{team}/now` is **current season only** and returns no goalies until the team plays a regular-season game, so `opp_goalie_*` stats are legitimately null in preseason — a goalie with no games this season has no current-season stats, and prior-season numbers are deliberately not backfilled
 - Recorded per skater as `opp_goalie_*` fields (name, team, status, GAA, save %, record) via `handle_get_goalies` between `GetInjuries` and `GetTims`
 - DB: migrations in `supabase/migrations/*.sql` are applied automatically by CI before the Lambda deploy. Each file is scoped with an `__ENV__` table-name placeholder that CI substitutes — PRs with the `deploy` label apply to the `dev` tables, merges to `main` apply to the `prod` tables. psql keeps no migration history, so every file is re-applied on each run and must be idempotent.
+- The long-run per-player history lives in `Player-Snapshots-{ENV}`, written by `smartscore/player_archive.py`. It replaced MongoDB and the Cloudflare `smartscore-api` worker that fronted it (#113); see [Using these for model training](#using-these-for-model-training).
 
 > If RotoWire tables endpoints ever change/break (undocumented, embedded via `loadTableRW` in `starting-goalies.php` / `injury-report.php`), use [DailyFaceoff](https://www.dailyfaceoff.com/starting-goalies/) as fallback for both starting goalies (`Confirmed / Likely` + timestamp + source, server-rendered HTML, scrapable with BeautifulSoup) and injuries ([line combos / injury list](https://www.dailyfaceoff.com/teams/)). Note RotoWire team codes differ from NHL API (`MON` vs `MTL`, `LAS` vs `VGK`) so keep the map in sync. Its `/_next/data/.../line-combinations.json` endpoint referenced in older notes now returns 404.
 
@@ -64,35 +65,65 @@ but not stored per skater, since the picks table is skater-scoped.
 
 ### Using these for model training
 
-Training reads **MongoDB**, written by the `SaveToDb` step (`POST_BATCH` to
-`Api-${ENV}` → `upload_players` in `smartscore-api`). The Supabase tables are
-downstream reporting: `Picks-{ENV}` is the current day's full ranked roster, and
+Training reads the Supabase **`Player-Snapshots-{ENV}`** archive, written by the
+`SaveToDb` step (`handle_save_players` → `save_player_snapshots` in
+`smartscore/player_archive.py`). That table replaced MongoDB (#113) and the
+Cloudflare `smartscore-api` worker that fronted it. The other two Supabase tables
+are downstream reporting, not the training set: `Picks-{ENV}` is the current day's
+full ranked roster (wiped and rewritten on every `PublishToDb`), and
 `Historic-Picks-{ENV}` is a ~7-day visual of who we've been picking (only 3 picks
 per date, via `choose_picks`/`NUM_EXPECTED_PLAYERS`).
 
-Good news for the fields: `upload_players.ts` types `PlayerInput` with an index
-signature (`[key: string]: unknown`) and `filterPlayerFields` copies everything
-except `stat`, so lineup fields reach Mongo without an API change. Verified
-end-to-end that all four survive `save_to_db` / `update_historical_data` too.
+Table shape, added by
+`supabase/migrations/20261002_add_player_snapshots_table.sql`:
 
-⚠️ **Known gap: lineups are not present on every Mongo write.** `SaveToDb` is only
-reached from the `first_run` path in the state machine:
+| Field | Meaning |
+|---|---|
+| `date`, `player_id` | Composite **primary key**. `player_id` is the NHL id; it is deliberately *not* the positional `id` the Picks writers assign (`player["id"] = i + 1`), which is a per-request ordinal |
+| `scored` | Nullable `INTEGER`: null = game not graded yet, `0` = no goal, `1` = goal. This is the training label, and the same triple as `Historic-Picks."Scored"` |
+| the four `lineup_*` / `pp_unit` columns | As above, from `20261001_add_lineup_columns.sql` |
+| `home`/`hppg`/`otshga` | Dropped by `save_to_db` and `update_historical_data` because the frontend does not show them, but they are training features (`FEATURES` in `scripts/shared.py`) — Mongo kept them, so this table keeps them |
+
+The primary key is the point of the port. The old Mongo write used `insertMany`
+with no unique constraint, so re-uploading a date appended a second full copy of
+the roster. Here every write is an upsert on `(date, player_id)`, so re-running
+the pipeline for a date refreshes that date's rows in place and
+`get_players_for_date` returns exactly one row per player.
+
+⚠️ **Known gap: lineups are not present on every archive write.** `SaveToDb` is
+only reached from the `first_run` path in the state machine:
 
 ```
 first_run  -> Backfill -> GetPlayers -> MakePredictions -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> SaveToDb
 normal_run -> GetTims -> PublishToDb          # skips GetInjuries/GetGoalies/GetLineups entirely
 ```
 
-`CheckCompletion` routes `normal_run` straight to `GetTims`, so injuries, goalies and
-lineups are all only fetched on the **first** run of the day — and `SaveToDb`
-(Mongo) only runs on that same first run, while `normal_run` goes to `PublishToDb`
-(Supabase `Picks-{ENV}`) instead.
+`CheckCompletion` routes `normal_run` straight to `GetTims`, so injuries, goalies
+and lineups are all only fetched on the **first** run of the day — and `SaveToDb`
+(`Player-Snapshots`) only runs on that same first run, while `normal_run` goes to
+`PublishToDb` (`Picks-{ENV}`) instead.
 
-Practical consequence: Mongo gets a lineup snapshot only on the first run of each
-date. That is the row training sees, so it is populated — but lineups are *not*
-refreshed later in the day as the RotoWire page updates closer to puck drop. If
-training wants fresher or intraday-refreshed lineups, the fix is to run `GetLineups`
-(and Mongo `POST_BATCH`) on `normal_run` too, or to re-order the state machine.
+Practical consequence: the archive gets a lineup snapshot only on the first run of
+each date. That is the row training sees, so it is populated — but lineups are
+*not* refreshed later in the day as the RotoWire page updates closer to puck drop.
+If training wants fresher or intraday-refreshed lineups, the fix is to run
+`GetLineups` (and the archive write) on `normal_run` too, or to re-order the state
+machine.
+
+Two more caveats that came out of the port:
+
+- **`save_player_snapshots` deliberately omits `scored`.** PostgREST's
+  merge-duplicates resolution builds `DO UPDATE SET` from the union of keys in the
+  batch, so including it would reset the column to null on every re-upload and
+  throw away the result of `backfill_scored`. A brand-new row starts null and
+  `backfill_scored` fills it in once the game is final.
+- **The postponed-game delete matches `team_name`, not the abbreviation.**
+  `team_abbr` is stripped from the pipeline payload
+  (`TEAM_MERGE_EXCLUDED_FIELDS`), so the retired worker's `DELETE /game` — which
+  filtered on `team_abbr` — never matched anything and postponed players sat in
+  the archive ungraded forever. The NHL score feed reports only abbreviations, so
+  `backfill_dates` translates them through that date's schedule
+  (`resolve_team_names`) before deleting.
 
 Other constraints worth knowing:
 
@@ -103,6 +134,39 @@ Other constraints worth knowing:
 - **`lineup_status` distinguishes outcomes.** `PROJECTED` vs `UNKNOWN` lets a training
   job separate a real negative (not on a forward line) from a failed/empty fetch.
   Filter on `PROJECTED` rather than treating null as "not a top-9 forward".
+- **Access is service-role only.** `Player-Snapshots` has RLS enabled with no
+  policies, and `player_archive.py` uses `SUPABASE_ADMIN_CLIENT`. The anon key the
+  frontend holds reads nothing from it. The `Picks`/`Historic-Picks` tables predate
+  this and still have no RLS at all.
+
+### Porting the historic data from MongoDB
+
+The MongoDB archive was copied into `Player-Snapshots-{ENV}` by
+`smartscore/scripts/port_mongo_snapshots.py`, a one-off script that is **not** run
+by CI or the deploy — an operator invokes it, and it is safe to re-run because it
+upserts on the `(date, player_id)` primary key.
+
+Mongo's `insertMany` never deleted, so the collection almost certainly holds
+several copies of the same roster per date. The script collapses them with a
+deterministic rule: prefer the copy whose `scored` is set (only a graded copy
+carries the label), then the most recently written (the creation timestamp in the
+leading bytes of the Mongo `ObjectId`), then the raw `_id` as a final tie-break.
+It reports how many documents were scanned and how many duplicates were collapsed.
+
+Always dry-run first — this writes nothing and prints the counts and a sample:
+
+```bash
+ENV=prod MONGODB_URI=... uv run python smartscore/scripts/port_mongo_snapshots.py --dry-run
+ENV=prod MONGODB_URI=... uv run python smartscore/scripts/port_mongo_snapshots.py
+```
+
+Credentials come from the environment only: `MONGODB_URI` (the same secret the
+worker read), `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (read by `config.py`,
+which also picks up a local gitignored `.env`), and optionally `ENV` (`dev`/
+`prod`, which selects the Mongo collection `SmartScoreDev`/`SmartScore` and the
+matching Supabase table) and `MONGODB_DATABASE` (defaults to `players`, which is
+what the worker hardcoded). `--date YYYY-MM-DD` re-runs a single date.
+`pymongo` is a dev-only dependency, so it stays out of the Lambda zip.
 
 ### Notes
 
@@ -159,7 +223,7 @@ The deployment pipeline expects the following GitHub repository secrets to be co
 - `FEATURE_SEND_EMAILS`: Feature flag that enables or disables sending emails at runtime.
 - `SUPABASE_API_KEY`: Supabase anon/public API key used by the default client.
 - `SUPABASE_DB_URL`: Postgres connection string for the Supabase project, used by CI to apply `supabase/migrations/*.sql`.
-- `SUPABASE_SERVICE_ROLE_KEY`: Supabase service-role key used for privileged server-side operations.
+- `SUPABASE_SERVICE_ROLE_KEY`: Supabase service-role key used for privileged server-side operations. Also required locally to run `smartscore/scripts/port_mongo_snapshots.py`, alongside `MONGODB_URI`.
 - `SUPABASE_URL`: Base URL for the Supabase project used by application clients.
 
 ## Feature Flags

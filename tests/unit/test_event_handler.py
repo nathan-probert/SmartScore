@@ -11,24 +11,24 @@ from event_handler import (
 )
 
 
-@patch("event_handler.upload_players")
-def test_handle_save_players_uploads_with_date(mock_upload):
-    """Players are uploaded to the worker with the run's date."""
+@patch("event_handler.save_player_snapshots")
+def test_handle_save_players_archives_with_date(mock_save):
+    """Players are archived under the run's date."""
     players = [{"id": 1, "name": "Player 1", "tims": 1}]
 
     result = handle_save_players({"players": players, "date": "2026-04-15"}, {})
 
     assert result == {"statusCode": 200, "players": players}
-    mock_upload.assert_called_once_with(players, date="2026-04-15")
+    mock_save.assert_called_once_with(players, date="2026-04-15")
 
 
-@patch("event_handler.upload_players")
-def test_handle_save_players_skips_upload_when_empty(mock_upload):
-    """An empty player list must not hit the worker (it rejects empty arrays)."""
+@patch("event_handler.save_player_snapshots")
+def test_handle_save_players_skips_upload_when_empty(mock_save):
+    """An empty player list must not hit Supabase (an empty upsert is a no-op error)."""
     result = handle_save_players({"players": [], "date": "2026-04-15"}, {})
 
     assert result == {"statusCode": 200, "players": []}
-    mock_upload.assert_not_called()
+    mock_save.assert_not_called()
 
 
 @patch("event_handler.check_db_for_date")
