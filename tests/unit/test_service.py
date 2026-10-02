@@ -16,7 +16,9 @@ from service import (
     get_players_from_team,
     merge_injury_data,
     merge_players_and_teams,
+    resolve_team_names,
     send_emails,
+    write_historic_db,
 )
 
 
@@ -369,7 +371,7 @@ def test_backfill_dates_fetches_score_via_client_and_builds_scorers(
     mock_datetime.datetime.now.return_value = mock_now
     mock_datetime.timedelta = real_datetime.timedelta
 
-    # The Cloudflare worker reports a single date to backfill.
+    # The archive reports a single date to backfill.
     mock_get_unscored_dates.return_value = ["2025-06-11"]
 
     client = mock_client.return_value
@@ -389,20 +391,26 @@ def test_backfill_dates_fetches_score_via_client_and_builds_scorers(
     # The backfill path must fetch the score through the (mock-selecting) client.
     client.get_score.assert_called_once_with("2025-06-11")
 
-    # One backfill-scored call per date, with deduplicated stringified ids.
+    # One backfill-scored call per date, with deduplicated raw ids. They stay
+    # unstringified: backfill_scored coerces to int and drops non-numerics.
     assert mock_backfill_scored.call_count == 1
     date, player_ids = mock_backfill_scored.call_args[0]
     assert date == "2025-06-11"
     # Scorer ids come from a set, so compare ignoring order.
-    assert set(player_ids) == {"100", "200"}
+    assert set(player_ids) == {100, 200}
 
 
 @patch("service.datetime")
-@patch("service.delete_game")
+@patch("service.delete_game_snapshots")
 @patch("service.get_unscored_dates", return_value=["2025-06-11"])
 @patch("service.get_nhl_client")
-def test_backfill_dates_deletes_postponed_games(mock_client, mock_get_unscored_dates, mock_delete_game, mock_datetime):
-    """A postponed game deletes its entries instead of being scored."""
+def test_backfill_dates_deletes_postponed_games(mock_client, mock_get_unscored_dates, mock_delete, mock_datetime):
+    """A postponed game deletes its entries instead of being scored.
+
+    The score feed reports abbreviations but the archive is keyed on the
+    schedule's place name, so the delete has to be passed names - the bug that
+    made the worker's PPD delete a silent no-op.
+    """
     mock_now = datetime(2025, 6, 12, 12, 0, 0, tzinfo=pytz.timezone("America/Toronto"))
     mock_datetime.datetime.now.return_value = mock_now
     mock_datetime.timedelta = real_datetime.timedelta
@@ -417,7 +425,105 @@ def test_backfill_dates_deletes_postponed_games(mock_client, mock_get_unscored_d
             }
         ]
     }
+    client.get_schedule.return_value = {
+        "gameWeek": [
+            {
+                "games": [
+                    {
+                        "homeTeam": {"abbrev": "TOR", "placeName": {"default": "Toronto"}},
+                        "awayTeam": {"abbrev": "MTL", "placeName": {"default": "Montreal"}},
+                    }
+                ]
+            }
+        ]
+    }
 
     backfill_dates()
 
-    mock_delete_game.assert_called_once_with("2025-06-11", "TOR", "MTL")
+    client.get_schedule.assert_called_once_with("2025-06-11")
+    mock_delete.assert_called_once_with("2025-06-11", ["Toronto", "Montreal"])
+
+
+def _schedule(*games):
+    return {"gameWeek": [{"games": list(games)}]}
+
+
+def test_resolve_team_names_maps_abbreviations_to_place_names():
+    """Snapshots are keyed on the schedule place name, not the abbreviation."""
+    data = _schedule(
+        {
+            "homeTeam": {"abbrev": "TOR", "placeName": {"default": "Toronto"}},
+            "awayTeam": {"abbrev": "MTL", "placeName": {"default": "Montreal"}},
+        }
+    )
+
+    assert resolve_team_names(data, ["TOR", "MTL"]) == ["Toronto", "Montreal"]
+
+
+def test_resolve_team_names_falls_back_to_the_common_name():
+    """placeName is a single space for some teams; get_teams falls back the same way."""
+    data = _schedule(
+        {
+            "homeTeam": {"abbrev": "NSH", "placeName": {"default": " "}, "commonName": {"default": "Predators"}},
+        }
+    )
+
+    assert resolve_team_names(data, ["NSH"]) == ["Predators"]
+
+
+def test_resolve_team_names_drops_unknown_abbreviations():
+    """A wrong name would delete another team's rows, so an unknown one is skipped."""
+    assert resolve_team_names(_schedule(), ["XYZ"]) == []
+    assert resolve_team_names(_schedule(), [None, ""]) == []
+
+
+@patch("service.datetime")
+@patch("service.get_players_for_date")
+@patch("service.update_historical_data")
+@patch("service.get_historical_data")
+def test_write_historic_db_leaves_an_ungraded_pick_alone(
+    mock_get_historical_data, mock_update_historical_data, mock_get_players_for_date, mock_datetime
+):
+    """A null `scored` means "not graded yet" and must not clobber the pick.
+
+    The archive's `scored` is nullable; int(None) would raise, and writing a 0
+    would relabel a player who has simply not been graded as a negative example.
+    """
+    mock_now = datetime(2026, 4, 15, 12, 0, 0, tzinfo=pytz.timezone("America/Toronto"))
+    mock_datetime.datetime.now.return_value = mock_now
+    mock_datetime.timedelta = real_datetime.timedelta
+
+    mock_get_historical_data.return_value = [
+        {"date": "2026-04-14", "player_id": 1, "name": "A", "Scored": None},
+        {"date": "2026-04-14", "player_id": 2, "name": "B", "Scored": None},
+    ]
+    # Rows key on player_id, and only player 1's game has been graded.
+    mock_get_players_for_date.return_value = [
+        {"date": "2026-04-14", "player_id": 1, "scored": 1},
+        {"date": "2026-04-14", "player_id": 2, "scored": None},
+    ]
+
+    write_historic_db([])
+
+    written = mock_update_historical_data.call_args[0][0]
+    assert [entry["Scored"] for entry in written] == [1, None]
+
+
+@patch("service.datetime")
+@patch("service.get_players_for_date", return_value=[])
+@patch("service.update_historical_data")
+@patch("service.get_historical_data")
+def test_write_historic_db_ignores_picks_missing_from_the_archive(
+    mock_get_historical_data, mock_update_historical_data, mock_get_players_for_date, mock_datetime
+):
+    """A pick with no matching snapshot row is left alone rather than invented."""
+    mock_now = datetime(2026, 4, 15, 12, 0, 0, tzinfo=pytz.timezone("America/Toronto"))
+    mock_datetime.datetime.now.return_value = mock_now
+    mock_datetime.timedelta = real_datetime.timedelta
+
+    mock_get_historical_data.return_value = [{"date": "2026-04-14", "player_id": 99, "name": "A", "Scored": None}]
+
+    write_historic_db([])
+
+    written = mock_update_historical_data.call_args[0][0]
+    assert written[0]["Scored"] is None
