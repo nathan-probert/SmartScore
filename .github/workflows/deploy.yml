@@ -277,10 +277,6 @@ jobs:
           echo "BREVO_FROM_EMAIL=${{ secrets.BREVO_FROM_EMAIL }}" >> $GITHUB_ENV
           echo "FEATURE_SEND_EMAILS=${{ secrets.FEATURE_SEND_EMAILS }}" >> $GITHUB_ENV
           echo "POSTHOG_FEATURE_FLAG_KEY=${{ secrets.POSTHOG_FEATURE_FLAG_KEY }}" >> $GITHUB_ENV
-          # Bearer token for the Cloudflare smartscore-api worker. Must match the
-          # worker's own secret, which is named API_AUTH_TOKEN in
-          # smartscore-api/wrangler.toml (set via `wrangler secret put`).
-          echo "SMARTSCORE_API_TOKEN=${{ secrets.SMARTSCORE_API_TOKEN }}" >> $GITHUB_ENV
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v5
