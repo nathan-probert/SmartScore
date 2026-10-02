@@ -64,18 +64,38 @@ but not stored per skater, since the picks table is skater-scoped.
 
 ### Using these for model training
 
-Verified end-to-end: all four fields reach `Picks-{ENV}` and `Historic-Picks-{ENV}`
-(`save_to_db` / `update_historical_data` pass whole dicts through, and the Mongo
-`POST_BATCH` path copies unknown fields via `[key: string]: unknown` + `filterPlayerFields`).
+Training reads **MongoDB**, written by the `SaveToDb` step (`POST_BATCH` to
+`Api-${ENV}` → `upload_players` in `smartscore-api`). The Supabase tables are
+downstream reporting: `Picks-{ENV}` is the current day's full ranked roster, and
+`Historic-Picks-{ENV}` is a ~7-day visual of who we've been picking (only 3 picks
+per date, via `choose_picks`/`NUM_EXPECTED_PLAYERS`).
 
-Constraints worth knowing before training on this:
+Good news for the fields: `upload_players.ts` types `PlayerInput` with an index
+signature (`[key: string]: unknown`) and `filterPlayerFields` copies everything
+except `stat`, so lineup fields reach Mongo without an API change. Verified
+end-to-end that all four survive `save_to_db` / `update_historical_data` too.
 
-- **Only 3 picks/date are recorded.** `choose_picks` reduces the pool to
-  `NUM_EXPECTED_PLAYERS` (3) before `write_historic_db`, so `Historic-Picks` holds
-  ~3 rows/day, not the full roster. `Picks-{ENV}` is the only table with every player.
-- **Only 8 days are retained** (`DAYS_TO_KEEP_HISTORIC_DATA`), and rows only earn a
-  `Scored` value once that date is finalised. Treat the historic table as a short
-  rolling window, not a training corpus — pull from `Picks-{ENV}` if you need volume.
+⚠️ **Known gap: lineups are not present on every Mongo write.** `SaveToDb` is only
+reached from the `first_run` path in the state machine:
+
+```
+first_run  -> Backfill -> GetPlayers -> MakePredictions -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> SaveToDb
+normal_run -> GetTims -> PublishToDb          # skips GetInjuries/GetGoalies/GetLineups entirely
+```
+
+`CheckCompletion` routes `normal_run` straight to `GetTims`, so injuries, goalies and
+lineups are all only fetched on the **first** run of the day — and `SaveToDb`
+(Mongo) only runs on that same first run, while `normal_run` goes to `PublishToDb`
+(Supabase `Picks-{ENV}`) instead.
+
+Practical consequence: Mongo gets a lineup snapshot only on the first run of each
+date. That is the row training sees, so it is populated — but lineups are *not*
+refreshed later in the day as the RotoWire page updates closer to puck drop. If
+training wants fresher or intraday-refreshed lineups, the fix is to run `GetLineups`
+(and Mongo `POST_BATCH`) on `normal_run` too, or to re-order the state machine.
+
+Other constraints worth knowing:
+
 - **The Rust predictor does not read these fields.** `make_predictions_teams` builds
   `make_predictions_rust.PlayerInfo` from an explicit field list (gpg/hgpg/tgpg/otga/
   otshga/hppg/home), so lineup data is recorded but not yet a model input.
