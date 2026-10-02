@@ -22,7 +22,108 @@ The current method for calculating the probability takes into account a variety 
 - Recorded per skater as `opp_goalie_*` fields (name, team, status, GAA, save %, record) via `handle_get_goalies` between `GetInjuries` and `GetTims`
 - DB: migrations in `supabase/migrations/*.sql` are applied automatically by CI before the Lambda deploy. Each file is scoped with an `__ENV__` table-name placeholder that CI substitutes — PRs with the `deploy` label apply to the `dev` tables, merges to `main` apply to the `prod` tables. psql keeps no migration history, so every file is re-applied on each run and must be idempotent.
 
-> If RotoWire tables endpoints ever change/break (undocumented, embedded via `loadTableRW` in `starting-goalies.php` / `injury-report.php`), use [DailyFaceoff](https://www.dailyfaceoff.com/starting-goalies/) as fallback for both starting goalies (`Confirmed / Likely` + timestamp + source, server-rendered HTML, scrapable with BeautifulSoup) and injuries ([line combos / injury list](https://www.dailyfaceoff.com/teams/)). Note RotoWire team codes differ from NHL API (`MON` vs `MTL`, `LAS` vs `VGK`) so keep the map in sync.
+> If RotoWire tables endpoints ever change/break (undocumented, embedded via `loadTableRW` in `starting-goalies.php` / `injury-report.php`), use [DailyFaceoff](https://www.dailyfaceoff.com/starting-goalies/) as fallback for both starting goalies (`Confirmed / Likely` + timestamp + source, server-rendered HTML, scrapable with BeautifulSoup) and injuries ([line combos / injury list](https://www.dailyfaceoff.com/teams/)). Note RotoWire team codes differ from NHL API (`MON` vs `MTL`, `LAS` vs `VGK`) so keep the map in sync. Its `/_next/data/.../line-combinations.json` endpoint referenced in older notes now returns 404.
+
+## Starting lineups
+
+`smartscore/nhl_lineups.py` retrieves line combinations from two sources, and
+`handle_get_lineups` merges them into the player list. Both sources are parsed
+deterministically — no LLM extraction.
+
+- **Forward lines, defence pairs, goalies, scratches, injuries:** the NHL.com daily
+  projections article (`https://www.nhl.com/news/nhl-lineup-projections-2026-27-season`).
+  The lineups ship inside a JSON-LD `NewsArticle` block, so this reads the
+  `articleBody` JSON field rather than scraping HTML. Units are identified by group
+  size and labelled positionally: `F1`-`F4` (trios), `D1`-`D3` (pairs), `G1`/`G2`.
+  `articleBody` is one flat markdown blob where each game header is appended to the
+  end of the preceding paragraph, so it must be segmented by regex match position —
+  splitting on newlines silently corrupts the result.
+- **Power play units, goalie designation, injuries:** the lineup section of
+  `https://www.rotowire.com/hockey/nhl-lineups.php` (BeautifulSoup over the stable
+  `lineup__*` class names). RotoWire does not publish forward lines publicly, so this
+  is complementary to the NHL.com article, which omits PP units.
+
+### Persisted fields
+
+`handle_get_lineups` writes four columns, added by
+`supabase/migrations/20261001_add_lineup_columns.sql`:
+
+| Field | Meaning |
+|---|---|
+| `lineup_unit` | Forward line only (`F1`-`F4`) |
+| `lineup_position_group` | `F` / `D` / `G`, whichever unit the player sits in |
+| `pp_unit` | `POWER PLAY #1` / `POWER PLAY #2`, or null |
+| `lineup_status` | `PROJECTED` when a forward line matched, else `UNKNOWN` |
+
+A forward can carry both `lineup_unit` and `pp_unit` (typically ~117 players per slate).
+`lineup_status` is deliberately `UNKNOWN` rather than absent on a miss, so an empty or
+failed fetch is distinguishable from a genuine non-match.
+
+Defence pairings and goalie designations are parsed and available on the source payload
+but not stored per skater, since the picks table is skater-scoped.
+
+### Using these for model training
+
+Training reads **MongoDB**, written by the `SaveToDb` step (`POST_BATCH` to
+`Api-${ENV}` → `upload_players` in `smartscore-api`). The Supabase tables are
+downstream reporting: `Picks-{ENV}` is the current day's full ranked roster, and
+`Historic-Picks-{ENV}` is a ~7-day visual of who we've been picking (only 3 picks
+per date, via `choose_picks`/`NUM_EXPECTED_PLAYERS`).
+
+Good news for the fields: `upload_players.ts` types `PlayerInput` with an index
+signature (`[key: string]: unknown`) and `filterPlayerFields` copies everything
+except `stat`, so lineup fields reach Mongo without an API change. Verified
+end-to-end that all four survive `save_to_db` / `update_historical_data` too.
+
+⚠️ **Known gap: lineups are not present on every Mongo write.** `SaveToDb` is only
+reached from the `first_run` path in the state machine:
+
+```
+first_run  -> Backfill -> GetPlayers -> MakePredictions -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> SaveToDb
+normal_run -> GetTims -> PublishToDb          # skips GetInjuries/GetGoalies/GetLineups entirely
+```
+
+`CheckCompletion` routes `normal_run` straight to `GetTims`, so injuries, goalies and
+lineups are all only fetched on the **first** run of the day — and `SaveToDb`
+(Mongo) only runs on that same first run, while `normal_run` goes to `PublishToDb`
+(Supabase `Picks-{ENV}`) instead.
+
+Practical consequence: Mongo gets a lineup snapshot only on the first run of each
+date. That is the row training sees, so it is populated — but lineups are *not*
+refreshed later in the day as the RotoWire page updates closer to puck drop. If
+training wants fresher or intraday-refreshed lineups, the fix is to run `GetLineups`
+(and Mongo `POST_BATCH`) on `normal_run` too, or to re-order the state machine.
+
+Other constraints worth knowing:
+
+- **The Rust predictor does not read these fields.** `make_predictions_teams` builds
+  `make_predictions_rust.PlayerInfo` from an explicit field list (gpg/hgpg/tgpg/otga/
+  otshga/hppg/home), so lineup data is recorded but not yet a model input.
+  `MakePredictions` also runs *before* `GetLineups` in the state machine.
+- **`lineup_status` distinguishes outcomes.** `PROJECTED` vs `UNKNOWN` lets a training
+  job separate a real negative (not on a forward line) from a failed/empty fetch.
+  Filter on `PROJECTED` rather than treating null as "not a top-9 forward".
+
+### Notes
+
+- `_log_structure` logs how many teams matched the expected 4F/6D/2G shape on every
+  fetch and warns per-team on deviations, so a partial parse is visible instead of silent.
+  Expect occasional "0 goalies" warnings: the article genuinely omits goalies for some teams.
+- `merge_lineup_data` logs the match rate and warns below full coverage. It also warns
+  when the article lists one player on two lines at once (seen live with Elias Pettersson
+  on both F1 and F2) — the name-keyed lookup can only keep one, so this says so rather
+  than looking like a clean parse.
+- **The article double-encodes some characters.** `Ryan O’Reilly` arrives as UTF-8 bytes
+  read back as latin-1, which transliterates to `OaReilly` and can never match. `_repair_mojibake`
+  undoes this before transliteration; keep it ahead of `unidecode` in any name handling.
+- These are **projected** lineups, published in the morning; they are not confirmed.
+  `opp_goalie_*` continues to come from the RotoWire goalies table, which carries
+  `Confirmed / Expected`.
+- Joins use `normalize_player_name` (folds hyphens, apostrophes, accents and mojibake)
+  because the existing joins match on name, not id.
+- Neither source publishes an archive; only the current slate is available.
+
+
 
 ## Running this Program
 

@@ -5,6 +5,7 @@ from smartscore_info_client.schemas.team import TEAM_INFO_SCHEMA
 
 from cloudflare_client import upload_players
 from decorators import lambda_handler_error_responder
+from nhl_lineups import get_nhl_com_lineups, get_rotowire_lineups
 from service import (
     backfill_dates,
     calculate_metrics,
@@ -21,8 +22,10 @@ from service import (
     get_tims,
     get_todays_schedule,
     make_predictions_teams,
+    mark_lineups_unknown,
     merge_goalie_data,
     merge_injury_data,
+    merge_lineup_data,
     merge_players_and_teams,
     publish_public_db,
     resolve_season_id,
@@ -314,6 +317,61 @@ def handle_get_goalies(event, context):
 
     starters = enrich_starting_goalies()
     merged_info = merge_goalie_data(players, starters, schedule_data)
+
+    return {
+        "statusCode": 200,
+        "players": merged_info,
+    }
+
+
+@lambda_handler_error_responder
+def handle_get_lineups(event, context):
+    """
+    Fetch projected starting lineups and merge them into each skater.
+
+    Forward lines and defence pairs come from the NHL.com daily projections
+    article; power play units come from the RotoWire lineups page. Both sources
+    are optional here: if either fails the other still contributes, and if both
+    fail the players are returned with lineup_status UNKNOWN rather than failing
+    the pipeline.
+
+    Args:
+        event (dict): A dictionary containing player data.
+        context (dict): Unused Lambda context.
+
+    Returns:
+        dict: A dictionary containing player data with lineup fields.
+    """
+    players = event.get("players", [])
+    if not players:
+        return {"statusCode": 200, "players": players}
+
+    # Each source is fetched independently so one being down still lets the other
+    # contribute. Any unexpected failure here degrades to lineup_status UNKNOWN
+    # rather than failing the whole pipeline step, which would block the picks.
+    try:
+        nhl_games = get_nhl_com_lineups()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error fetching NHL.com lineups: {e}")
+        nhl_games = []
+
+    try:
+        rotowire_games = get_rotowire_lineups()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error fetching RotoWire lineups: {e}")
+        rotowire_games = []
+
+    if not nhl_games and not rotowire_games:
+        logger.error("Both lineup sources returned no games; skipping lineup merge")
+
+    try:
+        merged_info = merge_lineup_data(players, nhl_games, rotowire_games)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error merging lineup data: {e}")
+        return {
+            "statusCode": 200,
+            "players": mark_lineups_unknown(players),
+        }
 
     return {
         "statusCode": 200,

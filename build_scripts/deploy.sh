@@ -28,6 +28,7 @@ LAMBDA_FUNCTIONS=(
   "UpdateHistory-$ENV"
   "GetInjuries-$ENV"
   "GetGoalies-$ENV"
+  "GetLineups-$ENV"
   "SendEmails-$ENV"
 )
 

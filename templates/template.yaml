@@ -103,6 +103,7 @@ Resources:
                   - !GetAtt UpdateHistoryFunction.Arn
                   - !GetAtt GetInjuriesFunction.Arn
                   - !GetAtt GetGoaliesFunction.Arn
+                  - !GetAtt GetLineupsFunction.Arn
                   - !GetAtt SendEmailsFunction.Arn
                   - !GetAtt SavePlayersFunction.Arn
               - Effect: Allow
@@ -447,6 +448,30 @@ Resources:
       Handler: event_handler.handle_get_goalies
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
+      Timeout: 120
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          SMARTSCORE_API_TOKEN: !Ref SmartscoreApiToken
+
+  GetLineupsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "GetLineups-${ENV}"
+      Handler: event_handler.handle_get_lineups
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      # Two outbound HTTP fetches with retries, so allow headroom over the goalies
+      # step which does one.
       Timeout: 120
       MemorySize: 256
       Code:
