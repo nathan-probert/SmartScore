@@ -2,8 +2,10 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from event_handler import handle_get_lineups
-from service import merge_lineup_data
+from service import mark_lineups_unknown, merge_lineup_data
 
 
 def _nhl_games():
@@ -272,3 +274,96 @@ def test_handle_get_lineups_skips_fetch_when_no_players(mock_rotowire, mock_nhl)
     assert result == {"statusCode": 200, "players": []}
     mock_nhl.assert_not_called()
     mock_rotowire.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "nhl,rotowire",
+    [
+        (Exception("nhl down"), Exception("rotowire down")),
+        (Exception("nhl down"), []),
+        ([], Exception("rotowire down")),
+        ([], []),
+    ],
+)
+def test_handle_get_lineups_survives_source_failures(nhl, rotowire):
+    """A lineup outage must never fail the pipeline step.
+
+    lambda_handler_error_responder re-raises, so an escaping exception would fail
+    the state machine and block the day's picks.
+    """
+    with (
+        patch("event_handler.get_nhl_com_lineups", side_effect=nhl),
+        patch("event_handler.get_rotowire_lineups", side_effect=rotowire),
+    ):
+        result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+
+    assert result["statusCode"] == 200
+    assert result["players"][0]["lineup_status"] == "UNKNOWN"
+
+
+@patch("event_handler.merge_lineup_data", side_effect=Exception("bad payload"))
+@patch("event_handler.get_rotowire_lineups", return_value=[])
+@patch("event_handler.get_nhl_com_lineups", return_value=[])
+def test_handle_get_lineups_survives_merge_failure(mock_nhl, mock_rotowire, mock_merge):
+    """A malformed source payload degrades to UNKNOWN rows, not a failed step."""
+    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+
+    assert result["statusCode"] == 200
+    assert result["players"][0] == {
+        "name": "Owen Tippett",
+        "team_name": "Flyers",
+        "lineup_unit": None,
+        "lineup_position_group": None,
+        "pp_unit": None,
+        "lineup_status": "UNKNOWN",
+    }
+
+
+@pytest.mark.parametrize(
+    "nhl,rotowire",
+    [
+        ([{"teams": "not-a-list"}], []),
+        ([], [{"teams": "not-a-list"}]),
+        ([{"teams": [{"name": "", "units": "bad"}]}], []),
+        ([None], [None]),
+        ("garbage", 42),
+        ([{"teams": [{"name": "Flyers", "units": [None, {"players": [None]}]}]}], []),
+    ],
+)
+def test_merge_survives_malformed_source_payloads(nhl, rotowire):
+    """Source payloads are external data; a shape change must not raise."""
+    result = merge_lineup_data([{"name": "Owen Tippett", "team_name": "Flyers"}], nhl, rotowire)
+
+    assert result[0]["lineup_status"] == "UNKNOWN"
+
+
+def test_merge_ignores_non_string_team_and_unit_names():
+    players = [{"name": "Owen Tippett", "team_name": "Flyers"}]
+    nhl = [
+        {
+            "teams": [
+                {
+                    "name": "Flyers",
+                    "units": [{"label": "F1", "players": ["Owen Tippett", "Trevor Zegras", "Porter Martone"]}],
+                }
+            ]
+        }
+    ]
+
+    result = merge_lineup_data(players, nhl, [])
+
+    assert result[0]["lineup_unit"] == "F1"
+
+
+def test_mark_lineups_unknown_preserves_other_fields():
+    players = [{"name": "Owen Tippett", "injury_status": "HEALTHY", "tims": 1}]
+
+    result = mark_lineups_unknown(players)
+
+    assert result[0]["injury_status"] == "HEALTHY"
+    assert result[0]["tims"] == 1
+    assert result[0]["lineup_status"] == "UNKNOWN"
+
+
+def test_mark_lineups_unknown_empty():
+    assert mark_lineups_unknown([]) == []

@@ -763,6 +763,25 @@ def merge_goalie_data(players: List[Dict], starters: List[Dict], schedule_data: 
     return players
 
 
+def _iter_teams(games: List[Dict]) -> List[Dict]:
+    """Yield team dicts from a list of games, skipping anything malformed.
+
+    Source payloads are external data, so a shape change should degrade to fewer
+    matched players rather than raise and take down the pipeline step.
+    """
+    teams = []
+    if not isinstance(games, list):
+        return teams
+    for game in games:
+        if not isinstance(game, dict):
+            continue
+        game_teams = game.get("teams")
+        if not isinstance(game_teams, list):
+            continue
+        teams.extend(team for team in game_teams if isinstance(team, dict))
+    return teams
+
+
 def _build_lineup_lookup(nhl_games: List[Dict], rotowire_games: List[Dict]) -> Dict[str, Dict[str, Dict]]:
     """
     Build ``team name -> {normalized player name: unit info}`` from both sources.
@@ -804,25 +823,43 @@ def _build_lineup_lookup(nhl_games: List[Dict], rotowire_games: List[Dict]) -> D
         if key:
             team_entry(team_name).setdefault(key, {})["pp_unit"] = label
 
-    for game in nhl_games or []:
-        for team in game.get("teams", []):
-            team_name = team.get("name", "")
-            if not team_name:
+    for team in _iter_teams(nhl_games):
+        team_name = team.get("name") or ""
+        if not team_name:
+            continue
+        for unit in team.get("units") or []:
+            if not isinstance(unit, dict):
                 continue
-            for unit in team.get("units", []):
-                for player_name in unit.get("players", []):
-                    assign_unit(team_name, player_name, unit.get("label", ""))
+            for player_name in unit.get("players") or []:
+                assign_unit(team_name, player_name, unit.get("label") or "")
 
-    for game in rotowire_games or []:
-        for team in game.get("teams", []):
-            team_name = team.get("name", "")
-            if not team_name:
+    for team in _iter_teams(rotowire_games):
+        team_name = team.get("name") or ""
+        if not team_name:
+            continue
+        for unit in team.get("pp_units") or []:
+            if not isinstance(unit, dict):
                 continue
-            for unit in team.get("pp_units", []):
-                for player in unit.get("players", []):
-                    assign_pp_unit(team_name, player.get("name", ""), unit.get("label", ""))
+            for player in unit.get("players") or []:
+                if isinstance(player, dict):
+                    assign_pp_unit(team_name, player.get("name") or "", unit.get("label") or "")
 
     return lookup
+
+
+def mark_lineups_unknown(players: List[Dict]) -> List[Dict]:
+    """
+    Stamp lineup fields as UNKNOWN without consulting any source.
+
+    Used when the lineup fetch or merge fails outright, so the day's rows still
+    carry the lineup columns (as UNKNOWN) rather than missing them entirely.
+    """
+    for player in players:
+        player["lineup_unit"] = None
+        player["lineup_position_group"] = None
+        player["pp_unit"] = None
+        player["lineup_status"] = "UNKNOWN"
+    return players
 
 
 def merge_lineup_data(
