@@ -15,7 +15,7 @@ def test_get_emails_only_notify_true(monkeypatch):
         ]
 
     monkeypatch.setattr(
-        "utility.SUPABASE_ADMIN_AUTH_CLIENT",
+        "utility.SUPABASE_ADMIN_CLIENT",
         type(
             "DummyClient",
             (),
@@ -34,7 +34,7 @@ def test_get_emails_empty(monkeypatch):
         data = []
 
     monkeypatch.setattr(
-        "utility.SUPABASE_ADMIN_AUTH_CLIENT",
+        "utility.SUPABASE_ADMIN_CLIENT",
         type(
             "DummyClient",
             (),
