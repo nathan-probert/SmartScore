@@ -92,3 +92,44 @@ def test_every_ref_points_at_a_declared_parameter():
 def test_worker_token_parameter_is_noecho():
     """The worker token is a bearer credential; keep it out of console output."""
     assert TEMPLATE["Parameters"]["SmartscoreApiToken"].get("NoEcho") is True
+
+
+def _deploy_script() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "build_scripts" / "deploy.sh"
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("could not locate build_scripts/deploy.sh")
+
+
+def _deployed_function_names() -> set[str]:
+    """Function names build_scripts/deploy.sh pushes real code to."""
+    text = _deploy_script().read_text(encoding="utf-8")
+    block = re.search(r"LAMBDA_FUNCTIONS=\((.*?)\)", text, re.S)
+    assert block, "could not locate LAMBDA_FUNCTIONS array in deploy.sh"
+    return set(re.findall(r'"([A-Za-z0-9_]+)-\$ENV"', block.group(1)))
+
+
+def _declared_function_names() -> set[str]:
+    """Function names declared as Lambda resources in template.yaml."""
+    return set(re.findall(r'FunctionName: !Sub "([A-Za-z0-9_]+)-\$\{ENV\}"', TEMPLATE_TEXT))
+
+
+def test_every_lambda_gets_its_code_deployed():
+    """Each declared Lambda must be in deploy.sh's LAMBDA_FUNCTIONS list.
+
+    CloudFormation only creates the function, with the inline ZipFile
+    placeholder. Real code is pushed separately by deploy.sh, so a Lambda
+    missing from that list ships as a stub that returns
+    {"status": "Lambda function placeholder"} - a deployment that looks
+    successful and does nothing.
+    """
+    declared = _declared_function_names()
+    deployed = _deployed_function_names()
+
+    assert declared, "expected to parse FunctionName entries from template.yaml"
+    missing = sorted(declared - deployed)
+    assert not missing, (
+        f"{len(missing)} Lambda function(s) declared but never given real code: {missing}. "
+        f"Add each to LAMBDA_FUNCTIONS in build_scripts/deploy.sh."
+    )
