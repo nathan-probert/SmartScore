@@ -42,9 +42,10 @@
                 }
             },
             "ResultSelector": {
-                "players.$": "States.StringToJson($.Output)"
+                "parsed.$": "States.StringToJson($.Output)"
             },
             "ResultPath": "$",
+            "OutputPath": "$.parsed",
             "Retry": [
                 {
                     "ErrorEquals": [
@@ -111,10 +112,6 @@
         "SaveToDb": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:SavePlayers-${ENV}",
-            "Parameters": {
-                "players.$": "$.players",
-                "date.$": "$.date"
-            },
             "Next": "UpdateHistory"
         },
         "UpdateHistory": {

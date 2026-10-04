@@ -170,12 +170,17 @@ def _state_machine_arn(name: str) -> str:
     return f"arn:aws:states:{REGION}:{acct}:stateMachine:{name}-{ENVIRONMENT}"
 
 
-def _run_get_players_state_machine(sfn_client, timeout: int = 300) -> List[dict]:
+def _run_get_players_state_machine(sfn_client, timeout: int = 300) -> dict:
     """Start the GetPlayers-{env} state machine and return its final output.
 
     The state machine runs GetTeams -> Map(GetPlayersFromTeam) -> ParseData,
     so a successful run proves variables (team context + players) are threaded
     through the real Step Functions orchestration against the mocked data.
+
+    ParseData returns the relational shape ``{"players": [...], "teams": [...]}``
+    so Step Functions state stays under the 256KB limit; team stats live on the
+    per-team entries and players carry only ``team_id`` (+ ``team_name``) as the
+    join key.
     """
     arn = _state_machine_arn("GetPlayers")
     name = f"integration-{int(time.time() * 1000)}"
@@ -196,21 +201,38 @@ def _run_get_players_state_machine(sfn_client, timeout: int = 300) -> List[dict]
     raise AssertionError(f"Timed out waiting for GetPlayers-{ENVIRONMENT} state machine")
 
 
-def _assert_state_machine_players(entries: List[dict]) -> None:
-    """Assert the state machine's ParseData output matches the fixtures."""
-    assert entries, "GetPlayers state machine returned no players"
-    names = {e.get("name") for e in entries if e.get("name")}
+def _assert_state_machine_players(output: dict) -> None:
+    """Assert the state machine's relational ParseData output matches the fixtures."""
+    assert isinstance(output, dict), f"Expected relational dict, got: {type(output)}"
+    players = output.get("players", [])
+    teams = output.get("teams", [])
+    assert players, "GetPlayers state machine returned no players"
+    assert teams, "GetPlayers state machine returned no teams"
+
+    names = {e.get("name") for e in players if e.get("name")}
     expected_names = {player for players in EXPECTED_PLAYERS.values() for player in players}
     missing = expected_names - names
     assert not missing, f"State machine output missing players: {missing}"
 
-    team_names = {e.get("team_name") for e in entries}
+    team_names = {t.get("team_name") for t in teams}
     assert team_names == {"Toronto", "Edmonton"}, f"Unexpected teams: {team_names}"
 
-    # The Map iterator must preserve per-team context (home/away).
-    by_team = {e.get("team_name"): e.get("home") for e in entries}
+    # The Map iterator must preserve per-team context (home/away) on the teams list.
+    by_team = {t.get("team_name"): t.get("home") for t in teams}
     assert by_team.get("Toronto") is True
     assert by_team.get("Edmonton") is False
+
+    # Relational shape: players carry the join key, team stats stay on teams.
+    for player in players:
+        assert player.get("team_id") is not None, f"Player missing team_id: {player.get('name')}"
+        assert player.get("team_name") in {"Toronto", "Edmonton"}
+        assert "tgpg" not in player, "Team stats must stay relational, not duplicated onto skaters"
+        assert "otga" not in player
+        assert "home" not in player
+    for team in teams:
+        assert team.get("team_id") is not None
+        for key in ("tgpg", "otga", "otshga", "home", "opponent_id"):
+            assert key in team, f"Team {team.get('team_name')} missing {key}"
 
 
 @pytest.mark.integration
@@ -239,7 +261,7 @@ def test_get_teams_and_players_run_against_mock_data():
             missing = expected - actual
             assert not missing, f"{abbr} missing players: {missing}"
 
-        entries = _run_get_players_state_machine(sfn_client)
-        _assert_state_machine_players(entries)
+        output = _run_get_players_state_machine(sfn_client)
+        _assert_state_machine_players(output)
     finally:
         _set_flag(False)

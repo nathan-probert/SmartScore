@@ -1,11 +1,11 @@
 from unittest.mock import patch
 
 from service import (
-    build_team_name_map,
+    build_goalies_with_team_id,
+    denormalize_players_for_db,
     enrich_starting_goalies,
     get_goalie_stats_for_team,
     get_starting_goalies,
-    merge_goalie_data,
     normalize_rotowire_team_abbr,
 )
 
@@ -206,54 +206,56 @@ def test_enrich_starting_goalies_warns_on_name_miss(mock_starters, mock_stats, c
     assert "Brandon Bussie" in caplog.text
 
 
-def test_build_team_name_map_uses_common_name_fallback():
-    schedule = {
-        "gameWeek": [
-            {
-                "games": [
-                    {
-                        "homeTeam": {
-                            "abbrev": "UTA",
-                            "placeName": {"default": " "},
-                            "commonName": {"default": "Mammoth"},
-                        },
-                        "awayTeam": {
-                            "abbrev": "TOR",
-                            "placeName": {"default": "Toronto"},
-                            "commonName": {"default": "Maple Leafs"},
-                        },
-                    }
-                ]
-            }
-        ]
-    }
-
-    assert build_team_name_map(schedule) == {"Mammoth": "UTA", "Toronto": "TOR"}
-
-
-def test_build_team_name_map_handles_bad_payload():
-    assert build_team_name_map({}) == {}
-    assert build_team_name_map({"gameWeek": []}) == {}
-
-
-def test_merge_goalie_data_attaches_opposing_starter():
-    players = [
-        {"name": "Skater One", "team_name": "Carolina"},
-        {"name": "Skater Two", "team_name": "Florida"},
+def test_build_goalies_with_team_id_resolves_abbr():
+    teams = [
+        {"team_id": 1, "team_abbr": "CAR", "opponent_id": 2},
+        {"team_id": 2, "team_abbr": "FLA", "opponent_id": 1},
     ]
     starters = [
+        {"team_abbr": "CAR", "goalie_name": "Brandon Bussi", "status": "Confirmed"},
+        {"team_abbr": "FLA", "goalie_name": "Jacob Markstrom", "status": "Expected"},
+    ]
+
+    result = build_goalies_with_team_id(starters, teams)
+
+    assert result[0]["team_id"] == 1
+    assert result[1]["team_id"] == 2
+
+
+def test_build_goalies_with_team_id_skips_unknown_team():
+    teams = [{"team_id": 1, "team_abbr": "CAR", "opponent_id": 2}]
+    starters = [{"team_abbr": "FLA", "goalie_name": "Jacob Markstrom", "status": "Expected"}]
+
+    result = build_goalies_with_team_id(starters, teams)
+
+    assert result[0].get("team_id") is None
+
+
+def test_denormalize_players_for_db_joins_teams_and_goalies():
+    players = [{"name": "Skater One", "team_id": 1}]
+    teams = [
         {
-            "team_abbr": "CAR",
-            "goalie_name": "Brandon Bussi",
-            "status": "Confirmed",
-            "gaa": 2.5,
-            "save_pct": 0.905,
-            "record": "31-6-2",
-            "nhl_id": 1,
-            "shutouts": 1,
-            "games_played": 39,
+            "team_id": 1,
+            "team_name": "Carolina",
+            "home": True,
+            "tgpg": 3.0,
+            "otga": 2.5,
+            "otshga": 0.5,
+            "opponent_id": 2,
         },
         {
+            "team_id": 2,
+            "team_name": "Florida",
+            "home": False,
+            "tgpg": 2.8,
+            "otga": 3.0,
+            "otshga": 0.4,
+            "opponent_id": 1,
+        },
+    ]
+    goalies = [
+        {
+            "team_id": 2,
             "team_abbr": "FLA",
             "goalie_name": "Jacob Markstrom",
             "status": "Expected",
@@ -263,44 +265,28 @@ def test_merge_goalie_data_attaches_opposing_starter():
             "nhl_id": 2,
             "shutouts": 0,
             "games_played": 45,
-        },
+        }
     ]
 
-    result = merge_goalie_data(players, starters, _schedule_payload())
+    result = denormalize_players_for_db(players, teams, goalies)
 
+    assert result[0]["tgpg"] == 3.0
+    assert result[0]["home"] is True
     assert result[0]["opp_goalie_name"] == "Jacob Markstrom"
     assert result[0]["opp_goalie_team"] == "FLA"
     assert result[0]["opp_goalie_status"] == "EXPECTED"
     assert result[0]["opp_goalie_confirmed"] is False
-    assert result[0]["opp_goalie_gaa"] == 3.07
-    assert result[1]["opp_goalie_name"] == "Brandon Bussi"
-    assert result[1]["opp_goalie_status"] == "CONFIRMED"
-    assert result[1]["opp_goalie_confirmed"] is True
-    assert result[1]["opp_goalie_record"] == "31-6-2"
+    # Inputs are not mutated.
+    assert "tgpg" not in players[0]
+    assert "opp_goalie_name" not in players[0]
 
 
-def test_merge_goalie_data_unknown_team():
-    players = [{"name": "Skater One", "team_name": "Nowhere"}]
+def test_denormalize_players_for_db_unknown_opponent():
+    players = [{"name": "Skater One", "team_id": 1}]
+    teams = [{"team_id": 1, "team_name": "Carolina", "home": True, "opponent_id": 99}]
 
-    result = merge_goalie_data(players, [], _schedule_payload())
+    result = denormalize_players_for_db(players, teams, [])
 
     assert result[0]["opp_goalie_name"] is None
     assert result[0]["opp_goalie_status"] == "UNKNOWN"
     assert result[0]["opp_goalie_confirmed"] is False
-
-
-def test_merge_goalie_data_duplicate_team_keeps_last():
-    players = [{"name": "Skater One", "team_name": "Florida"}]
-    starters = [
-        {"team_abbr": "CAR", "goalie_name": "First Goalie", "status": "Expected"},
-        {"team_abbr": "CAR", "goalie_name": "Second Goalie", "status": "Confirmed"},
-    ]
-
-    result = merge_goalie_data(players, starters, _schedule_payload())
-
-    assert result[0]["opp_goalie_name"] == "Second Goalie"
-    assert result[0]["opp_goalie_status"] == "CONFIRMED"
-
-
-def test_merge_goalie_data_empty_players():
-    assert merge_goalie_data([], [], _schedule_payload()) == []
