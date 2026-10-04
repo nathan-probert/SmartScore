@@ -11,8 +11,6 @@ from aws_lambda_powertools import Logger
 from smartscore_info_client.api.nhle import NHLClient
 from smartscore_info_client.models.player import Player, PlayerInfo
 from smartscore_info_client.models.team import GameTeam, TeamInfo
-from smartscore_info_client.schemas.player import PLAYER_MERGE_EXCLUDED_FIELDS
-from smartscore_info_client.schemas.team import TEAM_MERGE_EXCLUDED_FIELDS
 from smartscore_info_client.utility import exponential_backoff_request
 
 from cloudflare_client import backfill_scored, delete_game, get_players_for_date, get_unscored_dates
@@ -164,19 +162,44 @@ def get_min_max():
     return min_max
 
 
-def make_predictions_teams(players):
+def make_predictions_teams(players, teams):
+    """Score lean players by joining team stats from the relational teams list.
+
+    Hard cutover: ``teams`` is required (one entry per team, keyed by numeric
+    ``team_id``). Players carry only skater stats + ``team_id``; team-level
+    fields (tgpg/otga/otshga/home) come exclusively from the join. Missing
+    teams fail fast so a bad slate surfaces instead of silently scoring.
+    """
+    teams_by_id = {}
+    for team in teams or []:
+        if isinstance(team, dict) and team.get("team_id") is not None:
+            teams_by_id[team["team_id"]] = team
+    if not teams_by_id:
+        raise ValueError("make_predictions_teams requires a non-empty relational teams list")
+
     rust_players = []
     for player in players:
+        team = teams_by_id.get(player.get("team_id"))
+        if team is None:
+            raise KeyError(f"No team entry for player {player.get('name')} (team_id={player.get('team_id')})")
+        gpg = player["gpg"]
+        hgpg = player["hgpg"]
+        five_gpg = player["five_gpg"]
+        tgpg = team["tgpg"]
+        otga = team["otga"]
+        otshga = team["otshga"]
+        hppg = player["hppg"]
+        is_home = team["home"]
         rust_players.append(
             make_predictions_rust.PlayerInfo(
-                gpg=player["gpg"],
-                hgpg=player["hgpg"],
-                five_gpg=player["five_gpg"],
-                tgpg=player["tgpg"],
-                otga=player["otga"],
-                otshga=player["otshga"],
-                hppg=player["hppg"],
-                is_home=player["home"],
+                gpg=gpg,
+                hgpg=hgpg,
+                five_gpg=five_gpg,
+                tgpg=tgpg,
+                otga=otga,
+                otshga=otshga,
+                hppg=hppg,
+                is_home=is_home,
                 hppg_otshga=0.0,
             )
         )
@@ -307,17 +330,54 @@ def check_db_for_date():
 
 
 def merge_players_and_teams(team_payloads):
-    """Flatten a list of team payloads into one merged entry per player."""
-    entries = []
+    """Split team payloads into relational players + teams.
+
+    Team stats stay on a small per-team list (one entry per team, keyed by
+    numeric ``team_id``) instead of being duplicated onto every skater.
+    Players keep ``team_id`` as the join key plus ``team_name`` for display
+    and lineup matching. This keeps Step Functions payloads under the 256KB
+    state limit: team stats (~50 bytes/player duplicated) and especially
+    goalie stats (~200 bytes/player) are the blowup, not lineups/injuries.
+
+    Returns:
+        dict with ``players`` (lean per-skater dicts) and ``teams`` (one
+        per-team dict with tgpg/otga/otshga/home + opponent_id).
+    """
+    players = []
+    teams = []
     for team in team_payloads:
-        team_players = team.pop("players", [])
-        team_info = {key: value for key, value in team.items() if key not in TEAM_MERGE_EXCLUDED_FIELDS}
+        team_info = {
+            key: team[key]
+            for key in (
+                "team_name",
+                "team_abbr",
+                "season",
+                "team_id",
+                "opponent_id",
+                "home",
+                "tgpg",
+                "otga",
+                "otshga",
+            )
+            if key in team
+        }
+        teams.append(team_info)
 
-        for player in team_players:
-            player_info = {key: value for key, value in player.items() if key not in PLAYER_MERGE_EXCLUDED_FIELDS}
-            entries.append({**player_info, **team_info})
+        for player in team.get("players", []):
+            if not isinstance(player, dict):
+                continue
+            lean = {
+                key: player[key]
+                for key in ("name", "id", "team_id", "gpg", "hgpg", "five_gpg", "hppg")
+                if key in player
+            }
+            if "team_id" not in lean and "team_id" in team_info:
+                lean["team_id"] = team_info["team_id"]
+            if "team_name" in team_info:
+                lean["team_name"] = team_info["team_name"]
+            players.append(lean)
 
-    return entries
+    return {"players": players, "teams": teams}
 
 
 def choose_picks(players):
@@ -671,96 +731,107 @@ def enrich_starting_goalies(date: str | None = None) -> List[Dict]:
     return enriched
 
 
-def build_team_name_map(schedule_data: Dict) -> Dict[str, str]:
+def build_goalies_with_team_id(starters: List[Dict], teams: List[Dict] | None) -> List[Dict]:
+    """Attach numeric ``team_id`` to enriched starters for relational joins.
+
+    RotoWire reports starters by (normalized) abbreviation while players join
+    on numeric ``team_id``. The ``teams`` list from ParseData carries both,
+    so this resolves abbr -> team_id once instead of duplicating the full
+    goalie stat block onto every skater (~200 bytes/player, the payload
+    that pushed GetGoalies over the 256KB Step Functions limit).
+
+    Starters whose abbreviation is not on today's slate keep no ``team_id``
+    and are ignored by the DB join rather than failing the step.
     """
-    Map NHL team display name to abbreviation using the same logic as get_teams.
+    abbr_to_id = {}
+    for team in teams or []:
+        if not isinstance(team, dict):
+            continue
+        abbr = (team.get("team_abbr") or "").upper()
+        team_id = team.get("team_id")
+        if abbr and team_id is not None:
+            abbr_to_id[abbr] = team_id
 
-    Args:
-        schedule_data: Raw response from the NHL schedule endpoint.
-
-    Returns:
-        Mapping of team display name to team abbreviation.
-    """
-    mapping = {}
-    try:
-        games = schedule_data.get("gameWeek", [])[0].get("games", [])
-    except (AttributeError, IndexError, KeyError, TypeError):
-        logger.error("Unexpected schedule payload when building team name map")
-        return {}
-
-    for game in games:
-        for side in ("homeTeam", "awayTeam"):
-            team = game.get(side, {})
-            place = ((team.get("placeName") or {}).get("default") or "").strip()
-            if place and place != " ":
-                name = place
-            else:
-                name = ((team.get("commonName") or {}).get("default") or "").strip()
-            abbr = team.get("abbrev", "")
-            if not name or not abbr:
-                continue
-            if name in mapping and mapping[name] != abbr:
-                logger.warning(f"Ambiguous team name in schedule: {name}")
-            mapping[name] = abbr
-
-    return mapping
-
-
-def merge_goalie_data(players: List[Dict], starters: List[Dict], schedule_data: Dict) -> List[Dict]:
-    """
-    Merge opposing starting goalie info into the player list.
-
-    Each skater is annotated with the other team's starter for today, so the
-    picks table records who started in net and what their season stats were.
-
-    Args:
-        players: List of player dictionaries (must include team_name).
-        starters: Enriched starter dictionaries from enrich_starting_goalies.
-        schedule_data: Raw response from the NHL schedule endpoint.
-
-    Returns:
-        List of players with added opp_goalie_* fields.
-    """
-    starters_by_team = {}
+    goalies = []
     for starter in starters:
-        team = starter.get("team_abbr", "")
-        if not team:
+        if not isinstance(starter, dict):
             continue
-        if team in starters_by_team:
-            logger.warning(f"Multiple starters listed for {team}, keeping the last one")
-        starters_by_team[team] = starter
+        goalie = dict(starter)
+        team_id = abbr_to_id.get((starter.get("team_abbr") or "").upper())
+        if team_id is not None:
+            goalie["team_id"] = team_id
+        else:
+            logger.warning(
+                f"Starting goalie '{starter.get('goalie_name')}' ({starter.get('team_abbr')}) "
+                "not on today's slate; skipping team join"
+            )
+        goalies.append(goalie)
 
-    try:
-        games = schedule_data.get("gameWeek", [])[0].get("games", [])
-    except (AttributeError, IndexError, KeyError, TypeError):
-        games = []
-    opp_by_team = {}
-    for game in games:
-        try:
-            home = game["homeTeam"]["abbrev"]
-            away = game["awayTeam"]["abbrev"]
-        except (KeyError, TypeError):
+    return goalies
+
+
+def denormalize_players_for_db(
+    players: List[Dict],
+    teams: List[Dict] | None = None,
+    goalies: List[Dict] | None = None,
+) -> List[Dict]:
+    """Join relational players + teams + goalies into legacy full rows.
+
+    Used only inside the final DB lambdas (SaveToDb / UpdateHistory /
+    PublishDb) so Supabase/Mongo keep the exact denormalized columns they
+    have today (team stats + ``opp_goalie_*`` per skater). The Step Functions
+    state itself stays lean; this never mutates its inputs.
+
+    Join keys (``team_id`` and friends) are stripped so rows match the legacy
+    schema -- Supabase rejects upserts with unknown columns, and the Picks /
+    Historic-Picks tables have no ``team_id`` column.
+    """
+    if not teams and not goalies:
+        return players
+
+    teams_by_id = {
+        team["team_id"]: team for team in (teams or []) if isinstance(team, dict) and team.get("team_id") is not None
+    }
+    goalies_by_team: Dict[int, Dict] = {}
+    for goalie in goalies or []:
+        if not isinstance(goalie, dict) or goalie.get("team_id") is None:
             continue
-        opp_by_team[home] = away
-        opp_by_team[away] = home
+        team_id = goalie["team_id"]
+        if team_id in goalies_by_team:
+            logger.warning(f"Multiple starters listed for team_id {team_id}, keeping the last one")
+        goalies_by_team[team_id] = goalie
 
-    name_map = build_team_name_map(schedule_data)
-
+    full_rows = []
     for player in players:
-        team_abbr = name_map.get(player.get("team_name", ""))
-        opp = starters_by_team.get(opp_by_team.get(team_abbr, ""), {}) if team_abbr else {}
-        player["opp_goalie_name"] = opp.get("goalie_name")
-        player["opp_goalie_team"] = opp.get("team_abbr")
-        player["opp_goalie_status"] = (opp.get("status") or "UNKNOWN").upper() if opp else "UNKNOWN"
-        player["opp_goalie_confirmed"] = bool(opp) and (opp.get("status") or "").lower() == "confirmed"
-        player["opp_goalie_nhl_id"] = opp.get("nhl_id")
-        player["opp_goalie_gaa"] = opp.get("gaa")
-        player["opp_goalie_save_pct"] = opp.get("save_pct")
-        player["opp_goalie_record"] = opp.get("record")
-        player["opp_goalie_shutouts"] = opp.get("shutouts")
-        player["opp_goalie_games_played"] = opp.get("games_played")
+        row = dict(player)
+        team_id = player.get("team_id")
+        team = teams_by_id.get(team_id, {}) if team_id is not None else {}
+        if team:
+            for key in ("team_name", "home", "tgpg", "otga", "otshga"):
+                if key in team:
+                    row[key] = team[key]
+        # Strip relational-only join keys so the row matches the legacy
+        # denormalized DB shape (no team_id / opponent_id / season / team_abbr).
+        for join_key in ("team_id", "opponent_id", "season", "team_abbr"):
+            row.pop(join_key, None)
+        opp = {}
+        if team:
+            opp_id = team.get("opponent_id")
+            opp = goalies_by_team.get(opp_id, {}) if opp_id is not None else {}
+        if opp or teams is not None:
+            row["opp_goalie_name"] = opp.get("goalie_name")
+            row["opp_goalie_team"] = opp.get("team_abbr")
+            row["opp_goalie_status"] = (opp.get("status") or "UNKNOWN").upper() if opp else "UNKNOWN"
+            row["opp_goalie_confirmed"] = bool(opp) and (opp.get("status") or "").lower() == "confirmed"
+            row["opp_goalie_nhl_id"] = opp.get("nhl_id")
+            row["opp_goalie_gaa"] = opp.get("gaa")
+            row["opp_goalie_save_pct"] = opp.get("save_pct")
+            row["opp_goalie_record"] = opp.get("record")
+            row["opp_goalie_shutouts"] = opp.get("shutouts")
+            row["opp_goalie_games_played"] = opp.get("games_played")
+        full_rows.append(row)
 
-    return players
+    return full_rows
 
 
 def _iter_teams(games: List[Dict]) -> List[Dict]:

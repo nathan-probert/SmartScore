@@ -133,22 +133,29 @@ def test_merge_players_and_teams_merges_player_and_team_data():
     ]
 
     result = merge_players_and_teams(teams)
-    assert len(result) == 2
-    assert result[0]["name"] == "Player One"
-    assert result[0]["id"] == 1
-    assert result[0]["team_name"] == "Team A"
-    assert result[0]["home"] is True
-    assert result[0]["tgpg"] == 3.0
-    assert result[0]["otga"] == 2.8
-    assert result[0]["otshga"] == 0.4
-    assert result[1]["name"] == "Player Two"
-    assert result[1]["id"] == 2
-    assert result[1]["team_name"] == "Team B"
-    assert result[1]["home"] is False
+    assert set(result.keys()) == {"players", "teams"}
+    assert len(result["players"]) == 2
+    assert len(result["teams"]) == 2
+    assert result["players"][0]["name"] == "Player One"
+    assert result["players"][0]["id"] == 1
+    assert result["players"][0]["team_id"] == 10
+    assert result["players"][0]["team_name"] == "Team A"
+    # Team stats stay relational, not duplicated onto skaters.
+    assert "tgpg" not in result["players"][0]
+    assert "otga" not in result["players"][0]
+    assert "home" not in result["players"][0]
+    assert result["teams"][0]["tgpg"] == 3.0
+    assert result["teams"][0]["otga"] == 2.8
+    assert result["teams"][0]["otshga"] == 0.4
+    assert result["teams"][0]["home"] is True
+    assert result["players"][1]["name"] == "Player Two"
+    assert result["players"][1]["id"] == 2
+    assert result["players"][1]["team_name"] == "Team B"
+    assert result["teams"][1]["home"] is False
 
 
 def test_merge_players_and_teams_excludes_fields():
-    """Test that certain fields are excluded from the result."""
+    """Test that only the relational allowlist is kept."""
     teams = [
         {
             "team_name": "Team A",
@@ -164,20 +171,22 @@ def test_merge_players_and_teams_excludes_fields():
     ]
 
     result = merge_players_and_teams(teams)
-    for entry in result:
-        assert "team_id" not in entry
-        assert "opponent_id" not in entry
-        assert "season" not in entry
-        assert "team_abbr" not in entry
+    for entry in result["players"]:
         assert "odds" not in entry
         assert "stat" not in entry
+        # join keys survive; team stats do not duplicate onto skaters
+        assert entry["team_id"] == 10
+        assert "tgpg" not in entry
+    for team in result["teams"]:
+        assert "team_id" in team
+        assert "opponent_id" in team
 
 
 def test_merge_players_and_teams_empty():
     """Test merge_players_and_teams with empty lists."""
     result = merge_players_and_teams([])
 
-    assert result == []
+    assert result == {"players": [], "teams": []}
 
 
 @patch("service.get_nhl_client")
