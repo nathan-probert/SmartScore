@@ -53,12 +53,18 @@ def get_tims_players():
 
 
 def save_to_db(players):
-    # remove fields that aren't currently show in frontend
+    # remove fields that aren't currently show in frontend, plus relational
+    # join keys (team_id etc.) which never existed on the Picks table --
+    # Supabase rejects upserts with unknown columns.
     for i, player in enumerate(players):
         player.pop("home", None)
         player.pop("hppg", None)
         player.pop("otshga", None)
         player.pop("Scored", None)
+        player.pop("team_id", None)
+        player.pop("opponent_id", None)
+        player.pop("season", None)
+        player.pop("team_abbr", None)
         player["id"] = i + 1
     exponential_backoff_supabase_request(f"Picks-{ENV}", method="post", json_data=players)
 
@@ -72,11 +78,16 @@ def get_historical_data():
 
 
 def update_historical_data(players):
-    # remove fields that aren't currently show in frontend
+    # remove fields that aren't currently show in frontend, plus relational
+    # join keys (see save_to_db).
     for i, player in enumerate(players):
         player.pop("home", None)
         player.pop("hppg", None)
         player.pop("otshga", None)
+        player.pop("team_id", None)
+        player.pop("opponent_id", None)
+        player.pop("season", None)
+        player.pop("team_abbr", None)
         player["id"] = i + 1
     exponential_backoff_supabase_request(f"Historic-Picks-{ENV}", method="post", json_data=players)
 

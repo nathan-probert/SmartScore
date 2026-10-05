@@ -112,16 +112,19 @@ def test_handle_parse_teams_empty_event():
     """Test handling empty event."""
     result = handle_parse_teams([], {})
 
-    assert result == []
+    assert result == {"players": [], "teams": []}
 
 
 @patch("event_handler.merge_players_and_teams")
 def test_handle_parse_teams_with_data(mock_merge):
     """Test parsing teams with player and team data."""
-    mock_merge.return_value = [
-        {"name": "Player 1", "team_name": "Team A", "stat": 0.8},
-        {"name": "Player 2", "team_name": "Team B", "stat": 0.9},
-    ]
+    mock_merge.return_value = {
+        "players": [
+            {"name": "Player 1", "team_id": 1},
+            {"name": "Player 2", "team_id": 2},
+        ],
+        "teams": [{"team_id": 1}, {"team_id": 2}],
+    }
 
     event = [
         {
@@ -146,17 +149,19 @@ def test_handle_parse_teams_with_data(mock_merge):
 
     result = handle_parse_teams(event, {})
 
-    assert len(result) == 2
+    assert len(result["players"]) == 2
+    assert len(result["teams"]) == 2
     mock_merge.assert_called_once_with(event)
 
 
 @patch("event_handler.make_predictions_teams")
 def test_handle_make_predictions(mock_predictions):
-    """Test making predictions for players."""
+    """Test making predictions for relational players + teams."""
     input_players = [
-        {"name": "Player 1", "gpg": 0.5},
-        {"name": "Player 2", "gpg": 0.7},
+        {"name": "Player 1", "team_id": 1, "gpg": 0.5},
+        {"name": "Player 2", "team_id": 2, "gpg": 0.7},
     ]
+    teams = [{"team_id": 1}, {"team_id": 2}]
 
     output_players = [
         {"name": "Player 1", "gpg": 0.5, "stat": 0.6},
@@ -165,11 +170,11 @@ def test_handle_make_predictions(mock_predictions):
 
     mock_predictions.return_value = output_players
 
-    event = {"players": input_players}
+    event = {"players": input_players, "teams": teams}
     result = handle_make_predictions(event, {})
 
-    assert result == {"statusCode": 200, "players": output_players}
-    mock_predictions.assert_called_once_with(input_players)
+    assert result == {"statusCode": 200, "players": output_players, "teams": teams}
+    mock_predictions.assert_called_once_with(input_players, teams)
 
 
 @patch("event_handler.merge_injury_data")
@@ -238,58 +243,38 @@ def test_handle_get_injuries_no_injuries_found(mock_get_injuries, mock_merge):
     mock_merge.assert_called_once_with(players, [])
 
 
-@patch("event_handler.merge_goalie_data")
+@patch("event_handler.build_goalies_with_team_id")
 @patch("event_handler.enrich_starting_goalies")
-@patch("event_handler.get_todays_schedule")
-def test_handle_get_goalies_with_data(mock_schedule, mock_enrich, mock_merge):
-    """Test handling starting goalie retrieval and merging."""
+def test_handle_get_goalies_with_data(mock_enrich, mock_build):
+    """Test goalies stay relational instead of duplicating onto every skater."""
     players = [
-        {"name": "Player 1", "stat": 0.8},
-        {"name": "Player 2", "stat": 0.9},
+        {"name": "Player 1", "team_id": 1, "stat": 0.8},
+        {"name": "Player 2", "team_id": 2, "stat": 0.9},
     ]
-    schedule = {"gameWeek": []}
+    teams = [{"team_id": 1, "opponent_id": 2}, {"team_id": 2, "opponent_id": 1}]
     starters = [{"team_abbr": "CAR", "goalie_name": "Brandon Bussi"}]
-    merged_players = [
-        {"name": "Player 1", "opp_goalie_name": "Jacob Markstrom"},
-        {"name": "Player 2", "opp_goalie_name": "Brandon Bussi"},
-    ]
+    goalies = [{"team_abbr": "CAR", "goalie_name": "Brandon Bussi", "team_id": 1}]
 
-    mock_schedule.return_value = schedule
     mock_enrich.return_value = starters
-    mock_merge.return_value = merged_players
+    mock_build.return_value = goalies
 
-    event = {"players": players}
+    event = {"players": players, "teams": teams}
     result = handle_get_goalies(event, {})
 
-    assert result == {"statusCode": 200, "players": merged_players}
-    mock_schedule.assert_called_once()
+    assert result == {"statusCode": 200, "players": players, "teams": teams, "goalies": goalies}
     mock_enrich.assert_called_once()
-    mock_merge.assert_called_once_with(players, starters, schedule)
+    mock_build.assert_called_once_with(starters, teams)
 
 
-@patch("event_handler.merge_goalie_data")
+@patch("event_handler.build_goalies_with_team_id")
 @patch("event_handler.enrich_starting_goalies")
-@patch("event_handler.get_todays_schedule")
-def test_handle_get_goalies_empty_players(mock_schedule, mock_enrich, mock_merge):
+def test_handle_get_goalies_empty_players(mock_enrich, mock_build):
     """Test handling goalie data with empty player list."""
-    mock_schedule.return_value = {"gameWeek": []}
     mock_enrich.return_value = []
-    mock_merge.return_value = []
+    mock_build.return_value = []
 
-    event = {}
+    event = {"players": [], "teams": []}
     result = handle_get_goalies(event, {})
 
-    assert result == {"statusCode": 200, "players": []}
-    mock_merge.assert_called_once_with([], [], {"gameWeek": []})
-
-
-@patch("event_handler.enrich_starting_goalies")
-@patch("event_handler.get_todays_schedule", side_effect=Exception("boom"))
-def test_handle_get_goalies_schedule_failure(mock_schedule, mock_enrich):
-    """Test players pass through unchanged when the schedule fetch fails."""
-    players = [{"name": "Player 1", "stat": 0.8}]
-
-    result = handle_get_goalies({"players": players}, {})
-
-    assert result == {"statusCode": 200, "players": players}
-    mock_enrich.assert_not_called()
+    assert result == {"statusCode": 200, "players": [], "teams": [], "goalies": []}
+    mock_build.assert_called_once_with([], [])

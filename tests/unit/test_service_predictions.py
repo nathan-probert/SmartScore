@@ -24,34 +24,46 @@ def test_make_predictions_teams_basic(mock_rust, mock_min_max):
     players = [
         {
             "name": "Player 1",
+            "team_id": 10,
             "gpg": 0.5,
             "hgpg": 0.6,
             "five_gpg": 0.55,
-            "tgpg": 3.0,
-            "otga": 2.5,
-            "otshga": 0.5,
             "hppg": 0.2,
-            "home": True,
         },
         {
             "name": "Player 2",
+            "team_id": 20,
             "gpg": 0.7,
             "hgpg": 0.8,
             "five_gpg": 0.75,
-            "tgpg": 3.5,
-            "otga": 2.8,
-            "otshga": 0.6,
             "hppg": 0.25,
-            "home": False,
         },
     ]
+    teams = [
+        {"team_id": 10, "tgpg": 3.0, "otga": 2.5, "otshga": 0.5, "home": True},
+        {"team_id": 20, "tgpg": 3.5, "otga": 2.8, "otshga": 0.6, "home": False},
+    ]
 
-    result = make_predictions_teams(players)
+    result = make_predictions_teams(players, teams)
 
     assert len(result) == 2
     assert result[0]["stat"] == 0.65
     assert result[1]["stat"] == 0.75
     mock_rust.predict.assert_called_once()
+
+
+def test_make_predictions_teams_requires_teams():
+    """Relational join fails fast when teams are missing or unmatched."""
+    players = [{"name": "Player 1", "team_id": 10, "gpg": 0.5, "hgpg": 0.5, "five_gpg": 0.5, "hppg": 0.1}]
+
+    with pytest.raises(ValueError):
+        make_predictions_teams(players, [])
+
+    with pytest.raises(ValueError):
+        make_predictions_teams(players, None)
+
+    with pytest.raises(KeyError):
+        make_predictions_teams(players, [{"team_id": 99, "tgpg": 3.0, "otga": 2.5, "otshga": 0.5, "home": True}])
 
 
 def test_get_tims_with_matching_players():

@@ -8,10 +8,12 @@ from nhl_lineups import get_nhl_com_lineups, get_rotowire_lineups
 from player_archive import save_player_snapshots
 from service import (
     backfill_dates,
+    build_goalies_with_team_id,
     calculate_metrics,
     calculate_season_metrics,
     check_db_for_date,
     choose_picks,
+    denormalize_players_for_db,
     enrich_starting_goalies,
     enrich_teams,
     get_all_emails,
@@ -23,7 +25,6 @@ from service import (
     get_todays_schedule,
     make_predictions_teams,
     mark_lineups_unknown,
-    merge_goalie_data,
     merge_injury_data,
     merge_lineup_data,
     merge_players_and_teams,
@@ -143,6 +144,10 @@ def handle_make_predictions(event, context):
     """
     Makes predictions for the given players.
 
+    Requires the relational shape (``players`` + ``teams``, joined on
+    numeric ``team_id``) and preserves ``teams``/``goalies`` for downstream
+    steps so Step Functions state stays lean.
+
     Args:
         event (dict): A dictionary of all player data.
         context (dict): Unused Lambda context.
@@ -151,10 +156,16 @@ def handle_make_predictions(event, context):
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
             - "players" (list): Player data, now including stat (and beta stat).
+            - "teams" (list, optional): Passed through when present.
     """
-    players = make_predictions_teams(event.get("players"))
+    players = make_predictions_teams(event.get("players"), event.get("teams"))
 
-    return {"statusCode": 200, "players": players}
+    output = {"statusCode": 200, "players": players}
+    if "teams" in event:
+        output["teams"] = event["teams"]
+    if "goalies" in event:
+        output["goalies"] = event["goalies"]
+    return output
 
 
 @lambda_handler_error_responder
@@ -173,22 +184,31 @@ def handle_get_tims(event, context):
             - "date" (str): The current date.
             - "players" (list): Player data, now including tims.
             - "is_initial_run" (bool): Whether this is the first run of the day.
+            - "teams"/"goalies" (list, optional): Passed through when present.
     """
     players = event.get("players")
     players = get_tims(players)
 
-    return {
+    output = {
         "statusCode": 200,
         "date": get_date(),
         "players": players,
         "status": event.get("status", "first_run"),
     }
+    if "teams" in event:
+        output["teams"] = event["teams"]
+    if "goalies" in event:
+        output["goalies"] = event["goalies"]
+    return output
 
 
 @lambda_handler_error_responder
 def handle_publish_db(event, context):
     """
     Publishes the player data to the public database.
+
+    Joins relational ``players`` + ``teams`` + ``goalies`` into full rows
+    for the write only; the state itself stays lean.
 
     Args:
         event (dict): A dictionary of all player data.
@@ -204,6 +224,9 @@ def handle_publish_db(event, context):
     if not entries:
         entries = []
 
+    if event.get("teams") or event.get("goalies"):
+        entries = denormalize_players_for_db(entries, event.get("teams"), event.get("goalies"))
+
     publish_public_db(entries)
 
     return {"statusCode": 200}
@@ -218,6 +241,10 @@ def handle_save_players(event, context):
     Upserts on (date, player_id), so re-running the pipeline for a date
     refreshes that date's rows in place instead of appending a duplicate roster.
 
+    Joins relational ``players`` + ``teams`` + ``goalies`` into full rows
+    for the upload only; the returned state stays lean so downstream steps
+    stay under the Step Functions size limit.
+
     Args:
         event (dict): A dictionary containing:
             - "players" (list): Player data for today.
@@ -227,7 +254,7 @@ def handle_save_players(event, context):
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
-            - "players" (list): Player data, passed through so the UpdateHistory
+            - "players" (list): Lean player data, passed through so the UpdateHistory
               state keeps working on the same payload.
     """
 
@@ -235,16 +262,25 @@ def handle_save_players(event, context):
     date = event.get("date")
 
     if players:
-        save_player_snapshots(players, date=date)
+        if event.get("teams") or event.get("goalies"):
+            upload_rows = denormalize_players_for_db(players, event.get("teams"), event.get("goalies"))
+        else:
+            upload_rows = players
+        save_player_snapshots(upload_rows, date=date)
 
-    return {"statusCode": 200, "players": players}
+    output = {"statusCode": 200, "players": players}
+    if "teams" in event:
+        output["teams"] = event["teams"]
+    if "goalies" in event:
+        output["goalies"] = event["goalies"]
+    return output
 
 
 @lambda_handler_error_responder
 def handle_parse_teams(event, context):
     # Handles the case when there are no games today
     if event == []:
-        return []
+        return {"players": [], "teams": []}
 
     return merge_players_and_teams(event)
 
@@ -253,10 +289,19 @@ def handle_parse_teams(event, context):
 def handle_save_historic_db(event, context):
     """
     Saves the player data to the historic database.
+
+    Picks are chosen from lean players (stat + tims only), then joined with
+    ``teams``/``goalies`` for the historic write so stored rows keep the
+    full denormalized columns.
     """
 
     players = event.get("players")
+    teams = event.get("teams")
+    goalies = event.get("goalies")
     picks = choose_picks(players)
+
+    if picks and (teams or goalies):
+        picks = denormalize_players_for_db(picks, teams, goalies)
 
     yesterday_results = write_historic_db(picks)
 
@@ -268,13 +313,21 @@ def handle_save_historic_db(event, context):
     new_season_metrics = calculate_season_metrics(yesterday_results, season_id)
     update_season_metrics(new_season_metrics, season_id)
 
-    return {"statusCode": 200, "players": players}
+    output = {"statusCode": 200, "players": players}
+    if teams is not None:
+        output["teams"] = teams
+    if goalies is not None:
+        output["goalies"] = goalies
+    return output
 
 
 @lambda_handler_error_responder
 def handle_get_injuries(event, context):
     """
     Scrape current injury data from RotoWire.
+
+    Injury fields stay denormalized per skater (2 small fields); ``teams``
+    and ``goalies`` pass through untouched.
 
     Args:
         event (dict): A dictionary containing player data.
@@ -288,42 +341,46 @@ def handle_get_injuries(event, context):
     injuries = get_injury_data()
     merged_info = merge_injury_data(players, injuries)
 
-    return {
+    output = {
         "statusCode": 200,
         "players": merged_info,
     }
+    if "teams" in event:
+        output["teams"] = event["teams"]
+    if "goalies" in event:
+        output["goalies"] = event["goalies"]
+    return output
 
 
 @lambda_handler_error_responder
 def handle_get_goalies(event, context):
     """
-    Fetch starting goalies from RotoWire, enrich with NHL stats, and merge the
-    opposing starter into each skater.
+    Fetch starting goalies from RotoWire, enrich with NHL stats, and keep
+    them relational (hard cutover: no legacy denormalized fallback).
+
+    Starters are returned as a separate ``goalies`` list keyed by numeric
+    ``team_id`` instead of duplicating ~10 ``opp_goalie_*`` fields onto every
+    skater -- that duplication is what exceeded the Step Functions 256KB
+    state limit. The opponent join (via ``teams[].opponent_id``) happens only
+    inside the final DB lambdas. No NHL schedule fetch is needed here.
 
     Args:
-        event (dict): A dictionary containing player data.
+        event (dict): A dictionary containing relational players + teams.
         context (dict): Unused Lambda context.
 
     Returns:
-        dict: A dictionary containing player data with opp_goalie_* fields.
+        dict: players (lean) + teams + goalies.
     """
     players = event.get("players", [])
-
-    try:
-        schedule_data = get_todays_schedule()
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"Error fetching schedule for goalie merge: {e}")
-        return {
-            "statusCode": 200,
-            "players": players,
-        }
+    teams = event.get("teams", [])
 
     starters = enrich_starting_goalies()
-    merged_info = merge_goalie_data(players, starters, schedule_data)
-
+    goalies = build_goalies_with_team_id(starters, teams)
     return {
         "statusCode": 200,
-        "players": merged_info,
+        "players": players,
+        "teams": teams,
+        "goalies": goalies,
     }
 
 
@@ -346,8 +403,17 @@ def handle_get_lineups(event, context):
         dict: A dictionary containing player data with lineup fields.
     """
     players = event.get("players", [])
+
+    def _passthrough(payload_players):
+        output = {"statusCode": 200, "players": payload_players}
+        if "teams" in event:
+            output["teams"] = event["teams"]
+        if "goalies" in event:
+            output["goalies"] = event["goalies"]
+        return output
+
     if not players:
-        return {"statusCode": 200, "players": players}
+        return _passthrough(players)
 
     # Each source is fetched independently so one being down still lets the other
     # contribute. Any unexpected failure here degrades to lineup_status UNKNOWN
@@ -371,15 +437,9 @@ def handle_get_lineups(event, context):
         merged_info = merge_lineup_data(players, nhl_games, rotowire_games)
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error merging lineup data: {e}")
-        return {
-            "statusCode": 200,
-            "players": mark_lineups_unknown(players),
-        }
+        return _passthrough(mark_lineups_unknown(players))
 
-    return {
-        "statusCode": 200,
-        "players": merged_info,
-    }
+    return _passthrough(merged_info)
 
 
 @lambda_handler_error_responder
