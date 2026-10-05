@@ -64,7 +64,7 @@
                 {
                     "Variable": "$.players[0]",
                     "IsPresent": false,
-                    "Next": "PublishToDb"
+                    "Next": "UpdateHistory"
                 }
             ],
             "Default": "MakePredictions"
