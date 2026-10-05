@@ -415,13 +415,11 @@ def write_historic_db(picks):
     for entry in old_entries:
         table[entry["date"]].append((entry["player_id"], entry["Scored"]))
 
-    # Return yesterday's 3 players
-    yesterday = get_date(subtract_days=1)
-    yesterdays_entries = [entry for entry in old_entries if entry.get("date") == yesterday]
-
     if today in table.keys():
         logger.info(f"Today already in table: {table[today]}")
-        return yesterdays_entries
+        # Already processed today (e.g. a retry or a second run). Returning []
+        # keeps the cumulative metrics idempotent instead of recounting.
+        return []
 
     if picks:
         while len(table) >= DAYS_TO_KEEP_HISTORIC_DATA:
@@ -447,7 +445,30 @@ def write_historic_db(picks):
     data = old_entries + picks if picks else old_entries
     update_historical_data(data)
 
-    return yesterdays_entries
+    return _collect_newly_scored_entries(old_entries, dates_no_scored)
+
+
+def _collect_newly_scored_entries(old_entries, dates_no_scored):
+    """Collect entries for newly-resolved dates so metrics count all of them.
+
+    Previously only yesterday's 3 players were returned, so when the next day
+    had no games (no entries, e.g. 2026-10-03) the day before it (2026-10-02)
+    was never counted and the season/lifetime totals stayed short by 3
+    forever. A date counts only when it has a complete slate
+    (NUM_EXPECTED_PLAYERS entries, all scored); incomplete dates are left for
+    a later run.
+    """
+    newly_scored = []
+    for date in dates_no_scored:
+        entries = [e for e in old_entries if e.get("date") == date]
+        if len(entries) == NUM_EXPECTED_PLAYERS and all(e.get("Scored") is not None for e in entries):
+            newly_scored.extend(entries)
+        else:
+            logger.warning(
+                f"Skipping metrics for date {date}: expected {NUM_EXPECTED_PLAYERS} scored entries, "
+                f"found {len(entries)} with {[e.get('Scored') for e in entries]}"
+            )
+    return newly_scored
 
 
 ROTOWIRE_HEADERS = {
@@ -986,9 +1007,13 @@ def merge_lineup_data(
 
 
 def calculate_metrics(yesterday_results: List[Dict]) -> List[Dict]:
-    if not yesterday_results or len(yesterday_results) != NUM_EXPECTED_PLAYERS:
+    # Accepts one or more complete days (multiples of NUM_EXPECTED_PLAYERS) so
+    # catch-up runs after an outage or a no-game day count every newly-resolved
+    # date instead of dropping all but 3 players.
+    if not yesterday_results or len(yesterday_results) % NUM_EXPECTED_PLAYERS != 0:
         logger.warning(
-            f"Yesterday's results do not have exactly {NUM_EXPECTED_PLAYERS} players, skipping metrics calculation"
+            f"Results do not have a complete slate (multiple of {NUM_EXPECTED_PLAYERS} players), "
+            "skipping metrics calculation"
         )
         return []
 
@@ -1001,7 +1026,7 @@ def calculate_metrics(yesterday_results: List[Dict]) -> List[Dict]:
         }
 
     correct_picks = sum(1 for player in yesterday_results if player.get("Scored") == 1)
-    new_total = cur_picks_overall["total"] + 3
+    new_total = cur_picks_overall["total"] + len(yesterday_results)
     new_correct = cur_picks_overall["correct"] + correct_picks
 
     return {
@@ -1042,11 +1067,14 @@ def calculate_season_metrics(yesterday_results: List[Dict], season_id=None) -> L
     """Season-scoped cumulative accuracy, parallel to lifetime calculate_metrics.
 
     Lifetime flow is left untouched. When no season row exists yet (new season),
-    initializes from yesterday only instead of returning "-" placeholders.
+    initializes from the newly-resolved results instead of returning "-"
+    placeholders. Accepts one or more complete days (multiples of
+    NUM_EXPECTED_PLAYERS) so catch-up runs count every date.
     """
-    if not yesterday_results or len(yesterday_results) != NUM_EXPECTED_PLAYERS:
+    if not yesterday_results or len(yesterday_results) % NUM_EXPECTED_PLAYERS != 0:
         logger.warning(
-            f"Yesterday's results do not have exactly {NUM_EXPECTED_PLAYERS} players, skipping season metrics"
+            f"Results do not have a complete slate (multiple of {NUM_EXPECTED_PLAYERS} players), "
+            "skipping season metrics"
         )
         return []
 
@@ -1057,10 +1085,10 @@ def calculate_season_metrics(yesterday_results: List[Dict], season_id=None) -> L
     correct_picks = sum(1 for player in yesterday_results if player.get("Scored") == 1)
 
     if not cur_season:
-        new_total = NUM_EXPECTED_PLAYERS
+        new_total = len(yesterday_results)
         new_correct = correct_picks
     else:
-        new_total = cur_season["total"] + NUM_EXPECTED_PLAYERS
+        new_total = cur_season["total"] + len(yesterday_results)
         new_correct = cur_season["correct"] + correct_picks
 
     return {
