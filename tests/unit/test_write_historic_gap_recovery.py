@@ -26,11 +26,15 @@ def _fake_get_date(hour=False, add_days=0, subtract_days=0):
     return TODAY
 
 
-def _cloudflare_for(date_entries):
-    """Build a get_players_for_date mock resolving every date as scored."""
+def _archive_for(date_entries):
+    """Build a get_players_for_date mock resolving every date as scored.
+
+    Archive rows key on ``player_id`` (#113); the old Cloudflare worker put the
+    NHL id in ``id``.
+    """
 
     def _inner(date):
-        return [{"id": e["player_id"], "scored": bool(e["Scored"])} for e in date_entries if e["date"] == date]
+        return [{"player_id": e["player_id"], "scored": bool(e["Scored"])} for e in date_entries if e["date"] == date]
 
     return _inner
 
@@ -61,7 +65,7 @@ def test_write_historic_db_returns_all_newly_scored_dates(
         _entry(YESTERDAY, 6, 1),
     ]
     mock_get_historical.return_value = historic
-    mock_get_players.side_effect = _cloudflare_for(resolved)
+    mock_get_players.side_effect = _archive_for(resolved)
 
     result = write_historic_db([])  # no-game-today shape also works; picks only add today
 
@@ -104,7 +108,7 @@ def test_write_historic_db_skips_incomplete_dates(mock_date, mock_get_historical
     ]
     resolved_yesterday = [_entry(YESTERDAY, 4, 0), _entry(YESTERDAY, 5, 0), _entry(YESTERDAY, 6, 1)]
     mock_get_historical.return_value = historic
-    mock_get_players.side_effect = _cloudflare_for(resolved_yesterday)
+    mock_get_players.side_effect = _archive_for(resolved_yesterday)
 
     result = write_historic_db([])
 
