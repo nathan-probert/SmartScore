@@ -9,7 +9,7 @@ from dateutil import parser
 from postgrest.exceptions import APIError
 from smartscore_info_client.utility import exponential_backoff_request
 
-from config import ENV, SUPABASE_ADMIN_AUTH_CLIENT, SUPABASE_CLIENT
+from config import ENV, SUPABASE_ADMIN_CLIENT, SUPABASE_CLIENT
 from constants import CURRENT_PICK_ACCURACY, SEASON_CUTOFF_MONTH, SEASON_PICK_ACCURACY_PREFIX
 
 logger = Logger()
@@ -321,7 +321,7 @@ def get_emails():
     """
 
     try:
-        response = SUPABASE_ADMIN_AUTH_CLIENT.rpc("get_opted_in_emails").execute()
+        response = SUPABASE_ADMIN_CLIENT.rpc("get_opted_in_emails").execute()
         users = [
             {"email": row["email"], "display_name": row.get("Display_name", "")}
             for row in response.data

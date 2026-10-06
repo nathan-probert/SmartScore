@@ -13,12 +13,12 @@ from smartscore_info_client.models.player import Player, PlayerInfo
 from smartscore_info_client.models.team import GameTeam, TeamInfo
 from smartscore_info_client.utility import exponential_backoff_request
 
-from cloudflare_client import backfill_scored, delete_game, get_players_for_date, get_unscored_dates
 from constants import DAYS_TO_KEEP_HISTORIC_DATA, NUM_EXPECTED_PLAYERS, WEIGHTS
 from email_utility import send_email
 from feature_flags import NHL_MOCK_FLAG, is_feature_enabled
 from mock_nhl_client import MockNHLClient
 from nhl_lineups import normalize_player_name
+from player_archive import backfill_scored, delete_game_snapshots, get_players_for_date, get_unscored_dates
 from utility import (
     get_cur_pick_pct,
     get_emails,
@@ -264,6 +264,8 @@ def backfill_dates():
 
         # get players who actually played
         players = []
+        # Only fetched if this date has a postponed game; see resolve_team_names.
+        schedule_data = None
         for game in data.get("games"):
             if game.get("gameScheduleState") == "OK":
                 if not game.get("gameOutcome"):
@@ -275,21 +277,24 @@ def backfill_dates():
                     return
             if game.get("gameScheduleState") == "PPD":
                 # Game was postponed, delete all entries. Unlike the old
-                # fire-and-forget Lambda invoke, this is a blocking HTTP call, so
+                # fire-and-forget Lambda invoke, this is a blocking call, so
                 # failures are caught and logged rather than silently dropped.
+                if schedule_data is None:
+                    schedule_data = fetch_schedule(nhl_client, date)
+                team_names = resolve_team_names(
+                    schedule_data,
+                    [game.get("homeTeam", {}).get("abbrev"), game.get("awayTeam", {}).get("abbrev")],
+                )
                 try:
-                    delete_game(
-                        date,
-                        game.get("homeTeam", {}).get("abbrev"),
-                        game.get("awayTeam", {}).get("abbrev"),
-                    )
+                    delete_game_snapshots(date, team_names)
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"Failed to delete postponed game on {date}: {e}")
                 continue
 
-            # Some goals carry no playerId (e.g. unassisted/empty net); the worker
-            # rejects non-string ids, so drop falsy values before stringifying.
-            players.extend(list({str(goal.get("playerId")) for goal in game.get("goals", {}) if goal.get("playerId")}))
+            # Some goals carry no playerId (e.g. unassisted/empty net); drop those
+            # rather than stringifying them. Ids stay raw here - backfill_scored
+            # coerces them to int and drops non-numerics, since player_id is BIGINT.
+            players.extend({goal.get("playerId") for goal in game.get("goals", {}) if goal.get("playerId")})
         scorers_dict[date] = players
 
     # One request per date, so a window of dozens of dates is dozens of calls.
@@ -434,12 +439,18 @@ def write_historic_db(picks):
     for date in dates_no_scored:
         players = get_players_for_date(date)
 
-        player_table = {player["id"]: player for player in players}
+        # Archive rows key on player_id (the NHL id). Mongo's documents carried
+        # it in `id`, so this used to be {player["id"]: player}.
+        player_table = {player["player_id"]: player for player in players}
 
         for entry in old_entries:
             if entry["date"] == date:
                 player = player_table.get(entry["player_id"])
-                if player:
+                # `scored` is nullable: null means the game has not been graded
+                # yet. Only copy a real value across, otherwise this would
+                # overwrite a pick that a previous date's backfill already
+                # graded, just because the date still has *some* unscored pick.
+                if player and player.get("scored") is not None:
                     entry["Scored"] = int(player["scored"])
 
     data = old_entries + picks if picks else old_entries
@@ -750,6 +761,96 @@ def enrich_starting_goalies(date: str | None = None) -> List[Dict]:
         enriched.append(info)
 
     return enriched
+
+
+def _team_display_name(team):
+    """The NHL schedule place name for a team, e.g. "Toronto".
+
+    ``placeName`` is a single space for some entries, which is why ``get_teams``
+    falls back to ``commonName``. Every consumer of ``team_name`` has to agree
+    on this, since the value is the join key between the roster payload and the
+    schedule.
+    """
+    place = ((team.get("placeName") or {}).get("default") or "").strip()
+    if place and place != " ":
+        return place
+    return ((team.get("commonName") or {}).get("default") or "").strip()
+
+
+def build_team_name_map(schedule_data: Dict) -> Dict[str, str]:
+    """
+    Map NHL team display name to abbreviation using the same logic as get_teams.
+
+    Args:
+        schedule_data: Raw response from the NHL schedule endpoint.
+
+    Returns:
+        Mapping of team display name to team abbreviation.
+    """
+    mapping = {}
+    try:
+        games = schedule_data.get("gameWeek", [])[0].get("games", [])
+    except (AttributeError, IndexError, KeyError, TypeError):
+        logger.error("Unexpected schedule payload when building team name map")
+        return {}
+
+    for game in games:
+        for side in ("homeTeam", "awayTeam"):
+            team = game.get(side, {})
+            name = _team_display_name(team)
+            abbr = team.get("abbrev", "")
+            if not name or not abbr:
+                continue
+            if name in mapping and mapping[name] != abbr:
+                logger.warning(f"Ambiguous team name in schedule: {name}")
+            mapping[name] = abbr
+
+    return mapping
+
+
+def fetch_schedule(nhl_client, date):
+    """Fetch a date's NHL schedule, returning ``{}`` if the fetch fails.
+
+    A schedule lookup is only needed on the postponed-game path, so a failure
+    here must not take down the rest of the backfill.
+    """
+    try:
+        return nhl_client.get_schedule(date)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Could not fetch the NHL schedule for {date}: {e}")
+        return {}
+
+
+def resolve_team_names(schedule_data: Dict, team_abbrs) -> List[str]:
+    """Translate team abbreviations into the ``team_name`` snapshots are keyed on.
+
+    ``Player-Snapshots`` stores ``team_name`` (the schedule place name, e.g.
+    "Toronto"), but ``team_abbr`` is stripped from the pipeline payload by
+    ``TEAM_MERGE_EXCLUDED_FIELDS`` and the NHL score feed only reports
+    abbreviations. The postponed-game delete therefore has to go through the
+    schedule, which is the same payload ``build_team_name_map`` already reads.
+    Inverts that map so the two stay in step.
+
+    Abbreviations the schedule does not know are dropped (and logged) rather
+    than guessed at, because a wrong name would delete another team's rows.
+    """
+    abbr_to_name = {abbr: name for name, abbr in build_team_name_map(schedule_data).items()}
+
+    names = []
+    missing = []
+    for abbr in team_abbrs or []:
+        if not abbr:
+            continue
+        name = abbr_to_name.get(abbr)
+        if name:
+            names.append(name)
+        else:
+            missing.append(abbr)
+
+    if missing:
+        logger.warning(f"Could not resolve team abbreviation(s) to a snapshot team_name: {sorted(set(missing))}")
+
+    return names
 
 
 def build_goalies_with_team_id(starters: List[Dict], teams: List[Dict] | None) -> List[Dict]:

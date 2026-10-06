@@ -35,16 +35,16 @@ TEMPLATE_PATH = _find_template()
 TEMPLATE_TEXT = TEMPLATE_PATH.read_text(encoding="utf-8")
 TEMPLATE = yaml.load(TEMPLATE_TEXT, Loader=CfnLoader)
 
-# Credentials shared by every handler: the Supabase/PostHog clients and the
-# Cloudflare smartscore-api worker. Scoped per-handler credentials (Brevo) are
-# deliberately excluded - only SendEmailsFunction needs those.
+# Credentials shared by every handler: the Supabase/PostHog clients, which
+# player_archive also needs because Player-Snapshots has RLS on and no policies
+# (service role only). Scoped per-handler credentials (Brevo) are deliberately
+# excluded - only SendEmailsFunction needs those.
 SHARED_ENV_VARS = (
     "ENV",
     "SUPABASE_URL",
     "SUPABASE_API_KEY",
     "SUPABASE_SERVICE_ROLE_KEY",
     "POSTHOG_FEATURE_FLAG_KEY",
-    "SMARTSCORE_API_TOKEN",
 )
 
 
@@ -67,7 +67,7 @@ def test_template_parses_and_has_lambdas():
 
 @pytest.mark.parametrize("env_var", SHARED_ENV_VARS)
 def test_every_lambda_function_gets_shared_env_var(env_var):
-    """Every handler can reach Supabase, PostHog and the worker.
+    """Every handler can reach Supabase and PostHog.
 
     A new Lambda added to the template without this variable would otherwise
     only fail when that handler first runs.
@@ -80,6 +80,23 @@ def test_every_lambda_function_gets_shared_env_var(env_var):
     )
 
 
+def test_no_lambda_still_receives_the_retired_worker_token():
+    """The smartscore-api worker is gone (#113); its token must not linger.
+
+    A leftover variable is dead weight in every Lambda's environment and a
+    standing invitation to re-wire the retired path.
+    """
+    still_wired = [
+        name for name, resource in lambda_functions().items() if "SMARTSCORE_API_TOKEN" in env_vars(resource)
+    ]
+
+    assert not still_wired, f"{sorted(still_wired)} still receive SMARTSCORE_API_TOKEN"
+    assert "SmartscoreApiToken" not in TEMPLATE.get("Parameters", {}), (
+        "the retired worker token parameter is still declared"
+    )
+    assert "SMARTSCORE_API_TOKEN" not in TEMPLATE_TEXT
+
+
 def test_every_ref_points_at_a_declared_parameter():
     """Catches typos in !Ref targets, which CloudFormation only rejects at deploy."""
     declared = set(TEMPLATE.get("Parameters", {}))
@@ -87,11 +104,6 @@ def test_every_ref_points_at_a_declared_parameter():
 
     undeclared = sorted(referenced - declared)
     assert not undeclared, f"!Ref to undeclared parameter(s): {undeclared}"
-
-
-def test_worker_token_parameter_is_noecho():
-    """The worker token is a bearer credential; keep it out of console output."""
-    assert TEMPLATE["Parameters"]["SmartscoreApiToken"].get("NoEcho") is True
 
 
 def _deploy_script() -> Path:
