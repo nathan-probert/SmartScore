@@ -31,13 +31,21 @@
 -- training features (FEATURES in scripts/shared.py). Mongo kept them, so this
 -- table keeps them.
 --
--- Note on the absence of `team_abbr`: do not add it back. merge_players_and_teams
--- drops team_abbr (TEAM_MERGE_EXCLUDED_FIELDS) before the payload is built, so no
--- row has ever carried one - Mongo included. `team_name` (the NHL schedule place
--- name, e.g. "Toronto") is therefore the only team identity a row has, and the
--- postponed-game delete matches on it. The NHL score feed, which is the only
--- source of a postponed game, reports abbreviations, so service.resolve_team_names
--- translates them through that date's schedule before deleting.
+-- Note on team identity: `team_name` is the NHL schedule place name (e.g.
+-- "Toronto"), and it is what the postponed-game delete matches on. The NHL
+-- score feed, which is the only source of a postponed game, reports
+-- abbreviations, so service.resolve_team_names translates them through that
+-- date's schedule before deleting.
+--
+-- team_name alone cannot tell the Islanders from the Rangers - the NHL reports
+-- one placeName, "New York", for both - so 20261007_add_team_identity_columns.sql
+-- adds `team_abbr` plus opponent columns back. The note that used to live here
+-- claimed no row had ever carried `team_abbr`, Mongo included, and told future
+-- readers not to add it back. That was wrong: every Mongo row written through
+-- 2025-01-24 had one (smartscore-api's change_team_name_to_abbrev backfilled
+-- the history), and the #113 port dropped it. Rows from 2025-01-25 through
+-- 2026-10-01 have no team identity at all - the parse-lambda refactor stopped
+-- putting it in the payload - which is the gap the backfill closes.
 
 CREATE TABLE IF NOT EXISTS "Player-Snapshots-__ENV__" (
     "date" TEXT NOT NULL,
