@@ -50,6 +50,12 @@ CACHE_DIR = Path(__file__).parent / "cache"
 # a module global so _throttle stays a plain function (ruff PLW0603).
 _last_request_at = [0.0]
 
+# Fields every cached box-score record must carry. A cached file missing any of
+# these is treated as stale and re-fetched, so a cache written by an older version
+# of this module is upgraded rather than trusted. Keeping this explicit means a new
+# field added to fetch_boxscore cannot be silently omitted from a rebuild.
+_REQUIRED_RECORD_FIELDS = ("game_id", "game_date", "player_id", "team_abbrev", "team_goals_for")
+
 
 def _throttle(delay_seconds):
     """Sleep so consecutive requests are at least ``delay_seconds`` apart."""
@@ -285,18 +291,21 @@ def fetch_boxscore(game_id, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE
             with path.open(encoding="utf-8") as f:
                 cached = json.load(f)
 
-            # Older cache files predate game_id on the record. They are still valid
-            # data, so re-stamp them in place rather than re-downloading a game we
-            # already have - the raw store keys on (player_id, game_id) and cannot
-            # get the id from anywhere else.
+            # Older cache files predate fields added later. They are still valid
+            # data for the fields they do carry, so treat a record missing a newly
+            # added one as stale and re-fetch rather than returning a half-upgraded
+            # payload - a cache that silently lacks team_goals_for would make
+            # team goal totals fall back to summing players, which is the bug
+            # team_goals_for exists to prevent.
             if cached and not cached[0].get("game_id"):
-                for record in cached:
-                    record["game_id"] = game_id
+                cached = None
+            elif cached and _REQUIRED_RECORD_FIELDS and not all(
+                f in cached[0] for f in _REQUIRED_RECORD_FIELDS
+            ):
+                cached = None
 
-                with path.open("w", encoding="utf-8") as f:
-                    json.dump(cached, f)
-
-            return cached
+            if cached is not None:
+                return cached
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -305,6 +314,23 @@ def fetch_boxscore(game_id, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE
     response.raise_for_status()
     payload = response.json()
 
+    # The team objects carry the official score for each side. This is the
+    # authoritative team goal total and it does NOT always equal the sum of the
+    # skaters' `goals` in this same payload - two goal types are attributed to a
+    # team without appearing in any skater's boxscore row:
+    #
+    #   * shootout game-winning goals - counted on the scoreboard and in the team
+    #     total, but the play-by-play carries only a shootout-complete marker
+    #   * goalie empty-net goals - officially credited to the goalie, omitted from
+    #     his `goals` field
+    #
+    # Verified on 2023020442 (PIT at MTL, shootout): official 4, skater sum 3.
+    # So team goals must come from here, never from summing players.
+    team_scores = {
+        "away": ((payload.get("awayTeam") or {}).get("abbrev"), (payload.get("awayTeam") or {}).get("score")),
+        "home": ((payload.get("homeTeam") or {}).get("abbrev"), (payload.get("homeTeam") or {}).get("score")),
+    }
+
     records = []
 
     # The payload keys the stat blocks by side, and the side tells us home/road,
@@ -312,6 +338,7 @@ def fetch_boxscore(game_id, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE
     for side, team in (("homeTeam", payload.get("homeTeam")), ("awayTeam", payload.get("awayTeam"))):
         abbrev = (team or {}).get("abbrev")
         stats = (payload.get("playerByGameStats") or {}).get(side) or {}
+        goals_for = team_scores["home" if side == "homeTeam" else "away"][1]
 
         for group in ("forwards", "defense", "goalies"):
             for player in stats.get(group) or []:
@@ -330,6 +357,11 @@ def fetch_boxscore(game_id, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE
                         "player_id": player_id,
                         "name": (player.get("name") or {}).get("default"),
                         "team_abbrev": abbrev,
+                        # The official team goal total for this game, repeated on
+                        # each player row. Duplicated deliberately: it is a
+                        # property of the team-game, and compute_derived_team reads
+                        # it once per (team, game) rather than summing rows.
+                        "team_goals_for": goals_for,
                         "position": player.get("position"),
                         "sweater_number": player.get("sweaterNumber"),
                         "home": side == "homeTeam",

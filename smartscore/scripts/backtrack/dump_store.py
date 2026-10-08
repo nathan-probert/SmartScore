@@ -37,7 +37,7 @@ DUMP_DIR = REPO_ROOT / "data" / "dumps"
 # Tables holding per-season derived output. Included in the dump rather than
 # recomputed on load: they are cheap to regenerate but shipping them means a loaded
 # database is immediately queryable instead of needing a --derive pass.
-_ALL_TABLES = ("player_games", "derived_features")
+_ALL_TABLES = ("player_games", "derived_features", "derived_team_stats")
 
 
 def seasons_in_db(db_path=DB_PATH):

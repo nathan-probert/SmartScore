@@ -88,6 +88,12 @@ CREATE TABLE IF NOT EXISTS player_games (
     team_abbrev      TEXT,
     opponent_abbrev  TEXT,
     home             INTEGER,
+    -- Official goals scored by this player's team in this game, from the box
+    -- score's awayTeam/homeTeam block. NOT the sum of this table's goals for the
+    -- team: shootout game-winning goals and goalie empty-net goals count toward
+    -- the team but appear in no skater's boxscore row, so summing rows
+    -- undercounts. team goal totals must read this column.
+    team_goals_for   INTEGER,
 
     goals                INTEGER,
     assists              INTEGER,
@@ -121,6 +127,58 @@ CREATE INDEX IF NOT EXISTS player_games_player_date_idx
 -- adding one is an INSERT into here plus a view that reads it, and the raw table
 -- above never has to be rewritten.
 --
+-- Team-level features, one row per team per game.
+--
+-- These are TEAM attributes, not player stats: every player on a club carries the
+-- same tgpg for a given date. The archive denormalises them onto Player-Snapshots,
+-- which multiplies one number across ~21 rows per team-date and makes the table
+-- awkward to reason about. They live here instead, keyed by team-date, and are
+-- joined onto player rows when a caller needs them together.
+--
+-- Grain: (season, team_abbrev, game_date). One row per team appearance, so a team
+-- that plays on a date has exactly one row for it.
+--
+-- tgpg - team's own goals FOR per game, season to date. Derived by summing the
+--   goals of that team's players in each of its games, then dividing by games
+--   played. Computed from player_games; no extra API call.
+--
+-- otga  - the OPPONENT's goals AGAINST per game, i.e. how many goals this team
+--   scores ON THAT OPPONENT. This is an offence measure, not a defence one:
+--   goals scored against the opponent are, by definition, the opponent's goals
+--   against, so the two are the same quantity read from opposite ends.
+--
+--   Verified against the archive on 2024-02-17 (Anaheim at Toronto):
+--   opponent goals against 165 / 52 games = 3.17308, archive says 3.17.
+--   An earlier version of this table computed the team's OWN goals against
+--   instead and matched almost nothing (107 of 16,301 rows) - the two are
+--   close but unrelated, and reading the client's opponent_id argument as "my
+--   team" is the trap here.
+--
+--   Note this is why the value is opponent-specific: two Anaheim players facing
+--   different opponents on the same night carry different otga values, unlike
+--   tgpg which is one number per team.
+--
+-- otshga - the opponent's shorthanded goals AGAINST per game. Not reconstructable
+--   from player_games: the merge stores each player's shorthanded goals but not
+--   which of them were scored against the opponent's power play, which is what
+--   this number means. Needs api.nhle.com/stats/rest/en/team/penaltykilltime.
+--   Left NULL, documented rather than approximated.
+CREATE TABLE IF NOT EXISTS derived_team_stats (
+    season     TEXT NOT NULL,
+    team_abbrev TEXT NOT NULL,
+    game_date  TEXT NOT NULL,
+    game_id    INTEGER NOT NULL,
+    tgpg       REAL,
+    otga       REAL,
+    otshga     REAL,
+    PRIMARY KEY (season, team_abbrev, game_id)
+);
+
+CREATE INDEX IF NOT EXISTS derived_team_stats_date_idx
+    ON derived_team_stats (season, game_date);
+
+-- Per-player features, one row per player per game.
+--
 -- five_gpg follows get_five_gpg in smartscore_info_client in WINDOW (the last 5
 -- games) but not in DIVISOR. The client divides by a hardcoded 5 regardless of how
 -- many games the player has played, so a rookie with a goal in his only game reads
@@ -153,10 +211,18 @@ def connect(db_path=DB_PATH):
     # that column existed, so the schema changes need an explicit ALTER. Additive
     # only - a rename or type change is a rebuild, and there is no such change
     # pending.
-    for column, definition in (("five_gpg", "REAL"),):
-        existing = {r[1] for r in conn.execute("PRAGMA table_info(derived_features)")}
+    # Additive column migrations for databases built before a column existed.
+    # CREATE TABLE IF NOT EXISTS will not add one. Only additions are handled - a
+    # rename or a type change needs a rebuild, and no such change is pending.
+    additive_columns = (
+        ("derived_features", "five_gpg", "REAL"),
+        ("player_games", "team_goals_for", "INTEGER"),
+    )
+
+    for table, column, definition in additive_columns:
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}  # noqa: S608
         if column not in existing:
-            conn.execute(f"ALTER TABLE derived_features ADD COLUMN {column} {definition}")  # noqa: S608
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")  # noqa: S608
 
     conn.commit()
     return conn
@@ -174,6 +240,10 @@ def _merge_boxscore(record):
         "sweater_number": record.get("sweater_number"),
         "team_abbrev": record.get("team_abbrev"),
         "opponent_abbrev": None,  # box score has no per-player opponent
+        # Official team total, not this player's goals. See the SCHEMA comment on
+        # team_goals_for - summing per-player goals loses shootout winners and
+        # goalie ENGs.
+        "team_goals_for": record.get("team_goals_for"),
         "home": 1 if record.get("home") else 0,
         "goals": record.get("goals"),
         "assists": record.get("assists"),
@@ -406,6 +476,118 @@ def compute_derived(conn, season):
     conn.commit()
 
 
+def compute_derived_team(conn, season):
+    """Fill derived_team_stats for one season: tgpg and otga per team-game.
+
+    Built in one pass because both rates fall out of a single per-(team, game)
+    collapse of player_games, once each row knows what its opponent scored:
+
+        NSH  3   against TBL 5
+        TBL  5   against NSH 3
+
+    tgpg - own goals for, over this team's games played before this one.
+    otga - the OPPONENT's goals against, over the opponent's games before this
+           one. Goals scored against an opponent equal that opponent's goals
+           against, so summing the opponent's own goals_for in those shared games
+           gives the number directly - no separate concessions tally needed.
+
+    Both use the strictly-before frame so a row for game N carries the rate
+    entering it, matching gpg. A team's first game of the season is NULL, not 0:
+    a zero would claim a team averages no goals per game, which the archive
+    does emit (Winnipeg, Anaheim, Dallas and Carolina all show tgpg = 0 at the
+    start of the current season).
+    """
+    conn.execute("DELETE FROM derived_team_stats WHERE season = ?", (season,))
+
+    # Collapse player_games to one row per (team, game), then attach the
+    # opponent's tally for that game. The self-join is 1:1 - every game has
+    # exactly two teams, which is asserted by the count below rather than assumed.
+    #
+    # goals_for comes from team_goals_for (the box score's official team score),
+    # NOT from SUM(goals). Summing player rows undercounts: a shootout
+    # game-winning goal and a goalie empty-net goal both count toward the team but
+    # appear in no skater's boxscore row. PIT 2023-12-13 scored 4 and its skaters
+    # account for 3; that missing goal is a shootout winner. MAX is safe because
+    # every player row for a team-game carries the same official value.
+    conn.execute(
+        """
+        CREATE TEMP TABLE team_game_goals AS
+        SELECT season, game_id, team_abbrev, game_date,
+               MAX(team_goals_for) AS goals_for
+        FROM player_games
+        WHERE season = ? AND team_abbrev IS NOT NULL AND team_goals_for IS NOT NULL
+        GROUP BY season, game_id, team_abbrev
+        """,
+        (season,),
+    )
+
+    orphans = conn.execute(
+        "SELECT COUNT(*) FROM team_game_goals t WHERE NOT EXISTS ("
+        "  SELECT 1 FROM team_game_goals o"
+        "  WHERE o.game_id = t.game_id AND o.team_abbrev <> t.team_abbrev)",
+    ).fetchone()[0]
+
+    if orphans:
+        # Silently dropping these would make otga wrong for the affected games
+        # rather than absent, so it is worth refusing.
+        raise ValueError(f"{orphans} team-game row(s) have no opponent; otga would be wrong")
+
+    # Step 2: cumulative per team. gf/gp drive tgpg; ga (goals conceded, i.e. the
+    # sum of what opponents scored) drives the team's OWN goals-against rate. Both
+    # use the strictly-before frame so a row for game N carries the rate entering
+    # it, matching gpg.
+    conn.execute(
+        """
+        CREATE TEMP TABLE team_cum AS
+        SELECT
+            t.season,
+            t.game_id,
+            t.team_abbrev,
+            t.game_date,
+            SUM(t.goals_for) OVER w AS gf,
+            COUNT(*)           OVER w AS gp,
+            SUM(o.goals_for)   OVER w AS ga
+        FROM team_game_goals t
+        JOIN team_game_goals o
+          ON o.season = t.season
+         AND o.game_id = t.game_id
+         AND o.team_abbrev <> t.team_abbrev
+        WINDOW
+            -- Ordered by (game_date, game_id) rather than date alone so the
+            -- ordering is total and deterministic.
+            w AS (PARTITION BY t.season, t.team_abbrev ORDER BY t.game_date, t.game_id
+                  ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+        """
+    )
+
+    # Step 3: otga is the OPPONENT's goals against per game, so it is read off the
+    # other team's row for the same game - not off this team's own ga. Those are
+    # different quantities: a team's ga is what IT conceded, while otga is what
+    # the club it is facing concedes, i.e. this team's scoring rate against that
+    # specific opponent.
+    conn.execute(
+        """
+        INSERT INTO derived_team_stats (season, team_abbrev, game_date, game_id, tgpg, otga, otshga)
+        SELECT
+            c.season,
+            c.team_abbrev,
+            c.game_date,
+            c.game_id,
+            CASE WHEN c.gp = 0 THEN NULL ELSE 1.0 * c.gf / c.gp END,
+            CASE WHEN o.ga = 0 THEN NULL ELSE 1.0 * o.ga / o.gp END,
+            NULL
+        FROM team_cum c
+        LEFT JOIN team_cum o
+          ON o.season = c.season
+         AND o.game_id = c.game_id
+         AND o.team_abbrev <> c.team_abbrev
+        """
+    )
+    conn.commit()
+    conn.execute("DROP TABLE IF EXISTS team_cum")
+    conn.execute("DROP TABLE IF EXISTS team_game_goals")
+
+
 def stats(db_path=DB_PATH):
     conn = connect(db_path)
 
@@ -432,6 +614,21 @@ def stats(db_path=DB_PATH):
 
     for row in conn.execute("SELECT season, COUNT(*) AS n FROM derived_features GROUP BY season ORDER BY season"):
         print(f"derived {row['season']}: {row['n']} feature row(s)")
+
+    for row in conn.execute(
+        """
+        SELECT season, COUNT(*) AS rows, COUNT(DISTINCT team_abbrev) AS teams,
+               SUM(tgpg IS NULL) AS null_tgpg, SUM(otga IS NULL) AS null_otga,
+               ROUND(MIN(tgpg), 4) AS min_tgpg, ROUND(MAX(tgpg), 4) AS max_tgpg,
+               ROUND(MIN(otga), 4) AS min_otga, ROUND(MAX(otga), 4) AS max_otga
+        FROM derived_team_stats GROUP BY season ORDER BY season
+        """
+    ):
+        print(
+            f"team {row['season']}: {row['rows']} row(s), {row['teams']} team(s), "
+            f"null tgpg={row['null_tgpg']} otga={row['null_otga']} "
+            f"tgpg {row['min_tgpg']}..{row['max_tgpg']}  otga {row['min_otga']}..{row['max_otga']}"
+        )
 
     conn.close()
 
@@ -521,11 +718,65 @@ def publish(season, db_path=DB_PATH):
     return written
 
 
+def publish_team(season, db_path=DB_PATH):
+    """Upsert derived_team_stats into Team-Stats-backtrack-{ENV}.
+
+    Separate from publish() because the grain differs: one row per team-game here,
+    one row per player-game there. Writing them through the same path would put team
+    attributes on player rows and reintroduce the ~21x duplication the table split
+    exists to avoid.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    rows = conn.execute(
+        "SELECT season, team_abbrev, game_date, game_id, tgpg, otga, otshga FROM derived_team_stats WHERE season = ?",
+        (season,),
+    ).fetchall()
+
+    if not rows:
+        print(f"{season}: no derived team stats")
+        conn.close()
+        return 0
+
+    env_name, supabase = config()
+    table = f"Team-Stats-backtrack-{env_name}"
+
+    payload = [
+        {
+            "season": r["season"],
+            "team_abbrev": r["team_abbrev"],
+            # Denormalised so a reader does not need team_map.py to get a place name.
+            "team_name": to_place(r["team_abbrev"]),
+            "date": r["game_date"],
+            "game_id": r["game_id"],
+            "tgpg": r["tgpg"],
+            "otga": r["otga"],
+            "otshga": r["otshga"],
+        }
+        for r in rows
+    ]
+
+    written = 0
+    batch_size = 500
+
+    for start in range(0, len(payload), batch_size):
+        batch = payload[start : start + batch_size]
+        supabase.table(table).upsert(batch, on_conflict="season,team_abbrev,game_id", returning="minimal").execute()
+        written += len(batch)
+
+    conn.close()
+    print(f"published {written} team row(s) to {table}")
+
+    return written
+
+
 def main():
     parser = argparse.ArgumentParser(description="Local SQLite raw store for NHL per-game data.")
     parser.add_argument("--build", metavar="SEASON", help="Load raw rows for one season from the cache.")
     parser.add_argument("--derive", metavar="SEASON", help="Recompute derived features for one season.")
-    parser.add_argument("--publish", metavar="SEASON", help="Upsert derived features into Supabase.")
+    parser.add_argument("--publish", metavar="SEASON", help="Upsert player features into Supabase.")
+    parser.add_argument("--publish-team", metavar="SEASON", help="Upsert team stats into Supabase.")
     parser.add_argument("--stats", action="store_true", help="Summarise what is stored.")
     parser.add_argument("--db", default=str(DB_PATH))
     args = parser.parse_args()
@@ -545,12 +796,17 @@ def main():
     if args.derive:
         conn = connect(Path(args.db))
         compute_derived(conn, args.derive)
+        compute_derived_team(conn, args.derive)
         conn.close()
         print(f"derived features recomputed for {args.derive}")
         return 0
 
     if args.publish:
         publish(args.publish, db_path=Path(args.db))
+        return 0
+
+    if args.publish_team:
+        publish_team(args.publish_team, db_path=Path(args.db))
         return 0
 
     parser.print_help()
