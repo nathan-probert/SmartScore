@@ -447,14 +447,22 @@ def handle_emails(event, context):
     """
     Sends out emails to users with their smartscore picks.
 
+    Picks are read here rather than carried in the Step Functions state.
+    NotifyUsers' first state projects CheckCompleted's result down to ``status``
+    alone (see templates/notify_users.asl.json): that result is the whole
+    Picks-prod roster, which exceeds the 256KB state limit now that each skater
+    row carries the opp_goalie_* and lineup columns, and ``choose_picks``
+    reduces it to a handful of rows regardless.
+
     Args:
-        event (dict): A dictionary containing player data.
+        event (dict): A dictionary containing the run status. ``players`` is
+            honoured for direct invocation, but NotifyUsers does not send it.
         context (dict): Unused Lambda context.
 
     Returns:
         dict: A dictionary containing status code.
     """
-    picks = choose_picks(event.get("players", []))
+    picks = choose_picks(event.get("players") or check_db_for_date())
 
     users = get_all_emails()  # Now returns list of dicts with email and display_name
     for user in users:

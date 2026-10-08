@@ -1,10 +1,13 @@
 {
-    "Comment": "A state machine to handle notifying the users via email",
+    "Comment": "A state machine to handle notifying the users via email. GetDate projects CheckCompleted's result down to status with a ResultSelector, and must keep doing so: CheckCompleted returns the whole Picks-prod roster, which is well over the 256KB state limit now that each skater row carries the opp_goalie_* and lineup columns, and SendEmails re-reads the day's picks itself. Removing that ResultSelector reintroduces States.DataLimitExceeded and no email gets sent.",
     "StartAt": "GetDate",
     "States": {
         "GetDate": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:CheckCompleted-${ENV}",
+            "ResultSelector": {
+                "status.$": "$.status"
+            },
             "Next": "SendEmails"
         },
         "SendEmails": {

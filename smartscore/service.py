@@ -1219,6 +1219,14 @@ def send_emails(users: List[str], picks: List[Dict]) -> None:
         logger.info("Feature flag disabled: skipping email sends")
         return
 
+    # choose_picks yields [] whenever Picks has no rows for today, e.g. the
+    # processing pipeline has not published yet. The template renders an empty
+    # table rather than nothing, so without this guard every subscriber would be
+    # emailed a blank slate and the execution would still report success. Fail
+    # the NotifyUsers execution instead so the day is visible.
+    if not picks:
+        raise RuntimeError(f"No picks found for {get_date()}; refusing to send an empty picks email")
+
     with ThreadPoolExecutor() as executor:
         futures = [
             executor.submit(send_email, user["email"], picks, user.get("display_name", ""), get_date())
