@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 from event_handler import (
     handle_check_completed,
+    handle_emails,
     handle_get_goalies,
     handle_get_injuries,
     handle_make_predictions,
@@ -278,3 +279,45 @@ def test_handle_get_goalies_empty_players(mock_enrich, mock_build):
 
     assert result == {"statusCode": 200, "players": [], "teams": [], "goalies": []}
     mock_build.assert_called_once_with([], [])
+
+
+def _roster() -> list:
+    """A Picks-prod shaped roster spanning the three Tims buckets choose_picks needs."""
+    return [
+        {"name": "Player 1", "team_name": "Team A", "tims": 1, "stat": 0.80},
+        {"name": "Player 2", "team_name": "Team A", "tims": 1, "stat": 0.95},
+        {"name": "Player 3", "team_name": "Team B", "tims": 2, "stat": 0.90},
+        {"name": "Player 4", "team_name": "Team C", "tims": 3, "stat": 0.70},
+    ]
+
+
+@patch("event_handler.send_emails")
+@patch("event_handler.get_all_emails", return_value=[{"email": "test@example.com", "display_name": "Tester"}])
+@patch("event_handler.check_db_for_date")
+def test_handle_emails_reads_picks_when_not_in_state(mock_check_db, mock_get_emails, mock_send):
+    """NotifyUsers only passes ``status``, so picks come from the DB.
+
+    The roster used to ride in the Step Functions state, where it exceeded the
+    256KB limit. It is re-read here instead.
+    """
+    mock_check_db.return_value = _roster()
+
+    result = handle_emails({"status": "normal_run"}, {})
+
+    assert result == {"statusCode": 200}
+    mock_check_db.assert_called_once()
+    picks = mock_send.call_args[0][1]
+    assert [p["name"] for p in picks] == ["Player 2", "Player 3", "Player 4"]
+
+
+@patch("event_handler.send_emails")
+@patch("event_handler.get_all_emails", return_value=[{"email": "test@example.com", "display_name": "Tester"}])
+@patch("event_handler.check_db_for_date")
+def test_handle_emails_prefers_players_from_state(mock_check_db, mock_get_emails, mock_send):
+    """A direct invocation carrying players still uses them."""
+    mock_check_db.return_value = _roster()
+
+    handle_emails({"players": _roster()}, {})
+
+    mock_check_db.assert_not_called()
+    assert [p["name"] for p in mock_send.call_args[0][1]] == ["Player 2", "Player 3", "Player 4"]

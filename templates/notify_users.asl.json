@@ -3,8 +3,12 @@
     "StartAt": "GetDate",
     "States": {
         "GetDate": {
+            "$Comment": "CheckCompleted returns the whole Picks-prod roster (~640 rows). Once the opp_goalie_* and lineup columns landed on that table it serialized to ~440KB, well over the 256KB state limit, so this state failed with States.DataLimitExceeded and no email was ever sent. NotifyUsers only needs to know whether picks exist -- SendEmails re-reads the day's picks itself -- so project the result down to status. Keep this ResultSelector: deleting it reintroduces the failure.",
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:CheckCompleted-${ENV}",
+            "ResultSelector": {
+                "status.$": "$.status"
+            },
             "Next": "SendEmails"
         },
         "SendEmails": {

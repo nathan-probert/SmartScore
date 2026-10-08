@@ -2,6 +2,7 @@ import datetime as real_datetime
 from datetime import datetime
 from unittest.mock import patch
 
+import pytest
 import pytz
 from smartscore_info_client.api.nhle import NHLClient
 from smartscore_info_client.models.player import PlayerInfo, PlayerStats
@@ -361,6 +362,37 @@ def test_send_emails_sends_when_feature_flag_enabled(mock_feature_enabled, mock_
     mock_feature_enabled.assert_called_once_with("send_emails")
     mock_get_date.assert_called_once()
     mock_send_email.assert_called_once_with("test@example.com", picks, "Tester", "2026-04-16")
+
+
+@patch("service.send_email")
+@patch("service.get_date", return_value="2026-04-16")
+@patch("service.is_feature_enabled", return_value=True)
+def test_send_emails_refuses_empty_picks(mock_feature_enabled, mock_get_date, mock_send_email):
+    """Empty picks must fail the run, not email every subscriber a blank table.
+
+    choose_picks returns [] whenever Picks has no rows for today, which is the
+    normal state before the pipeline publishes.
+    """
+    users = [{"email": "test@example.com", "display_name": "Tester"}]
+
+    with pytest.raises(RuntimeError, match="No picks found"):
+        send_emails(users, [])
+
+    mock_send_email.assert_not_called()
+
+
+@patch("service.send_email")
+@patch("service.is_feature_enabled", return_value=False)
+def test_send_emails_empty_picks_respects_disabled_feature_flag(mock_feature_enabled, mock_send_email):
+    """The empty-picks guard must sit after the flag check.
+
+    With sending disabled there is nothing to protect, so this stays a no-op.
+    """
+    users = [{"email": "test@example.com", "display_name": "Tester"}]
+
+    send_emails(users, [])
+
+    mock_send_email.assert_not_called()
 
 
 @patch("service.datetime")
