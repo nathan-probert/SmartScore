@@ -161,11 +161,22 @@ CREATE INDEX IF NOT EXISTS player_games_player_date_idx
 --   different opponents on the same night carry different otga values, unlike
 --   tgpg which is one number per team.
 --
--- otshga - the opponent's shorthanded goals AGAINST per game. Not reconstructable
---   from player_games: the merge stores each player's shorthanded goals but not
---   which of them were scored against the opponent's power play, which is what
---   this number means. Needs api.nhle.com/stats/rest/en/team/penaltykilltime.
---   Left NULL, documented rather than approximated.
+-- otshga - the opponent's shorthanded goals AGAINST per game: how often this
+--   team has scored while the opponent was shorthanded, read off the opponent's
+--   row like otga. A goal scored on the power play IS a shorthanded goal against
+--   - the same event seen from opposite ends, exactly the otga argument - so
+--   summing this team's power_play_goals over the games shared with that
+--   opponent gives their shorthanded goals against directly, no separate
+--   penalty-kill tally needed. (The old "needs the penaltykilltime endpoint"
+--   note was wrong: verified against
+--   api.nhle.com/stats/rest/en/team/penaltykilltime for 2023-24 - all 16
+--   non-playoff teams match exactly. The endpoint's season totals include playoff
+--   games while this store is regular season only, which is the entire difference
+--   for the other 16.)
+--
+--   First game of the season is NULL like tgpg/otga. Later games read 0.0 when
+--   nothing has been scored: only gp = 0 is "no rate yet", a 0/4 is a rate, and
+--   the archive stores zeros there (2,434 zero rows).
 CREATE TABLE IF NOT EXISTS derived_team_stats (
     season     TEXT NOT NULL,
     team_abbrev TEXT NOT NULL,
@@ -194,12 +205,20 @@ CREATE INDEX IF NOT EXISTS derived_team_stats_date_idx
 -- and the archive's own values confirm the problem: 11 distinct values, all
 -- multiples of 0.2, which is what a fixed divisor produces. Keeping the quirk would
 -- make the column reproduce a bug rather than the intent.
+--
+-- ppg - power play goals per game: power play goals to date / games to date,
+--   strictly-before like gpg, 0 on the pre-debut row. This is NOT the archive's
+--   hppg, which is a 3-year window per smartscore_info_client's get_hppg(years=3)
+--   fed from seasonTotals in the landing payload - a different quantity that
+--   stays null here until a historic pass can build it. ppg is the single-season
+--   rate, and the per-season building block that pass will accumulate.
 CREATE TABLE IF NOT EXISTS derived_features (
     season    TEXT NOT NULL,
     player_id INTEGER NOT NULL,
     game_date TEXT NOT NULL,
     gpg       REAL,
     five_gpg  REAL,
+    ppg       REAL,
     PRIMARY KEY (season, player_id, game_date)
 );
 """
@@ -219,6 +238,7 @@ def connect(db_path=DB_PATH):
     # rename or a type change needs a rebuild, and no such change is pending.
     additive_columns = (
         ("derived_features", "five_gpg", "REAL"),
+        ("derived_features", "ppg", "REAL"),
         ("player_games", "team_goals_for", "INTEGER"),
     )
 
@@ -396,13 +416,14 @@ def build(season, db_path=DB_PATH, delay_seconds=0.0):
 
 
 def compute_derived(conn, season):
-    """Fill derived_features.gpg for one season.
+    """Fill derived_features.gpg/five_gpg/ppg for one season.
 
     Written as a window function over the raw rows so the arithmetic is visible
     and reviewable: goals and games accumulated STRICTLY BEFORE the row's own game
     (RANGE ... PRECEDING with 1 PRECEDING), then divided. A row therefore reads as
     "entering that game", which is what a pre-game pick needs and what the archive
-    stores.
+    stores. ppg reads the same frame off power_play_goals - the single-season
+    rate, not the archive's 3-year hppg (see the SCHEMA comment).
 
     A player's first game has no games before it, and 0/0 normalises to 0 rather
     than NULL - the archive stores 0 on pre-debut rows (verified against a player
@@ -414,7 +435,7 @@ def compute_derived(conn, season):
 
     conn.execute(
         """
-        INSERT INTO derived_features (season, player_id, game_date, gpg, five_gpg)
+        INSERT INTO derived_features (season, player_id, game_date, gpg, five_gpg, ppg)
         SELECT
             season,
             player_id,
@@ -445,6 +466,14 @@ def compute_derived(conn, season):
             CASE
                 WHEN games_before = 0 THEN 0
                 ELSE 1.0 * goals_last5 / games_before
+            END,
+            -- Power play goals per game over the same strictly-before frame,
+            -- 0 on the pre-debut row like gpg. Single-season by construction:
+            -- the archive's hppg is a 3-year window and stays null until a
+            -- historic pass exists.
+            CASE
+                WHEN prev_gp = 0 THEN 0
+                ELSE 1.0 * prev_pp / prev_gp
             END
         FROM (
             SELECT
@@ -455,6 +484,7 @@ def compute_derived(conn, season):
                 COUNT(*)              OVER w  AS gp_through,
                 SUM(COALESCE(goals, 0)) OVER w2 AS prev_goals,
                 COUNT(*)              OVER w2 AS prev_gp,
+                SUM(COALESCE(power_play_goals, 0)) OVER w2 AS prev_pp,
                 -- Rolling window over the five games strictly before this one.
                 -- More than five rows once a player is established; the frame is
                 -- a row count so "last 5 games" is exactly that, not "games in
@@ -486,25 +516,31 @@ def compute_derived(conn, season):
 
 
 def compute_derived_team(conn, season):
-    """Fill derived_team_stats for one season: tgpg and otga per team-game.
+    """Fill derived_team_stats for one season: tgpg, otga and otshga per team-game.
 
-    Built in one pass because both rates fall out of a single per-(team, game)
+    Built in one pass because all three rates fall out of a single per-(team, game)
     collapse of player_games, once each row knows what its opponent scored:
 
-        NSH  3   against TBL 5
-        TBL  5   against NSH 3
+        NSH  3   against TBL  5
+        TBL  5   against NSH  3
 
     tgpg - own goals for, over this team's games played before this one.
     otga - the OPPONENT's goals against, over the opponent's games before this
            one. Goals scored against an opponent equal that opponent's goals
            against, so summing the opponent's own goals_for in those shared games
            gives the number directly - no separate concessions tally needed.
+    otshga - the OPPONENT's shorthanded goals against, over the opponent's games
+           before this one. A power play goal this team scored is a goal the
+           opponent allowed while shorthanded - the same mirror as otga, so the
+           opponent's shorthanded goals against are this team's power_play_goals
+           summed over the shared games.
 
-    Both use the strictly-before frame so a row for game N carries the rate
+    All use the strictly-before frame so a row for game N carries the rate
     entering it, matching gpg. A team's first game of the season is NULL, not 0:
     a zero would claim a team averages no goals per game, which the archive
     does emit (Winnipeg, Anaheim, Dallas and Carolina all show tgpg = 0 at the
-    start of the current season).
+    start of the current season). otshga's zeros after game 1 stay 0.0 - see the
+    SCHEMA comment.
     """
     conn.execute("DELETE FROM derived_team_stats WHERE season = ?", (season,))
 
@@ -522,7 +558,12 @@ def compute_derived_team(conn, season):
         """
         CREATE TEMP TABLE team_game_goals AS
         SELECT season, game_id, team_abbrev, game_date,
-               MAX(team_goals_for) AS goals_for
+               MAX(team_goals_for) AS goals_for,
+               -- The team's own power play goals. Rows are box-score backed
+               -- (team_goals_for IS NOT NULL filters gamelog-only rows), and a
+               -- power play goal always has its scorer in the box score, so no
+               -- PP goal is missed by that filter.
+               SUM(COALESCE(power_play_goals, 0)) AS pp_goals
         FROM player_games
         WHERE season = ? AND team_abbrev IS NOT NULL AND team_goals_for IS NOT NULL
         GROUP BY season, game_id, team_abbrev
@@ -537,12 +578,14 @@ def compute_derived_team(conn, season):
     ).fetchone()[0]
 
     if orphans:
-        # Silently dropping these would make otga wrong for the affected games
-        # rather than absent, so it is worth refusing.
+        # Silently dropping these would make otga/otshga wrong for the affected
+        # games rather than absent, so it is worth refusing.
         raise ValueError(f"{orphans} team-game row(s) have no opponent; otga would be wrong")
 
     # Step 2: cumulative per team. gf/gp drive tgpg; ga (goals conceded, i.e. the
-    # sum of what opponents scored) drives the team's OWN goals-against rate. Both
+    # sum of what opponents scored) drives the team's OWN goals-against rate; shga
+    # (the opponents' power play goals, i.e. what opponents scored while this team
+    # was shorthanded) drives the team's own shorthanded-goals-against total. All
     # use the strictly-before frame so a row for game N carries the rate entering
     # it, matching gpg.
     conn.execute(
@@ -555,7 +598,8 @@ def compute_derived_team(conn, season):
             t.game_date,
             SUM(t.goals_for) OVER w AS gf,
             COUNT(*)           OVER w AS gp,
-            SUM(o.goals_for)   OVER w AS ga
+            SUM(o.goals_for)   OVER w AS ga,
+            SUM(o.pp_goals)    OVER w AS shga
         FROM team_game_goals t
         JOIN team_game_goals o
           ON o.season = t.season
@@ -569,11 +613,18 @@ def compute_derived_team(conn, season):
         """
     )
 
-    # Step 3: otga is the OPPONENT's goals against per game, so it is read off the
-    # other team's row for the same game - not off this team's own ga. Those are
-    # different quantities: a team's ga is what IT conceded, while otga is what
+    # Step 3: otga and otshga are OPPONENT-relative, so they are read off the
+    # other team's row for the same game - not off this team's own ga/shga. Those
+    # are different quantities: a team's ga is what IT conceded, while otga is what
     # the club it is facing concedes, i.e. this team's scoring rate against that
-    # specific opponent.
+    # specific opponent. Same mirror for otshga: o.shga is what the opponent
+    # allowed while shorthanded, which is this team's power play scoring against
+    # them.
+    #
+    # The guards differ on purpose. otga nulls when the numerator is 0 (standing
+    # behaviour, unchanged). otshga nulls only when o.gp = 0 - a first game has no
+    # rate yet - because 0 shorthanded goals against over games played is a real,
+    # common value and the archive stores it (2,434 zero rows).
     conn.execute(
         """
         INSERT INTO derived_team_stats (season, team_abbrev, game_date, game_id, tgpg, otga, otshga)
@@ -584,7 +635,7 @@ def compute_derived_team(conn, season):
             c.game_id,
             CASE WHEN c.gp = 0 THEN NULL ELSE 1.0 * c.gf / c.gp END,
             CASE WHEN o.ga = 0 THEN NULL ELSE 1.0 * o.ga / o.gp END,
-            NULL
+            CASE WHEN o.gp = 0 THEN NULL ELSE 1.0 * o.shga / o.gp END
         FROM team_cum c
         LEFT JOIN team_cum o
           ON o.season = c.season
@@ -621,22 +672,28 @@ def stats(db_path=DB_PATH):
             f"boxscore-backed={row['from_boxscore']} gamelog-backed={row['from_gamelog']}"
         )
 
-    for row in conn.execute("SELECT season, COUNT(*) AS n FROM derived_features GROUP BY season ORDER BY season"):
-        print(f"derived {row['season']}: {row['n']} feature row(s)")
+    for row in conn.execute(
+        "SELECT season, COUNT(*) AS n, SUM(ppg IS NULL) AS null_ppg"
+        " FROM derived_features GROUP BY season ORDER BY season"
+    ):
+        print(f"derived {row['season']}: {row['n']} feature row(s), null ppg={row['null_ppg']}")
 
     for row in conn.execute(
         """
         SELECT season, COUNT(*) AS rows, COUNT(DISTINCT team_abbrev) AS teams,
                SUM(tgpg IS NULL) AS null_tgpg, SUM(otga IS NULL) AS null_otga,
+               SUM(otshga IS NULL) AS null_otshga,
                ROUND(MIN(tgpg), 4) AS min_tgpg, ROUND(MAX(tgpg), 4) AS max_tgpg,
-               ROUND(MIN(otga), 4) AS min_otga, ROUND(MAX(otga), 4) AS max_otga
+               ROUND(MIN(otga), 4) AS min_otga, ROUND(MAX(otga), 4) AS max_otga,
+               ROUND(MIN(otshga), 4) AS min_otshga, ROUND(MAX(otshga), 4) AS max_otshga
         FROM derived_team_stats GROUP BY season ORDER BY season
         """
     ):
         print(
             f"team {row['season']}: {row['rows']} row(s), {row['teams']} team(s), "
-            f"null tgpg={row['null_tgpg']} otga={row['null_otga']} "
-            f"tgpg {row['min_tgpg']}..{row['max_tgpg']}  otga {row['min_otga']}..{row['max_otga']}"
+            f"null tgpg={row['null_tgpg']} otga={row['null_otga']} otshga={row['null_otshga']} "
+            f"tgpg {row['min_tgpg']}..{row['max_tgpg']}  otga {row['min_otga']}..{row['max_otga']}  "
+            f"otshga {row['min_otshga']}..{row['max_otshga']}"
         )
 
     conn.close()
@@ -684,7 +741,7 @@ def publish(season, db_path=DB_PATH):
 
     rows = conn.execute(
         """
-        SELECT d.player_id, d.game_date, d.gpg, d.five_gpg
+        SELECT d.player_id, d.game_date, d.gpg, d.five_gpg, d.ppg
         FROM derived_features d
         JOIN (
             -- Goalies are excluded, matching reconstruct.py. They have no
@@ -740,6 +797,10 @@ def publish(season, db_path=DB_PATH):
                 "home": bool(homes.get(key)) if homes.get(key) is not None else None,
                 "gpg": r["gpg"],
                 "five_gpg": r["five_gpg"],
+                # Single-season rate; the archive's hppg column is a 3-year
+                # window and stays NULL - ppg is an additional column (see
+                # 20261009_add_ppg_player_snapshots_backtrack.sql).
+                "ppg": r["ppg"],
             }
         )
 

@@ -55,7 +55,8 @@
 -- COLUMN SET
 -- The columns below are exactly Player-Snapshots-{ENV}'s, so this table is a
 -- drop-in replacement and anything reading the archive reads this unchanged. Today
--- date/player_id/name/team_name/home/gpg/five_gpg are populated. The rest are
+-- date/player_id/name/team_name/home/gpg/five_gpg/ppg are populated (ppg added by
+-- 20261009_add_ppg_player_snapshots_backtrack.sql). The rest are
 -- declared so the shape matches, and are filled by later passes:
 --
 --   * hgpg, hppg  - 3-year windows per smartscore_info_client's get_hgpg(years=3),

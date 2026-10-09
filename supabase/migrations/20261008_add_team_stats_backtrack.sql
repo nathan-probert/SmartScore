@@ -31,11 +31,15 @@
 -- the start of the current season).
 --
 -- otshga - the OPPONENT's shorthanded goals AGAINST per game - the same
---   opponent-relative reading as otga. NOT reconstructable from the game logs:
---   they record each player's shorthanded goals but not which of them were
---   scored against the opponent's power play, which is what this number means.
---   It needs api.nhle.com/stats/rest/en/team/penaltykilltime. Declared and left
---   NULL rather than approximated from the wrong field.
+--   opponent-relative reading as otga. A goal this team scores on the power play
+--   IS a shorthanded goal against the opponent, so summing this team's
+--   power_play_goals over the games shared with that opponent gives their
+--   shorthanded goals against directly. Verified against
+--   api.nhle.com/stats/rest/en/team/penaltykilltime for 2023-24: all 16
+--   non-playoff teams match exactly (the endpoint's season totals include playoff
+--   games; this table is regular season only, which is the entire difference for
+--   the other 16). First game of the season is NULL, and later games read 0.0
+--   when nothing has been scored - the archive stores zeros there too.
 --
 -- The archive's tgpg/otga are sparse and lossy the same way gpg was - Toronto
 -- carries tgpg on two dates out of the whole archive - so this table is expected to
