@@ -29,18 +29,20 @@ needs. On a player's first game gp_to_date is 0, and the archive stores 0 there
 (not null), so this does too: 0/0 normalises to 0, keeping the table a drop-in
 replacement.
 
-Regular season only (gameTypeId 2). Kulak's 25-game, 1-goal 2024 playoff run
-would otherwise inflate both numerator and denominator.
+Regular season AND playoffs (gameType 2 and 3), matching the archive: its stored
+values keep accumulating on playoff dates - Parise's gpg goes 4/29 -> 5/30
+between Apr 18 and Apr 21, 2024 - so a record that stopped at
+regularSeasonEndDate could not reproduce the rows the archive has there.
 
 WHY ROWS COME FROM THE GAME LOG, NOT THE CALENDAR
 -------------------------------------------------
 A row is emitted for each date the player played - the game log's dates, not
 every calendar date. The archive only ever stores game dates too (every one of
 its 17,105 2023-24 rows sits on a game date), so the tables stay joinable
-row-for-row without emitting ~10x the rows for dates nobody picks on. The one
-coverage gap is playoff dates: the archive holds 1,398 rows there (its pipeline
-kept running into the 2024 playoffs) and this regular-season-scope rebuild never
-reproduces them. Non-game dates are not a gap - the archive has none.
+row-for-row without emitting ~10x the rows for dates nobody picks on. Playoff
+dates ride the same walk and log feed (gameType 3), so the archive's 1,398
+2023-24 playoff rows are in the record too. Non-game dates are not a gap - the
+archive has none.
 
 WHAT IS AND IS NOT RECONSTRUCTED
 --------------------------------
@@ -84,6 +86,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".
 from aws_lambda_powertools import Logger  # noqa: E402
 from nhl_client import (  # noqa: E402
     DEFAULT_DELAY_SECONDS,
+    PLAYOFFS,
     fetch_boxscore,
     fetch_game_log,
     fetch_player_name,
@@ -427,7 +430,7 @@ def main():
     else:
         logger.info(f"Loading {args.season} schedule")
         games = season_games(args.season, delay_seconds=args.delay)
-        logger.info(f"{len(games)} regular-season game(s) found")
+        logger.info(f"{len(games)} season game(s) found (regular season + playoffs)")
 
         logger.info("Discovering players from box scores")
         discovered, appearances, goalies = discover_players(games, delay_seconds=args.delay)
@@ -455,6 +458,14 @@ def main():
 
     for index, (player_id, name) in enumerate(targets, start=1):
         game_log = fetch_game_log(player_id, args.season, delay_seconds=args.delay)
+
+        # Playoffs are a separate feed (gameType 3) under the same season id.
+        # Both feeds' games reconstruct through the same strictly-before pass,
+        # so the rows keep the archive's "entering the game" reading across the
+        # regular-season/playoff boundary.
+        playoff_log = fetch_game_log(player_id, args.season, game_type=PLAYOFFS, delay_seconds=args.delay)
+        if playoff_log:
+            game_log = sorted([*game_log, *playoff_log], key=lambda g: g["gameDate"] or "")
 
         if not game_log:
             continue

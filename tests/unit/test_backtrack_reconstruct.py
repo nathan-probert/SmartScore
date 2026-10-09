@@ -108,7 +108,11 @@ def test_main_player_branch_runs_without_boxscore_discovery(monkeypatch):
     # with UnboundLocalError after the game log had already been fetched.
     game = _game("2023-10-10", goals=1, team="EDM")
     monkeypatch.setattr(reconstruct, "fetch_player_name", lambda pid, delay_seconds=0: "A Player")
-    monkeypatch.setattr(reconstruct, "fetch_game_log", lambda pid, season, delay_seconds=0: [game])
+    monkeypatch.setattr(
+        reconstruct,
+        "fetch_game_log",
+        lambda pid, season, game_type=2, delay_seconds=0: [game] if game_type == 2 else [],
+    )
     monkeypatch.setattr(reconstruct, "config", lambda: ("dev", _FakeSupabase()))
     monkeypatch.setattr(sys, "argv", ["reconstruct.py", "--player", "8476967", "--dry-run"])
 

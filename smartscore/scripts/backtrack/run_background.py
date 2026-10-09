@@ -12,6 +12,7 @@ output in ``data/bg/<name>.log``.
 Usage::
 
     python smartscore/scripts/backtrack/run_background.py --name bt-2023 --season 20232024 --write
+    python smartscore/scripts/backtrack/run_background.py --name build-2023 --cmd build --season 20232024
     python smartscore/scripts/backtrack/run_background.py --name bt-2023 --status
     python smartscore/scripts/backtrack/run_background.py --name bt-2023 --tail 40
     python smartscore/scripts/backtrack/run_background.py --name bt-2023 --stop
@@ -29,6 +30,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BG_DIR = REPO_ROOT / "data" / "bg"
 RECONSTRUCT = REPO_ROOT / "smartscore" / "scripts" / "backtrack" / "reconstruct.py"
+LOCAL_STORE = REPO_ROOT / "smartscore" / "scripts" / "backtrack" / "local_store.py"
 
 
 def _state_path(name):
@@ -83,16 +85,21 @@ def cmd_start(args):
         print(f"'{args.name}' is already running (pid {existing['pid']}). Use --stop first.")
         return 1
 
-    command = [sys.executable, str(RECONSTRUCT), "--season", args.season]
+    if args.cmd == "build":
+        # local_store --build crawls whatever the cache misses (schedule, box
+        # scores, game logs) and then derives, so it needs only the season.
+        command = [sys.executable, str(LOCAL_STORE), "--build", args.season]
+    else:
+        command = [sys.executable, str(RECONSTRUCT), "--season", args.season]
 
-    if args.write:
-        command.append("--write")
+        if args.write:
+            command.append("--write")
 
-    if args.delay is not None:
-        command += ["--delay", str(args.delay)]
+        if args.delay is not None:
+            command += ["--delay", str(args.delay)]
 
-    if args.players:
-        command += ["--players", args.players]
+        if args.players:
+            command += ["--players", args.players]
 
     # unbuffered so the log is readable while the task runs rather than only at
     # exit - a long crawl that buffers is indistinguishable from a hung one.
@@ -121,6 +128,7 @@ def cmd_start(args):
                 "name": args.name,
                 "pid": process.pid,
                 "command": command,
+                "cmd": args.cmd,
                 "env": args.env,
                 "season": args.season,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -130,7 +138,7 @@ def cmd_start(args):
         encoding="utf-8",
     )
 
-    print(f"started '{args.name}' pid={process.pid} env={args.env} season={args.season}")
+    print(f"started '{args.name}' pid={process.pid} cmd={args.cmd} env={args.env} season={args.season}")
     print(f"log: {_log_path(args.name)}")
     print(f"tail it with: python {Path(__file__).name} --name {args.name} --tail 40")
 
@@ -146,6 +154,7 @@ def cmd_status(args):
 
     alive = _pid_alive(state.get("pid"))
     print(f"pid     : {state.get('pid')} ({'running' if alive else 'not running'})")
+    print(f"cmd     : {state.get('cmd', 'reconstruct')}")
     print(f"env     : {state.get('env')}")
     print(f"season  : {state.get('season')}")
     print(f"started : {state.get('started_at')}")
@@ -194,6 +203,12 @@ def cmd_stop(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--name", required=True, help="Task name; state and log files are named after it.")
+    parser.add_argument(
+        "--cmd",
+        choices=("reconstruct", "build"),
+        default="reconstruct",
+        help="reconstruct = discovery crawl into Supabase; build = local_store --build into SQLite.",
+    )
     parser.add_argument("--season", default="20232024")
     parser.add_argument("--env", default="dev", help="ENV for the target tables (default dev).")
     parser.add_argument("--delay", type=float, default=None)

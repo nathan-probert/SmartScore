@@ -32,10 +32,14 @@ import requests
 
 BASE_URL = "https://api-web.nhle.com/v1"
 
-# Regular season. Playoffs (gameType 3) are deliberately excluded: the stored
-# Player-Snapshots values are regular-season season-to-date, and mixing in a
-# playoff run inflates both numerator and denominator.
+# Game types for the schedule walk and the game-log endpoint: 2 = regular
+# season, 3 = playoffs, 1 = preseason. Regular season AND playoffs are in scope,
+# because the archive they replace keeps accumulating on playoff dates - its
+# stored 2023-24 gpg moves as playoff games land (Zach Parise 4/29 -> 5/30
+# between Apr 18 and Apr 21, 2024), so a record that stops at
+# regularSeasonEndDate cannot reproduce it. Preseason never is in scope.
 REGULAR_SEASON = 2
+PLAYOFFS = 3
 
 # schedule/{date} answers with the seven-day window containing that date, and
 # reports regularSeasonStartDate / regularSeasonEndDate for the season the date
@@ -172,13 +176,18 @@ def fetch_schedule(date, delay_seconds=DEFAULT_DELAY_SECONDS):
 
 
 def season_games(season, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DIR):
-    """Every regular-season game id in ``season``, walking the schedule in windows.
+    """Every regular-season and playoff game id in ``season``.
 
-    The schedule endpoint only serves seven days at a time, so a season is
+    The schedule endpoint only serves seven days at a time, so the season is
     assembled by repeatedly asking for the window after the last one seen. The
     walk advances by ``nextStartDate`` rather than by adding seven days, because a
     season does not start on a fixed day and a fixed stride would eventually skip
     or repeat games.
+
+    The walk runs regularSeasonStartDate -> playoffEndDate so playoff games (and
+    their box scores) are part of the record, matching what the archive stores.
+    A payload with no playoff bound (no playoff schedule announced yet) falls
+    back to regularSeasonEndDate.
 
     Returns a list of dicts with ``id``, ``date``, ``away``, ``home``.
     """
@@ -209,7 +218,7 @@ def season_games(season, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DI
     first = fetch_schedule(seed, delay_seconds=delay_seconds)
 
     start = first.get("regularSeasonStartDate")
-    end = first.get("regularSeasonEndDate")
+    end = first.get("playoffEndDate") or first.get("regularSeasonEndDate")
 
     if not start or not end:
         raise ValueError(f"schedule did not report season bounds for {season}")
@@ -228,7 +237,8 @@ def season_games(season, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DI
 
             for game in week.get("games") or []:
                 # gameType 2 is regular season; 3 is playoffs, 1 is preseason.
-                if game.get("gameType") != REGULAR_SEASON:
+                # Both in-season types are part of the record; preseason is not.
+                if game.get("gameType") not in (REGULAR_SEASON, PLAYOFFS):
                     continue
 
                 # The 7-day windows either side of the season boundary carry games

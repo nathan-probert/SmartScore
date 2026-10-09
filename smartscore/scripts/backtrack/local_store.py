@@ -55,7 +55,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from nhl_client import fetch_boxscore, fetch_game_log, season_games  # noqa: E402
+from nhl_client import DEFAULT_DELAY_SECONDS, PLAYOFFS, fetch_boxscore, fetch_game_log, season_games  # noqa: E402
 from reconstruct import config  # noqa: E402 - lazy Supabase client, only needed by --publish
 from team_map import to_place  # noqa: E402
 
@@ -357,12 +357,14 @@ def _upsert(conn, rows):
     return len(rows)
 
 
-def build(season, db_path=DB_PATH, delay_seconds=0.0):
-    """Populate raw rows for one season from the cached payloads.
+def build(season, db_path=DB_PATH, delay_seconds=DEFAULT_DELAY_SECONDS):
+    """Populate raw rows for one season from the cache, fetching on a cache miss.
 
-    Reads the cache rather than the network, so a rebuild after a schema change is
-    instant. Assumes the season has already been crawled; run reconstruct.py first
-    if the cache is cold.
+    Reads the cache rather than the network when it is warm, so a rebuild after a
+    schema change is instant. A cold cache fetches as it goes - schedule window,
+    box scores, and per-player game logs - and the default delay is the client's
+    throttle, because a cold run is over a thousand game-log requests and an
+    unthrottled burst invites rate limiting.
     """
     conn = connect(db_path)
     games = season_games(season, delay_seconds=delay_seconds)
@@ -386,6 +388,20 @@ def build(season, db_path=DB_PATH, delay_seconds=0.0):
     # Progress is logged every 100 players - this loop is ~1,000 commits, so a
     # silent run is indistinguishable from a hung one, which is exactly the
     # visibility gap that made an earlier build impossible to monitor.
+    #
+    # Playoffs are a separate feed under the same season id (gameType 3), so the
+    # players who appeared in playoff box scores need that log fetched too -
+    # otherwise their playoff rows miss the gamelog stat families and the
+    # strictly-before windows over them are built on partial rows. Everyone else's
+    # request would come back empty and be cached as empty.
+    playoff_ids = {
+        r[0]
+        for r in conn.execute("SELECT DISTINCT player_id, game_id FROM player_games WHERE season = ?", (season,))
+        # Game ids carry the type as digits 5-6: 202303xxxx is a 2024 playoff
+        # game, 202302xxxx a regular-season one.
+        if str(r[1])[4:6] == "03"
+    }
+
     log_written = 0
     player_ids = [
         r[0]
@@ -403,6 +419,12 @@ def build(season, db_path=DB_PATH, delay_seconds=0.0):
             row = _merge_gamelog(game, season)
             row["player_id"] = player_id
             rows.append(row)
+
+        if player_id in playoff_ids:
+            for game in fetch_game_log(player_id, season, game_type=PLAYOFFS, delay_seconds=delay_seconds):
+                row = _merge_gamelog(game, season)
+                row["player_id"] = player_id
+                rows.append(row)
 
         log_written += _upsert(conn, rows)
 

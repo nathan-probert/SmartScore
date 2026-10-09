@@ -62,6 +62,81 @@ def test_compute_derived_ppg_is_strictly_before_and_debut_is_zero(tmp_path):
     assert rows["2023-10-14"]["ppg"] == 0.5
 
 
+def test_build_merges_playoff_game_logs(tmp_path, monkeypatch):
+    boxscore = {
+        "player_id": 301,
+        "game_id": 2023030401,
+        "game_date": "2024-04-20",
+        "name": "P. Layer",
+        "position": "C",
+        "sweater_number": "9",
+        "team_abbrev": "BOS",
+        "home": False,
+        "team_goals_for": 3,
+        "goals": 1,
+        "assists": 0,
+        "points": 1,
+        "shots": 2,
+        "pim": 0,
+        "toi": "12:00",
+        "plus_minus": 1,
+        "shifts": 18,
+        "power_play_goals": 0,
+    }
+    log_calls = []
+
+    def fake_games(season, **kwargs):
+        return [{"id": 2023030401, "date": "2024-04-20", "away": "TOR", "home": "BOS"}]
+
+    def fake_boxscore(game_id, **kwargs):
+        return [boxscore]
+
+    def fake_log(player_id, season, game_type=2, **kwargs):
+        log_calls.append(game_type)
+        if game_type == 3:
+            return [
+                {
+                    "gameId": 2023030401,
+                    "gameDate": "2024-04-20",
+                    "teamAbbrev": "BOS",
+                    "opponentAbbrev": "TOR",
+                    "homeRoadFlag": "H",
+                    "goals": 1,
+                    "assists": 0,
+                    "points": 1,
+                    "shots": 2,
+                    "pim": 0,
+                    "toi": "12:00",
+                    "plusMinus": 1,
+                    "shifts": 18,
+                    "powerPlayGoals": 0,
+                    "powerPlayPoints": 0,
+                    "shorthandedGoals": 1,
+                    "shorthandedPoints": 1,
+                    "otGoals": 0,
+                    "gameWinningGoals": 0,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(local_store, "season_games", fake_games)
+    monkeypatch.setattr(local_store, "fetch_boxscore", fake_boxscore)
+    monkeypatch.setattr(local_store, "fetch_game_log", fake_log)
+
+    local_store.build("20232024", db_path=tmp_path / "raw.sqlite")
+
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    row = conn.execute("SELECT * FROM player_games WHERE game_id = 2023030401").fetchone()
+
+    # The playoff game was found, its gameType-3 log fetched, and both feeds
+    # merged onto the same row: box-score fields kept, gamelog fields filled.
+    assert 3 in log_calls
+    assert row["position"] == "C"
+    assert row["shorthanded_goals"] == 1
+    assert row["gamelog_fields"] is not None
+    conn.close()
+
+
 def test_compute_derived_replaces_previous_output(tmp_path):
     conn = local_store.connect(tmp_path / "raw.sqlite")
     _insert(conn, 201, 8001, "2023-10-10", 1)
