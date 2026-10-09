@@ -681,8 +681,13 @@ def stats(db_path=DB_PATH):
                COUNT(DISTINCT game_id)           AS games,
                MIN(game_date)                    AS first_date,
                MAX(game_date)                    AS last_date,
-               SUM(CASE WHEN position IS NOT NULL THEN 1 ELSE 0 END) AS from_boxscore,
-               SUM(CASE WHEN shorthanded_goals IS NOT NULL THEN 1 ELSE 0 END) AS from_gamelog
+               SUM(CASE WHEN position <> 'G' THEN 1 ELSE 0 END) AS skaters,
+               SUM(CASE WHEN position = 'G' THEN 1 ELSE 0 END)   AS goalies,
+               -- The only real coverage gap: a SKATER row the game-log merge
+               -- never touched. Goalie rows always show shorthanded_goals NULL
+               -- (their log entries carry saves/decision, not the skater stat
+               -- families) and are expected - goalies are excluded at publish.
+               SUM(CASE WHEN position <> 'G' AND shorthanded_goals IS NULL THEN 1 ELSE 0 END) AS skater_missing_log
         FROM player_games
         GROUP BY season
         ORDER BY season
@@ -691,7 +696,8 @@ def stats(db_path=DB_PATH):
         print(
             f"{row['season']}: {row['rows']} rows, {row['players']} players, {row['games']} games "
             f"({row['first_date']} .. {row['last_date']}) "
-            f"boxscore-backed={row['from_boxscore']} gamelog-backed={row['from_gamelog']}"
+            f"skaters={row['skaters']} goalies={row['goalies']} "
+            f"skater rows missing log merge={row['skater_missing_log']}"
         )
 
     for row in conn.execute(
