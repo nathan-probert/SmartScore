@@ -280,6 +280,39 @@ def season_games(season, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DI
     return result
 
 
+def _get_json(url, delay_seconds=DEFAULT_DELAY_SECONDS):
+    """GET ``url`` with the module's retry envelope; return the JSON payload.
+
+    Transport errors and 5xx back off exponentially across ``MAX_RETRIES``
+    attempts. The box-score crawl alone is ~1,400 requests per season, so one
+    reset connection would otherwise kill a whole background run - which is
+    exactly what happened to build-2023-full at box score 882 (ConnectionError
+    10054). Any other non-2xx raises immediately: retrying a bad request just
+    delays the error.
+    """
+    for attempt in range(MAX_RETRIES):
+        _throttle(delay_seconds)
+
+        try:
+            response = requests.get(url, timeout=30)
+        except requests.RequestException:
+            if attempt == MAX_RETRIES - 1:
+                raise
+            time.sleep(BASE_RETRY_DELAY_SECONDS * (2**attempt))
+            continue
+
+        if response.status_code >= 500:
+            if attempt == MAX_RETRIES - 1:
+                response.raise_for_status()
+            time.sleep(BASE_RETRY_DELAY_SECONDS * (2**attempt))
+            continue
+
+        response.raise_for_status()
+        return response.json()
+
+    raise RuntimeError(f"retry budget exhausted without response for {url}")
+
+
 def fetch_boxscore(game_id, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DIR):
     """One game's box score: both teams' full player roster.
 
@@ -322,10 +355,7 @@ def fetch_boxscore(game_id, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE
         except (json.JSONDecodeError, OSError):
             pass
 
-    _throttle(delay_seconds)
-    response = requests.get(f"{BASE_URL}/gamecenter/{game_id}/boxscore", timeout=30)
-    response.raise_for_status()
-    payload = response.json()
+    payload = _get_json(f"{BASE_URL}/gamecenter/{game_id}/boxscore", delay_seconds)
 
     # The team objects carry the official score for each side. This is the
     # authoritative team goal total and it does NOT always equal the sum of the

@@ -1,6 +1,11 @@
-"""season_games: playoffs are walked and included, preseason is not."""
+"""season_games: playoffs are walked and included, preseason is not.
+
+Also covers the box-score retry envelope: a full-season crawl dies on the first
+reset connection without it.
+"""
 
 import nhl_client
+import requests
 
 
 class _FakeSchedule:
@@ -80,3 +85,65 @@ def test_without_a_playoff_bound_the_walk_stops_at_regular_season_end(tmp_path, 
     assert [g["id"] for g in games] == [2023020001]
     # The window past regularSeasonEndDate was never requested.
     assert "2024-04-25" not in fake.asked
+
+
+class _FakeBoxscoreResponse:
+    status_code = 200
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def test_fetch_boxscore_retries_reset_connections(tmp_path, monkeypatch):
+    payload = {
+        "gameDate": "2024-05-15",
+        "homeTeam": {"abbrev": "BOS", "score": 3},
+        "awayTeam": {"abbrev": "TOR", "score": 2},
+        "playerByGameStats": {
+            "homeTeam": {
+                "forwards": [
+                    {
+                        "playerId": 301,
+                        "name": {"default": "P. Layer"},
+                        "position": "C",
+                        "sweaterNumber": 9,
+                        "goals": 1,
+                        "assists": 2,
+                        "points": 3,
+                        "shots": 4,
+                        "pim": 0,
+                        "toi": "12:34",
+                        "plusMinus": 1,
+                        "shifts": 20,
+                        "powerPlayGoals": 1,
+                    }
+                ],
+                "defense": [],
+                "goalies": [],
+            },
+            "awayTeam": {"forwards": [], "defense": [], "goalies": []},
+        },
+    }
+    calls = {"n": 0}
+
+    def flaky_get(url, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise requests.ConnectionError("connection reset by peer")
+        return _FakeBoxscoreResponse(payload)
+
+    monkeypatch.setattr(nhl_client.requests, "get", flaky_get)
+    monkeypatch.setattr(nhl_client.time, "sleep", lambda seconds: None)
+
+    records = nhl_client.fetch_boxscore(2023030001, delay_seconds=0.0, cache_dir=tmp_path)
+
+    assert calls["n"] == 3
+    assert [r["player_id"] for r in records] == [301]
+    assert records[0]["game_id"] == 2023030001
+    assert records[0]["goals"] == 1
