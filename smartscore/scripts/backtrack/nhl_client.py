@@ -8,6 +8,12 @@ landed.
 The cache is keyed on ``player-season-gametype`` and stores the parsed ``gameLog``
 array. A cache hit means zero network calls, which is what makes a re-run cheap.
 
+Nothing here ever expires. For a completed season that is safe - a finished game's
+box score and a closed season's schedule are history. For a season still in
+progress it is a trap: the schedule and game-log caches freeze mid-season, so a
+stale entry misses games played after it was written. Delete the cache file (or
+restrict to completed seasons) rather than trusting an in-progress one.
+
 Rate limiting is a fixed sleep between requests rather than a token bucket. The
 public endpoint has no documented quota, and a flat delay is predictable and easy
 to reason about when a run takes hours. ``--delay`` exists so a run that gets
@@ -19,7 +25,6 @@ never appeared in that season, which is a fact, not a failure.
 
 import argparse
 import json
-import os
 import time
 from pathlib import Path
 
@@ -299,9 +304,7 @@ def fetch_boxscore(game_id, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE
             # team_goals_for exists to prevent.
             if cached and not cached[0].get("game_id"):
                 cached = None
-            elif cached and _REQUIRED_RECORD_FIELDS and not all(
-                f in cached[0] for f in _REQUIRED_RECORD_FIELDS
-            ):
+            elif cached and _REQUIRED_RECORD_FIELDS and not all(f in cached[0] for f in _REQUIRED_RECORD_FIELDS):
                 cached = None
 
             if cached is not None:
@@ -420,14 +423,15 @@ def main():
     print(f"name: {fetch_player_name(args.player_id, delay_seconds=args.delay)}")
 
     for game in game_log[:5]:
+        # `or ""` before the width spec: some rows carry no teamAbbrev (ARI was
+        # missing this way), and formatting None with :>4 raises TypeError.
         print(
-            f"  {game['gameDate']} {game.get('teamAbbrev'):>4} vs "
-            f"{game.get('opponentAbbrev'):<4} {game.get('homeRoadFlag')} "
+            f"  {game['gameDate']} {(game.get('teamAbbrev') or ''):>4} vs "
+            f"{(game.get('opponentAbbrev') or ''):<4} {game.get('homeRoadFlag')} "
             f"G{game.get('goals')} A{game.get('assists')} "
             f"TOI {game.get('toi')} shots {game.get('shots')}"
         )
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     main()

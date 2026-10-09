@@ -26,10 +26,17 @@ values at 1-5dp and comparing 2dp-stored values against our full precision at
 higher tolerance reports rounding as disagreement (measured: match rates get
 *worse* as tolerance tightens past the archive's own precision).
 
+The team side is date-granular, not team-granular: the archive has no team_abbrev
+column, so its per-date tgpg collapses to the MODAL value for that date and dates
+where the archive itself disagrees across rows are skipped entirely. tgpg/otga
+match rates are therefore indicative rather than exact, and the otga figures may
+be counted without being compared (see the note at the end when that happens).
+
 Usage::
 
     uv run python smartscore/scripts/backtrack/validate.py
-    uv run python smartscore/scripts/backtrack/validate.py --env prod --sample 500
+    uv run python smartscore/scripts/backtrack/validate.py --env prod
+    uv run python smartscore/scripts/backtrack/validate.py --season 20232024 --tol 3
 """
 
 import argparse
@@ -39,8 +46,9 @@ from collections import defaultdict
 from pathlib import Path
 
 # config.py lives in smartscore/, two levels up from this script. It is imported
-# at module scope (not lazily) because the archive read happens throughout, and
-# ENV has to be read before the table name is built.
+# at module scope (not lazily) because the archive read happens throughout; the
+# ENV override below rebinds this module's ENV after import, since the table name
+# is built from it.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from config import ENV, SUPABASE_ADMIN_CLIENT  # noqa: E402
@@ -56,9 +64,14 @@ def archive_table():
 def fetch_archive(start_date, end_date):
     """All archive rows in a window, paged, keyed for lookup.
 
-    Returns ``(by_player, team_pairs, n_rows)`` where ``team_pairs`` maps
-    ``(date, team_abbrev) -> (tgpg, otga)`` using only rows that carry a non-null
-    ``tgpg``, which is the set worth comparing.
+    Returns ``(by_player, per_date)``:
+
+    * ``by_player`` - ``{(date, player_id): row}`` for the per-player features.
+    * ``per_date`` - ``{date: (modal_tgpg, counts)}``, the archive's most common
+      ``tgpg`` for that date plus the vote that selected it. The archive has no
+      team_abbrev column, so a true per-team lookup is impossible through it;
+      dates whose archive rows disagree are surfaced through ``counts`` and
+      skipped by the caller rather than guessed at.
     """
     client = SUPABASE_ADMIN_CLIENT.table(archive_table())
 
@@ -110,22 +123,27 @@ def fetch_archive(start_date, end_date):
 
 
 def load_derived(db_path=DB_PATH, season=None):
-    """Reconstructed features from the local store, keyed for lookup."""
+    """Reconstructed features from the local store, keyed for lookup.
+
+    Returns ``(players, by_game)``: ``players`` keyed ``(game_date, player_id)``,
+    ``by_game`` keyed ``game_id -> {team_abbrev: row}``.
+    """
     import sqlite3  # noqa: PLC0415
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
     where = "WHERE season = ?" if season else ""
+    params = (season,) if season else ()
 
     # S608: `where` is a fixed literal above; the value it binds is `season`.
     players = {
         (r["game_date"], r["player_id"]): r
-        for r in conn.execute(f"SELECT game_date, player_id, gpg, five_gpg FROM derived_features {where}")  # noqa: S608
+        for r in conn.execute(f"SELECT game_date, player_id, gpg, five_gpg FROM derived_features {where}", params)  # noqa: S608
     }
 
     teams = list(
-        conn.execute(f"SELECT game_date, game_id, team_abbrev, tgpg, otga FROM derived_team_stats {where}")  # noqa: S608
+        conn.execute(f"SELECT game_date, game_id, team_abbrev, tgpg, otga FROM derived_team_stats {where}", params)  # noqa: S608
     )
     conn.close()
 
@@ -133,47 +151,7 @@ def load_derived(db_path=DB_PATH, season=None):
     for t in teams:
         by_game[t["game_id"]][t["team_abbrev"]] = t
 
-    # game_id for a (date, team) - unique, unlike team_name.
-    game_of = {}
-    for t in teams:
-        game_of[(t["game_date"], t["team_abbrev"])] = t["game_id"]
-
-    return players, by_game, game_of
-
-
-def compare(players, by_player, per_date, by_game, game_of, tol=2):
-    stats = defaultdict(lambda: {"n": 0, "match": 0, "missing": 0})
-    examples = defaultdict(list)
-
-    for (date, player_id), arch in by_player.items():
-        mine = players.get((date, player_id))
-
-        if mine is None:
-            stats["player_row_missing"]["n"] += 1
-            continue
-
-        stats["player_row"]["n"] += 1
-
-        for field in ("gpg", "five_gpg"):
-            stored = arch.get(field)
-            ours = mine[field]
-
-            if stored is None:
-                continue
-
-            bucket = stats[field]
-            bucket["n"] += 1
-
-            if ours is None:
-                bucket["missing"] += 1
-                continue
-
-            if abs(round(ours, tol) - round(stored, tol)) < 10 ** (-tol):
-                bucket["match"] += 1
-            elif len(examples[field]) < 6:
-                examples[field].append((date, player_id, stored, round(ours, 6)))
-
-        return stats, examples
+    return players, by_game
 
 
 def main():
@@ -187,7 +165,12 @@ def main():
     args = parser.parse_args()
 
     if args.env:
+        # config already ran with the ambient ENV; rebind this module's copy so
+        # archive_table() and the banner below both follow the flag. The clients
+        # themselves are ENV-independent (same URL and keys either way).
+        global ENV  # noqa: PLW0603
         os.environ["ENV"] = args.env
+        ENV = args.env
 
     import local_store  # noqa: PLC0415
 
@@ -200,7 +183,7 @@ def main():
 
     print(f"comparing {start} .. {end} against Player-Snapshots-{ENV}\n")
 
-    players, by_game, game_of = load_derived(Path(args.db), args.season)
+    players, by_game = load_derived(Path(args.db), args.season)
     by_player, per_date = fetch_archive(start, end)
 
     print(f"archive player rows : {len(by_player)}")

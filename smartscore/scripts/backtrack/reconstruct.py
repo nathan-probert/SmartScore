@@ -20,23 +20,27 @@ For each season and each date D, a player's totals sum their games with
 ``game_date`` strictly *before* D::
 
     gp_to_date = count(games before D)
-    gpg        = goals_to_date / gp_to_date   (null when gp_to_date == 0)
+    gpg        = goals_to_date / gp_to_date   (0 when gp_to_date == 0)
 
 Strictly-before is the cutoff that reproduces the archive. Brett Kulak's stored
 2024-03-02 row is 2/57, and 3/58 appears on 2024-03-03 once that night's goal
 lands - so a row reads as "entering the game on D", which is what a pre-game pick
-needs.
+needs. On a player's first game gp_to_date is 0, and the archive stores 0 there
+(not null), so this does too: 0/0 normalises to 0, keeping the table a drop-in
+replacement.
 
 Regular season only (gameTypeId 2). Kulak's 25-game, 1-goal 2024 playoff run
 would otherwise inflate both numerator and denominator.
 
-WHY DATES COME FROM THE SNAPSHOT, NOT THE CALENDAR
----------------------------------------------------
-Rows are written for the dates that already exist in ``Player-Snapshots-{ENV}``
-rather than every calendar date in the season. Two reasons: the output stays
-directly joinable against the live archive row-for-row, and a full calendar would
-emit ~10x the rows for dates nobody ever picks on. Use ``--all-dates`` to emit the
-full calendar instead.
+WHY ROWS COME FROM THE GAME LOG, NOT THE CALENDAR
+-------------------------------------------------
+A row is emitted for each date the player played - the game log's dates, not
+every calendar date. The archive only ever stores game dates too (every one of
+its 17,105 2023-24 rows sits on a game date), so the tables stay joinable
+row-for-row without emitting ~10x the rows for dates nobody picks on. The one
+coverage gap is playoff dates: the archive holds 1,398 rows there (its pipeline
+kept running into the 2024 playoffs) and this regular-season-scope rebuild never
+reproduces them. Non-game dates are not a gap - the archive has none.
 
 WHAT IS AND IS NOT RECONSTRUCTED
 --------------------------------
@@ -46,19 +50,22 @@ are accumulated here.
 
 It does **not** carry ``opp_goalie_*``, ``lineup_*``, ``pp_unit``, or
 ``injury_status``. Those come from the lineup and injury endpoints and are out of
-scope; the live archive remains their source. The corresponding columns are
-absent from the backtrack table rather than written as null, so a null here means
-"not reconstructed" and never "not applicable".
+scope; the live archive remains their source. The corresponding columns exist in
+the backtrack table but are never written here, so they stay null: null means
+"not reconstructed", never "not applicable".
 
 Usage::
 
-    # One player, one season, print only. Safe first step.
-    uv run python smartscore/scripts/backtrack/reconstruct.py --dry-run
+    # One player, one season, print only. Fast and needs no database access.
+    uv run python smartscore/scripts/backtrack/reconstruct.py --player 8476967 --season 20232024 --dry-run
 
-    # One player against the archive, with a diff.
+    # Same player, plus a diff against the archive.
     uv run python smartscore/scripts/backtrack/reconstruct.py --player 8476967 --season 20232024
 
-    # Full run.
+    # Full run. Discovers every player from box scores (tens of minutes); writes nothing.
+    uv run python smartscore/scripts/backtrack/reconstruct.py --dry-run
+
+    # Full run writing to the backtrack table.
     uv run python smartscore/scripts/backtrack/reconstruct.py --write
 
 Idempotent: upserts on ``(date, player_id)``, so a re-run converges.
@@ -86,6 +93,7 @@ from team_map import to_place  # noqa: E402
 
 logger = Logger()
 
+
 # config.py builds a Supabase client at import time, which raises when the
 # credentials are absent. The derivation below is pure arithmetic and needs no
 # database, so config is imported lazily - that keeps the reconstruction testable
@@ -105,6 +113,7 @@ def snapshot_table():
 
 def backtrack_table():
     return f"Player-Snapshots-backtrack-{config()[0]}"
+
 
 # Same justification as player_archive.py: a row is ~30 columns, so 500 keeps the
 # body small and stays under PostgREST's 1000-row default.
@@ -147,29 +156,13 @@ def _parse_toi_seconds(toi):
 def _rate(numerator, denominator):
     """goals/games, or None when no games have been played.
 
-    None rather than 0 so "has not played yet" stays distinguishable from "played
-    and scored none".
+    The None stays distinguishable here so callers choose the policy:
+    reconstruct_player normalises it to 0 to match the archive's pre-debut rows.
     """
     if denominator <= 0:
         return None
 
     return numerator / denominator
-
-
-def _opponent_for(team_abbrev, game):
-    """Work out the opponent abbreviation when the box score is the team source.
-
-    The box score gives us the player's own club from the side their stat block
-    came from. The opponent is the other one, and it is not carried per player -
-    only per game - so it is recovered by matching ``home``/``away`` against the
-    schedule entry for that game. Falling back to the game log keeps a
-    mid-season trade (where the log records the new club immediately but the
-    schedule lookup is keyed on the game) from blanking the column.
-    """
-    if team_abbrev and game.get("away") and game.get("home"):
-        return game["away"] if team_abbrev == game["home"] else game["home"]
-
-    return game.get("opponentAbbrev")
 
 
 def reconstruct_player(player_id, season, game_log, name=None, appearances=None):
@@ -181,10 +174,12 @@ def reconstruct_player(player_id, season, game_log, name=None, appearances=None)
     strictly-before cutoff structural rather than something each row has to
     remember to apply.
 
-    Only dates on which the player played get a row. A player sitting out five
+    Only dates on which the player played get a row - including the first game,
+    whose row carries gpg 0 (the archive's pre-debut convention, verified against
+    rows where the player scored that very night). A player sitting out five
     games has no stats change across them, and emitting rows for those dates would
     duplicate one value many times over - which is not what the archive does
-    either, since it stores one row per capture date.
+    either, since it only ever stores game dates.
 
     ``appearances`` is the ``{(date, player_id): {team_abbrev, home}}`` map from
     the box scores. When present it overrides the game log's own team fields,
@@ -197,7 +192,6 @@ def reconstruct_player(player_id, season, game_log, name=None, appearances=None)
 
     totals = dict.fromkeys(_COUNT_FIELDS, 0)
     totals["toi_seconds"] = 0
-    home_gp = home_goals = away_gp = away_goals = 0
     gp = 0
 
     rows = []
@@ -205,7 +199,6 @@ def reconstruct_player(player_id, season, game_log, name=None, appearances=None)
 
     for game in games:
         game_date = game["gameDate"]
-        goals_in_game = game.get("goals") or 0
 
         # Prefer the box score for team context; fall back to the game log.
         context = (appearances or {}).get((game_date, player_id))
@@ -218,36 +211,33 @@ def reconstruct_player(player_id, season, game_log, name=None, appearances=None)
             is_home = game.get("homeRoadFlag") == "H"
 
         # Emit the pre-game snapshot before folding this game into the totals.
-        if gp > 0:
-            rows.append(
-                {
-                    "date": game_date,
-                    "player_id": player_id,
-                    "name": name,
-                    "team_name": to_place(team_abbrev),
-                    "home": is_home,
-                    "gpg": _rate(totals["goals"], gp),
-                    # Only gpg is written. The raw counters it is computed from
-                    # (gp_to_date, goals_to_date, ...) live in
-                    # data/raw_nhl.sqlite as one row per player per game - see
-                    # local_store.py. The table's column set mirrors
-                    # Player-Snapshots-{ENV} so it can replace it, and that set has
-                    # no room for the counters. Anything else is added there and
-                    # projected in, not accumulated again here.
-                }
-            )
+        # The first game emits too: gp == 0 there, gpg's 0/0 normalises to 0 to
+        # match the archive's pre-debut rows, and publish() never sees a null.
+        gpg = _rate(totals["goals"], gp)
+        rows.append(
+            {
+                "date": game_date,
+                "player_id": player_id,
+                # publish() guards the name this way; matching it keeps the
+                # NOT NULL column fed even when a box score lacks a name.
+                "name": name or f"player-{player_id}",
+                "team_name": to_place(team_abbrev),
+                "home": is_home,
+                "gpg": 0.0 if gpg is None else gpg,
+                # Only gpg is written. The raw counters it is computed from
+                # (gp_to_date, goals_to_date, ...) live in
+                # data/raw_nhl.sqlite as one row per player per game - see
+                # local_store.py. The table's column set mirrors
+                # Player-Snapshots-{ENV} so it can replace it, and that set has
+                # no room for the counters. Anything else is added there and
+                # projected in, not accumulated again here.
+            }
+        )
 
         gp += 1
         for field in _COUNT_FIELDS:
             totals[field] += game.get(field) or 0
         totals["toi_seconds"] += _parse_toi_seconds(game.get("toi"))
-
-        if is_home:
-            home_gp += 1
-            home_goals += goals_in_game
-        else:
-            away_gp += 1
-            away_goals += goals_in_game
 
     return rows, game_count
 
@@ -305,42 +295,6 @@ def discover_players(games, delay_seconds=DEFAULT_DELAY_SECONDS):
     return players, appearances, goalies
 
 
-def get_players(limit=None):
-    """DEPRECATED - player discovery moved to discover_players().
-
-    Kept only as a cross-check: reading the archive's player list is how a subset
-    run can be told apart from a full one. The production path never calls this,
-    because the player set must not come from the table being replaced.
-    """
-    _, supabase = config()
-    query = supabase.table(snapshot_table()).select("player_id,name").order("player_id")
-
-    seen = {}
-    page_size = 1000
-    offset = 0
-
-    while True:
-        response = query.range(offset, offset + page_size - 1).execute()
-        batch = response.data or []
-
-        if not batch:
-            break
-
-        for record in batch:
-            player_id = record.get("player_id")
-            if player_id is not None and player_id not in seen:
-                seen[player_id] = record.get("name")
-
-        if len(batch) < page_size:
-            break
-
-        offset += page_size
-
-    targets = sorted(seen.items())
-
-    return targets[:limit] if limit else targets
-
-
 def archive_names(player_ids):
     """Names for a specific set of players, straight from the archive.
 
@@ -352,32 +306,13 @@ def archive_names(player_ids):
         return []
 
     _, supabase = config()
-    response = (
-        supabase.table(snapshot_table())
-        .select("player_id,name")
-        .in_("player_id", player_ids)
-        .execute()
-    )
+    response = supabase.table(snapshot_table()).select("player_id,name").in_("player_id", player_ids).execute()
 
     seen = {}
     for record in response.data or []:
         seen.setdefault(record["player_id"], record.get("name"))
 
     return [{"player_id": pid, "name": name} for pid, name in seen.items()]
-
-
-def get_archive_dates(player_id):
-    """The dates the archive holds for one player."""
-    _, supabase = config()
-    response = (
-        supabase.table(snapshot_table())
-        .select("date")
-        .eq("player_id", player_id)
-        .order("date")
-        .execute()
-    )
-
-    return [r["date"] for r in (response.data or [])]
 
 
 def write_rows(rows):
@@ -448,7 +383,7 @@ def main():
     parser.add_argument(
         "--player",
         type=int,
-        help="Single NHL player id. Omit to process every player in the archive.",
+        help="Single NHL player id. Omit to process every player who played that season.",
     )
     parser.add_argument(
         "--season",
@@ -457,69 +392,66 @@ def main():
     )
     parser.add_argument(
         "--players",
-        help="Comma-separated player ids to process. Skips the archive scan, which is the "
-        "slow part of a subset run - see get_players().",
+        help="Comma-separated player ids to process. Skips box score discovery, the slow part of a full run.",
     )
-    parser.add_argument("--limit", type=int, help="Only the first N players.")
+    parser.add_argument("--limit", type=int, help="Only the first N discovered players.")
     parser.add_argument("--delay", type=float, default=DEFAULT_DELAY_SECONDS)
-    parser.add_argument("--all-dates", action="store_true", help="Emit every calendar date in the season.")
     parser.add_argument("--dry-run", action="store_true", help="Reconstruct and report; write nothing.")
     parser.add_argument("--write", action="store_true", help="Upsert into the backtrack table.")
     args = parser.parse_args()
 
     write = args.write and not args.dry_run
 
+    # Player discovery comes from the season's games, not from the archive. This
+    # is the replacement, so the player set must be defined by who actually
+    # played - not by who the old table happened to record.
     if args.player:
         name = fetch_player_name(args.player, delay_seconds=args.delay)
         targets = [(args.player, name)]
+        # No box scores crawled for a spot check, so team context falls back to
+        # the game log (see the --players branch below for the full rationale).
+        appearances = {}
     elif args.players:
-        # Explicit ids. Names are left to the caller-supplied list when given, and
-        # otherwise resolved from the landing endpoint, so the rows still carry a
-        # name without a 140-request archive scan.
+        # Explicit ids. Names are resolved from the archive when it has them and
+        # otherwise from the landing endpoint, so the rows still carry a name
+        # without crawling every box score.
         ids = [int(p) for p in args.players.split(",") if p.strip()]
         known = {r["player_id"]: r["name"] for r in archive_names(ids)}
         targets = [(pid, known.get(pid) or fetch_player_name(pid, delay_seconds=args.delay)) for pid in ids]
-        logger.info(f"Reconstructing {len(targets)} explicit player(s) for season {args.season}")
-    else:
-        logger.info("Loading player list from the archive")
-        targets = get_players(limit=args.limit)
-        logger.info(f"Reconstructing {len(targets)} player(s) for season {args.season}")
-
-    # Player discovery comes from the season's games, not from the archive. This is
-    # the replacement, so the player set must be defined by who actually played.
-    if args.players or args.player:
         logger.info("Explicit player list given - skipping box score discovery")
-        appearances = {}
-        schedule_by_id = {}
         # A subset run has no box scores, so there is no position data and nothing
         # to exclude on. That is fine for spot checks; the full path below is what
         # guarantees goalies never enter the table.
+        appearances = {}
         goalies = set()
     else:
         logger.info(f"Loading {args.season} schedule")
         games = season_games(args.season, delay_seconds=args.delay)
         logger.info(f"{len(games)} regular-season game(s) found")
 
-        schedule_by_id = {g["id"]: g for g in games}
         logger.info("Discovering players from box scores")
-
         discovered, appearances, goalies = discover_players(games, delay_seconds=args.delay)
         logger.info(f"{len(discovered)} distinct player(s) discovered, {len(goalies)} goalie(s) excluded")
 
-        targets = sorted(pid for pid in discovered if pid not in goalies)
+        targets = sorted((pid, discovered.get(pid)) for pid in discovered if pid not in goalies)
 
-    targets = [(pid, discovered.get(pid)) for pid in targets]
+        if args.limit:
+            targets = targets[: args.limit]
+
+    logger.info(f"Reconstructing {len(targets)} player(s) for season {args.season}")
 
     all_rows = []
     players_with_games = 0
 
-    # Checkpoint every CHECKPOINT_EVERY players rather than accumulating to the
-    # end. A full season is ~80 minutes of requests, so a single deferred write
-    # loses the entire run to any interruption; incremental upserts mean partial
-    # progress survives and the table fills while the crawl is still going.
-    # Upserts are idempotent on (date, player_id), so a re-run simply rewrites the
-    # same rows.
-    CHECKPOINT_EVERY = 25
+    # Checkpoint periodically rather than accumulating to the end. Discovery
+    # plus the per-player game log crawl is tens of minutes of requests for a
+    # full season, so a single deferred write loses the entire run to any
+    # interruption; incremental upserts mean partial progress survives and the
+    # table fills while the crawl is still going. Checkpoints fire every
+    # CHECKPOINT_ROWS rows rather than every N players: a player contributes
+    # anywhere from 1 to 82 of them. Upserts are idempotent on (date, player_id),
+    # so a re-run simply rewrites the same rows.
+    CHECKPOINT_ROWS = 250
 
     for index, (player_id, name) in enumerate(targets, start=1):
         game_log = fetch_game_log(player_id, args.season, delay_seconds=args.delay)
@@ -529,21 +461,10 @@ def main():
 
         players_with_games += 1
 
-        # Attach each game log row to its schedule entry so team context can be
-        # recovered from the box score's side keys.
-        enriched = []
-        for game in game_log:
-            merged = dict(game)
-            schedule_entry = schedule_by_id.get(game.get("gameId"))
-            if schedule_entry:
-                merged["away"] = schedule_entry.get("away")
-                merged["home"] = schedule_entry.get("home")
-            enriched.append(merged)
-
         rows, _ = reconstruct_player(
             player_id,
             args.season,
-            enriched,
+            game_log,
             name=name,
             appearances=appearances,
         )
@@ -552,7 +473,7 @@ def main():
         if index % 25 == 0:
             logger.info(f"{index}/{len(targets)} players, {len(all_rows)} rows so far")
 
-        if write and len(all_rows) >= CHECKPOINT_EVERY * 10:
+        if write and len(all_rows) >= CHECKPOINT_ROWS:
             checkpointed = write_rows(all_rows)
             logger.info(f"checkpoint: wrote {checkpointed} row(s) for {index}/{len(targets)} players")
             all_rows = []
@@ -561,11 +482,14 @@ def main():
 
     if args.player:
         _, supabase = config()
+        # Season window: October of its first year through June of its second.
+        # Calendar January would pull in the tail of the previous season.
         archive_rows = (
             supabase.table(snapshot_table())
             .select("date,player_id,gpg")
             .eq("player_id", args.player)
-            .gte("date", f"{args.season[:4]}-01-01")
+            .gte("date", f"{args.season[:4]}-10-01")
+            .lte("date", f"{int(args.season[:4]) + 1}-06-30")
             .execute()
         ).data or []
 
@@ -589,5 +513,4 @@ def main():
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     sys.exit(main())

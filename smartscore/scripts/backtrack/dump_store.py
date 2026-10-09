@@ -77,14 +77,17 @@ def _iter_season_lines(conn, season):
         select = f"SELECT {', '.join(columns)} FROM {table} WHERE season = ?"  # noqa: S608
 
         for row in conn.execute(select, (season,)):
-            values = ", ".join("NULL" if v is None else _literal(v) for v in row)
+            values = ", ".join(_literal(v) for v in row)
             yield f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({values});"  # noqa: S608
 
     yield "COMMIT;"
 
 
 def _literal(value):
-    """Render a Python value as a SQL literal."""
+    """Render a Python value as a SQL literal (None renders as NULL)."""
+    if value is None:
+        return "NULL"
+
     if isinstance(value, int):
         return str(value)
 

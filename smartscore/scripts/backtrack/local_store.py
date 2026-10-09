@@ -9,11 +9,12 @@ WHY THE RAW LAYER LIVES HERE RATHER THAN IN SUPABASE
 ``Player-Snapshots-backtrack-{ENV}`` holds one row per player per *date* with the
 cumulative totals already applied. That is the right shape for the app and the
 model, but it cannot answer "what happened in this game", so a bug in the
-accumulator is invisible and unfixable without another 80-minute crawl.
+accumulator is invisible and unfixable without another crawl of the API (about
+twenty minutes per season, cold).
 
 These rows are the audit trail: ``gpg`` on any date is ``SUM(goals) / COUNT(*)``
 over games strictly before it, and re-running that here reproduces the shipped
-numbers exactly (see ``verify_against_backtrack``).
+numbers exactly (``validate.py`` compares the result against the archive).
 
 TWO SOURCE PAYLOADS, ONE TABLE
 ------------------------------
@@ -41,7 +42,9 @@ endpoint never carries this field" are different facts and worth telling apart.
 Usage::
 
     uv run python smartscore/scripts/backtrack/local_store.py --build 20232024
-    uv run python smartscore/scripts/backtrack/local_store.py --verify 20232024
+    uv run python smartscore/scripts/backtrack/local_store.py --derive 20232024
+    uv run python smartscore/scripts/backtrack/local_store.py --publish 20232024
+    uv run python smartscore/scripts/backtrack/local_store.py --publish-team 20232024
     uv run python smartscore/scripts/backtrack/local_store.py --stats
 """
 
@@ -322,9 +325,7 @@ def _upsert(conn, rows):
     # but the dicts are defined two functions above and cannot drift from SCHEMA
     # without a failing INSERT.
     conflict_columns = [c for c in columns if c not in ("player_id", "game_id")]
-    assignments = ", ".join(
-        f"{c} = COALESCE(player_games.{c}, excluded.{c})" for c in conflict_columns
-    )
+    assignments = ", ".join(f"{c} = COALESCE(player_games.{c}, excluded.{c})" for c in conflict_columns)
     statement = (
         f"INSERT INTO player_games ({', '.join(columns)}) VALUES ({placeholders}) "  # noqa: S608
         f"ON CONFLICT(player_id, game_id) DO UPDATE SET {assignments}"
@@ -403,8 +404,11 @@ def compute_derived(conn, season):
     "entering that game", which is what a pre-game pick needs and what the archive
     stores.
 
-    Games with gp_to_date = 0 get NULL rather than 0, so "has not played yet" stays
-    distinguishable from "played and scored none".
+    A player's first game has no games before it, and 0/0 normalises to 0 rather
+    than NULL - the archive stores 0 on pre-debut rows (verified against a player
+    who scored in his debut, whose stored gpg there still reads 0), so 0 keeps
+    this table a drop-in replacement. NULL would only ever appear for rows written
+    by an older build; it means "recompute with --derive".
     """
     conn.execute("DELETE FROM derived_features WHERE season = ?", (season,))
 
@@ -415,8 +419,10 @@ def compute_derived(conn, season):
             season,
             player_id,
             game_date,
+            -- gp_to_date = 0 on a player's first game: 0, not NULL, matching the
+            -- archive's pre-debut rows (see the docstring above).
             CASE
-                WHEN prev_gp = 0 THEN NULL
+                WHEN prev_gp = 0 THEN 0
                 ELSE 1.0 * prev_goals / prev_gp
             END,
             -- Goals per game over the last 5 games, divided by the number of
@@ -433,8 +439,11 @@ def compute_derived(conn, season):
             -- rows will not match Player-Snapshots-{ENV}. Correctness wins: a
             -- feature fed to the model should not be deflated by a player's lack
             -- of games.
+            --
+            -- On a player's first game there is no window yet, and that reads 0
+            -- rather than NULL - matching the archive's pre-debut rows.
             CASE
-                WHEN games_before = 0 THEN NULL
+                WHEN games_before = 0 THEN 0
                 ELSE 1.0 * goals_last5 / games_before
             END
         FROM (
@@ -789,6 +798,10 @@ def main():
         conn = connect(Path(args.db))
         build(args.build, db_path=Path(args.db))
         compute_derived(conn, args.build)
+        # Team stats too: --build without them leaves derived_team_stats empty
+        # for the season while derived_features is full, and a publish after a
+        # build would silently ship no team rows.
+        compute_derived_team(conn, args.build)
         conn.close()
         print(f"derived features computed for {args.build}")
         return 0

@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """Run a backtrack reconstruction as a detached background task.
 
-A full season is roughly 80 minutes of HTTP requests, which outlives any single
-command invocation here. This wrapper runs the crawl in its own process with a log
-file and a PID file, so it survives the caller being interrupted and can be polled
-afterwards.
+A full season is roughly half an hour of HTTP requests (discovery plus per-player
+game logs), which outlives any single command invocation here. This wrapper runs
+the crawl in its own process with a log file and a PID file, so it survives the
+caller being interrupted and can be polled afterwards.
 
 Mirrors the repo's background-task convention: state in ``data/bg/<name>.json``,
 output in ``data/bg/<name>.log``.
@@ -55,11 +55,16 @@ def _read_state(name):
 def _pid_alive(pid):
     """True if ``pid`` is still running.
 
-    os.kill with signal 0 is the portable check on POSIX; on Windows it only
-    works against the current process group, so a missing check there would report
-    a dead task as alive. The fallback is the conservative answer - assume alive so
-    the caller does not start a duplicate.
+    ``os.kill(pid, 0)`` never delivers a signal - it only asks whether the
+    process exists, and Python implements that probe on Windows as well as POSIX.
+    A dead pid raises OSError, which reads as not running; any unexpected failure
+    falls through to the conservative answer (assume alive) so the caller does
+    not start a duplicate of a task that may still be going. A missing pid (no
+    state, or a truncated state file) is not running.
     """
+    if not pid:
+        return False
+
     try:
         os.kill(pid, 0)
     except (OSError, ProcessLookupError):

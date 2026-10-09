@@ -13,8 +13,16 @@
 --
 -- THE RATES
 -- tgpg  - team's own goals FOR per game, season to date.
--- otga  - the team's goals AGAINST per game, i.e. what it concedes. Read as the
---         opponents' goals for, which is the same quantity by definition.
+-- otga  - the OPPONENT's goals AGAINST per game, i.e. how many goals this team
+--         scores ON that opponent. It is an offence measure, not a defence one:
+--         goals scored against an opponent are, by definition, that opponent's
+--         goals against - the same quantity read from opposite ends. It is NOT
+--         this team's own concessions; computing that instead matched 107 of
+--         16,301 archive rows (the two are close but unrelated). See the SCHEMA
+--         comment in smartscore/scripts/backtrack/local_store.py for the
+--         verification, and note the value is therefore opponent-specific: two
+--         players on the same club facing different opponents that night carry
+--         different otga values, unlike tgpg.
 --
 -- Both use the same strictly-before cutoff as gpg, so a row for game N carries the
 -- rate entering it and a team's first game of the season is NULL rather than 0. A
@@ -22,11 +30,12 @@
 -- emits exactly that (Winnipeg, Anaheim, Dallas and Carolina all show tgpg = 0 at
 -- the start of the current season).
 --
--- otshga - the team's shorthanded goals AGAINST per game. NOT reconstructable from
---   the game logs: they record each player's shorthanded goals but not that the
---   specific ones counted against the opponent's power play, which is what this
---   number means. It needs api.nhle.com/stats/rest/en/team/penaltykilltime.
---   Declared and left NULL rather than approximated from the wrong field.
+-- otshga - the OPPONENT's shorthanded goals AGAINST per game - the same
+--   opponent-relative reading as otga. NOT reconstructable from the game logs:
+--   they record each player's shorthanded goals but not which of them were
+--   scored against the opponent's power play, which is what this number means.
+--   It needs api.nhle.com/stats/rest/en/team/penaltykilltime. Declared and left
+--   NULL rather than approximated from the wrong field.
 --
 -- The archive's tgpg/otga are sparse and lossy the same way gpg was - Toronto
 -- carries tgpg on two dates out of the whole archive - so this table is expected to

@@ -12,25 +12,33 @@
 --      (0.320755). The rounding is baked in at capture time and cannot be undone.
 --
 -- This table is built by walking the NHL per-game box scores forward and
--- accumulating, so every date is present and every rate is full precision. It is
--- meant to REPLACE the live archive, not supplement it - the player set comes from
--- the games themselves (see smartscore/scripts/backtrack/reconstruct.py), so a
--- player picked for the first time appears without anyone adding them.
+-- accumulating, so every game date is present at full precision and the archive's
+-- two capture properties above both disappear. It is meant to REPLACE the live
+-- archive, not supplement it - the player set comes from the games themselves
+-- (see smartscore/scripts/backtrack/reconstruct.py), so a player picked for the
+-- first time appears without anyone adding them.
 --
 -- THE DERIVATION
 -- For a season and a date D, a player's totals are the sum over that player's
 -- games with game_date STRICTLY BEFORE D:
 --
 --     gp_to_date  = count(games before D)
---     gpg         = goals_to_date / gp_to_date        (null when gp_to_date = 0)
+--     gpg         = goals_to_date / gp_to_date        (0 when gp_to_date = 0)
 --
 -- Strictly-before is the cutoff that reproduces the stored values: the stored
 -- 2024-03-02 row for Brett Kulak is 2/57, and 3/58 appears on 2024-03-03 once
 -- that night's goal lands. A row therefore reads as "entering the game on D".
+-- On a player's first game gp_to_date is 0 and the archive stores 0 there (not
+-- null - verified against rows where the player scored that very night), so 0/0
+-- normalises to 0 here too.
 --
--- Scope is regular season only (NHL gameTypeId 2), matching the stored values.
--- Kulak's 25-game, 1-goal 2024 playoff run would otherwise inflate both numerator
--- and denominator.
+-- Scope is regular season only (NHL gameTypeId 2). Kulak's 25-game, 1-goal 2024
+-- playoff run would otherwise inflate both numerator and denominator. The one
+-- coverage gap this leaves: the archive also holds rows on playoff dates (1,398
+-- of them in 2023-24, from its pipeline running past the April 18 regular-season
+-- end), which are not reproduced. Nothing else is missing - every one of the
+-- archive's 17,105 2023-24 rows sits on a game date, and all 15,707 of them that
+-- are not playoff dates are here.
 --
 -- WHY THERE ARE NO COUNTER COLUMNS HERE
 -- gp_to_date, goals_to_date and friends used to live in this table. They are gone,
@@ -47,19 +55,24 @@
 -- COLUMN SET
 -- The columns below are exactly Player-Snapshots-{ENV}'s, so this table is a
 -- drop-in replacement and anything reading the archive reads this unchanged. Today
--- only date/player_id/name/team_name/home/gpg are populated. The rest are declared
--- so the shape matches, and are filled by later passes:
+-- date/player_id/name/team_name/home/gpg/five_gpg are populated. The rest are
+-- declared so the shape matches, and are filled by later passes:
 --
 --   * hgpg, hppg  - 3-year windows per smartscore_info_client's get_hgpg(years=3),
 --                   which needs seasonTotals from the landing payload. NOT
 --                   reconstructable from one season of game logs.
---   * five_gpg    - derivable from the last 5 games in the raw store.
---   * tgpg, otga, otshga - definitions not established; deliberately left null
---                   rather than filled with a same-season ratio under the same name.
---   * injury_*, tims, opp_goalie_*, lineup_*, pp_unit, scored
+--   * tgpg, otga, otshga - team attributes, one value per team-game, denormalised
+--                   onto ~21 player rows per team-date in the archive. Their
+--                   definitions are established and they are computed - at their
+--                   honest grain - in Team-Stats-backtrack-{ENV} (see
+--                   20261008_add_team_stats_backtrack.sql); left null HERE by
+--                   design so one team number is not repeated across player rows.
+--   * injury_*, tims, opp_goalie_*, lineup_*, pp_unit
 --                   - not in the game-log feed at all. They come from the injury,
 --                     lineup and goalie endpoints. The live archive remains their
 --                     source until those passes exist.
+--   * scored       - derivable from the game itself (did the player score in it)
+--                     but not written yet; left null rather than half-populated.
 --
 -- Null here means "not reconstructed yet", never "not applicable".
 --

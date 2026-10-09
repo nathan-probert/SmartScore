@@ -111,7 +111,7 @@ exclude_lines = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["smartscore"]
+pythonpath = ["smartscore", "smartscore/scripts/backtrack"]
 testpaths = ["tests/unit"]
 markers = [
     "integration: runs against the deployed AWS stack and PostHog (opt-in)",
