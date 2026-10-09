@@ -642,12 +642,38 @@ def stats(db_path=DB_PATH):
     conn.close()
 
 
+def _archive_names(supabase, table, player_ids):
+    """Full names from the archive being replaced, for one set of players.
+
+    The archive stores full names ("Brent Burns") where box scores carry
+    initials ("B. Burns"), so its spelling is what a drop-in replacement should
+    ship. Chunked ``in_`` filters rather than one call: several hundred ids in
+    a single filter make a URL long enough to trip proxy limits, and paging the
+    whole table would read a hundred thousand rows for a few hundred names. A
+    player the archive never saw simply has no entry, and publish falls back to
+    the box-score spelling.
+    """
+    ids = sorted(player_ids)
+    names = {}
+
+    for start in range(0, len(ids), 100):
+        page = supabase.table(table).select("player_id,name").in_("player_id", ids[start : start + 100]).execute()
+        for record in page.data or []:
+            if record.get("name"):
+                names.setdefault(record["player_id"], record["name"])
+
+    return names
+
+
 def publish(season, db_path=DB_PATH):
     """Upsert derived features into Player-Snapshots-backtrack-{ENV}.
 
     Reads from the raw store rather than re-crawling: that is the point of the raw
     layer. Adding a feature column means re-running --derive and this, and nothing
     else.
+
+    ``name`` prefers the archive's full spelling over the box score's initials -
+    see ``_archive_names``.
 
     Only columns the table actually declares are sent. PostgREST rejects an entire
     batch on an unknown column, so a feature that exists locally but has no column
@@ -681,8 +707,11 @@ def publish(season, db_path=DB_PATH):
 
     # name and team_name are per-player and per-player-per-game respectively; the
     # raw rows are the only place either is stored. team_name needs the
-    # abbreviation->place mapping, so it is resolved through team_map.
-    names = {
+    # abbreviation->place mapping, so it is resolved through team_map. The raw
+    # name is the box score's abbreviated spelling; the archive's full names
+    # override it at payload time, because the archive is the table being
+    # replaced and its spelling is what consumers already display.
+    raw_names = {
         r["player_id"]: r["name"]
         for r in conn.execute("SELECT DISTINCT player_id, name FROM player_games WHERE name IS NOT NULL")
     }
@@ -697,6 +726,7 @@ def publish(season, db_path=DB_PATH):
 
     env_name, supabase = config()
     table = f"Player-Snapshots-backtrack-{env_name}"
+    full_names = _archive_names(supabase, f"Player-Snapshots-{env_name}", {r["player_id"] for r in rows})
 
     payload = []
     for r in rows:
@@ -705,7 +735,7 @@ def publish(season, db_path=DB_PATH):
             {
                 "date": r["game_date"],
                 "player_id": r["player_id"],
-                "name": names.get(r["player_id"]) or f"player-{r['player_id']}",
+                "name": full_names.get(r["player_id"]) or raw_names.get(r["player_id"]) or f"player-{r['player_id']}",
                 "team_name": to_place(teams.get(key)),
                 "home": bool(homes.get(key)) if homes.get(key) is not None else None,
                 "gpg": r["gpg"],

@@ -16,21 +16,24 @@ Two shapes are compared:
 
 * per-player features - gpg, five_gpg - joined on (date, player_id), both keys
   natural and unique.
-* team features - tgpg, otga - joined on (date, team_abbrev) for tgpg, but
-  otga belongs to the OPPONENT's row (it is the opponent's goals against), so the
-  player's own team_abbrev is resolved to a game_id and otga is then read from the
-  other team's row for that game.
+* team features - tgpg, otga - joined on (date, player_id) too, then resolved to
+  a team through our own player_games: the archive denormalises each team's
+  values onto every one of its player rows, and a player plays for exactly one
+  club on a given date. That gives a real team key without ever reading the
+  archive's team_name, which is a PLACE name and collides for NYI/NYR ("New
+  York"). otga needs no opponent lookup either - the archive stores it on the
+  same player's row already resolved to his team's opponent.
+
+The archive only populates tgpg/otga on a window of dates (62 calendar days,
+2024-02-16..2024-04-18 in 2023-24); outside it those columns are null and the
+row still compares on gpg. Archive rows whose date/player pair has no game in
+our store (captures on non-game days, or a player who did not play that night)
+cannot resolve a team and are counted separately rather than guessed at.
 
 Rounding is compared at 2 decimal places, because the archive stores most team
 values at 1-5dp and comparing 2dp-stored values against our full precision at
 higher tolerance reports rounding as disagreement (measured: match rates get
 *worse* as tolerance tightens past the archive's own precision).
-
-The team side is date-granular, not team-granular: the archive has no team_abbrev
-column, so its per-date tgpg collapses to the MODAL value for that date and dates
-where the archive itself disagrees across rows are skipped entirely. tgpg/otga
-match rates are therefore indicative rather than exact, and the otga figures may
-be counted without being compared (see the note at the end when that happens).
 
 Usage::
 
@@ -62,27 +65,19 @@ def archive_table():
 
 
 def fetch_archive(start_date, end_date):
-    """All archive rows in a window, paged, keyed for lookup.
+    """All archive rows in a window, paged, keyed ``(date, player_id) -> row``.
 
-    Returns ``(by_player, per_date)``:
-
-    * ``by_player`` - ``{(date, player_id): row}`` for the per-player features.
-    * ``per_date`` - ``{date: (modal_tgpg, counts)}``, the archive's most common
-      ``tgpg`` for that date plus the vote that selected it. The archive has no
-      team_abbrev column, so a true per-team lookup is impossible through it;
-      dates whose archive rows disagree are surfaced through ``counts`` and
-      skipped by the caller rather than guessed at.
+    The rows carry gpg, five_gpg and - on a subset of dates - the denormalised
+    team columns tgpg/otga. team_name is fetched for display only and is never
+    used as a join key.
     """
     client = SUPABASE_ADMIN_CLIENT.table(archive_table())
 
     by_player = {}
-    team_values = defaultdict(set)
     offset = 0
 
     while True:
         response = (
-            # gpg and five_gpg are the per-player features; tgpg/otga the team ones.
-            # team_name is fetched for display only and is never used as a join key.
             client.select("date,player_id,gpg,five_gpg,tgpg,otga,team_name")
             .gte("date", start_date)
             .lte("date", end_date)
@@ -97,36 +92,26 @@ def fetch_archive(start_date, end_date):
             break
 
         for row in batch:
-            key = (row["date"], row["player_id"])
-            by_player[key] = row
-
-            if row.get("tgpg") is not None:
-                team_values[row["date"]].add((row.get("tgpg"), row.get("otga")))
+            by_player[(row["date"], row["player_id"])] = row
 
         if len(batch) < PAGE_SIZE:
             break
 
         offset += PAGE_SIZE
 
-    # Collapse to one value per (date, team) using the archive's own team_name is
-    # impossible - that is the collision. Instead take the modal tgpg per date so
-    # the comparison uses the most common archive value for that date.
-    per_date = {}
-    for date, values in team_values.items():
-        counts = defaultdict(int)
-        for tgpg, _otga in values:
-            counts[tgpg] += 1
-        most_common = max(counts.items(), key=lambda kv: kv[1])[0]
-        per_date[date] = (most_common, counts)
-
-    return by_player, per_date
+    return by_player
 
 
 def load_derived(db_path=DB_PATH, season=None):
     """Reconstructed features from the local store, keyed for lookup.
 
-    Returns ``(players, by_game)``: ``players`` keyed ``(game_date, player_id)``,
-    ``by_game`` keyed ``game_id -> {team_abbrev: row}``.
+    Returns ``(players, teams, player_team)``:
+
+    * ``players`` - ``(game_date, player_id) -> derived_features row``.
+    * ``teams`` - ``(game_date, team_abbrev) -> derived_team_stats row``.
+    * ``player_team`` - ``(game_date, player_id) -> team_abbrev``, from the raw
+      rows. This is the bridge from an archive player row to a team, and it is
+      why the team comparison never needs the archive's team_name.
     """
     import sqlite3  # noqa: PLC0415
 
@@ -142,16 +127,19 @@ def load_derived(db_path=DB_PATH, season=None):
         for r in conn.execute(f"SELECT game_date, player_id, gpg, five_gpg FROM derived_features {where}", params)  # noqa: S608
     }
 
-    teams = list(
-        conn.execute(f"SELECT game_date, game_id, team_abbrev, tgpg, otga FROM derived_team_stats {where}", params)  # noqa: S608
-    )
+    teams = {
+        (r["game_date"], r["team_abbrev"]): r
+        for r in conn.execute(f"SELECT game_date, team_abbrev, tgpg, otga FROM derived_team_stats {where}", params)  # noqa: S608
+    }
+
+    player_team = {
+        (r["game_date"], r["player_id"]): r["team_abbrev"]
+        for r in conn.execute(f"SELECT game_date, player_id, team_abbrev FROM player_games {where}", params)  # noqa: S608
+        if r["team_abbrev"] is not None
+    }
     conn.close()
 
-    by_game = defaultdict(dict)
-    for t in teams:
-        by_game[t["game_id"]][t["team_abbrev"]] = t
-
-    return players, by_game
+    return players, teams, player_team
 
 
 def main():
@@ -183,12 +171,12 @@ def main():
 
     print(f"comparing {start} .. {end} against Player-Snapshots-{ENV}\n")
 
-    players, by_game = load_derived(Path(args.db), args.season)
-    by_player, per_date = fetch_archive(start, end)
+    players, teams, player_team = load_derived(Path(args.db), args.season)
+    by_player = fetch_archive(start, end)
 
     print(f"archive player rows : {len(by_player)}")
-    print(f"archive dates w/ tgpg: {len(per_date)}")
     print(f"local feature rows  : {len(players)}")
+    print(f"local team rows     : {len(teams)}")
 
     # --- per-player features -------------------------------------------------
     stats = defaultdict(lambda: {"n": 0, "match": 0, "ours_null": 0, "missing": 0})
@@ -234,60 +222,60 @@ def main():
     print(f"\nrows compared: {stats['_row']['n']}, archive rows with no local match: {stats['_row']['missing']}")
 
     # --- team features -------------------------------------------------------
-    # tgpg is the team's own goals-for rate, keyed on (date, team_abbrev).
-    # otga is the OPPONENT's goals-against rate, so it is read off the other
-    # team's row for the same game - never from the player's own row.
-    #
-    # The archive side cannot be keyed on team_abbrev (it has no such column) and
-    # team_name is both null on most dates and ambiguous for NYI/NYR. So the
-    # comparison walks OUR team rows, looks up the archive's modal tgpg for that
-    # date, and - for otga - the archive value on the opponent's rows for that
-    # same date. Where a date has more than one distinct archive value the team is
-    # skipped rather than guessed.
-    t_stats = {"tgpg": {"n": 0, "match": 0, "skip": 0}, "otga": {"n": 0, "match": 0, "skip": 0}}
+    # tgpg and otga are team attributes denormalised onto the archive's player
+    # rows. The join goes archive row -> our player_games row for the same
+    # (date, player) -> that row's team_abbrev -> derived_team_stats. A player
+    # plays for exactly one club on a date, so this is a real team key and the
+    # NYI/NYR "New York" collision in team_name never enters the picture. otga
+    # is stored on the player's row already resolved to his team's opponent, so
+    # it compares directly too - no opponent lookup needed.
+    t_stats = {f: {"n": 0, "match": 0, "no_team": 0, "no_ours": 0, "ours_null": 0} for f in ("tgpg", "otga")}
     t_examples = {"tgpg": [], "otga": []}
 
-    for game_id, sides in by_game.items():
-        date = next(iter(sides.values()))["game_date"]
-
-        if date not in per_date:
+    for (date, player_id), arch in by_player.items():
+        if arch.get("tgpg") is None and arch.get("otga") is None:
             continue
 
-        arch_tgpg, counts = per_date[date]
+        team = player_team.get((date, player_id))
 
-        # Ambiguous archive day: more than one team reported a different tgpg and
-        # we cannot attribute it without a team key. Skip rather than mis-join.
-        if len(counts) > 1:
-            t_stats["tgpg"]["skip"] += len(sides)
-            t_stats["otga"]["skip"] += len(sides)
+        if team is None:
+            # No game for this (date, player) in the raw store: a capture on a
+            # non-game day, or the player did not play that night. No team to
+            # resolve, so skip rather than guess.
+            t_stats["tgpg"]["no_team"] += 1
+            t_stats["otga"]["no_team"] += 1
             continue
 
-        for abbr, row in sides.items():
-            ours = row["tgpg"]
+        ours = teams.get((date, team))
 
-            if ours is None:
+        if ours is None:
+            # The player played but our team stats have no row for that
+            # team-date (team_abbrev missing on the raw row, for instance).
+            t_stats["tgpg"]["no_ours"] += 1
+            t_stats["otga"]["no_ours"] += 1
+            continue
+
+        for field in ("tgpg", "otga"):
+            stored = arch.get(field)
+
+            if stored is None:
                 continue
 
-            t_stats["tgpg"]["n"] += 1
+            b = t_stats[field]
+            b["n"] += 1
 
-            if abs(round(ours, args.tol) - round(arch_tgpg, args.tol)) < 10 ** (-args.tol):
-                t_stats["tgpg"]["match"] += 1
-            elif len(t_examples["tgpg"]) < 8:
-                t_examples["tgpg"].append((date, abbr, arch_tgpg, round(ours, 6)))
+            value = ours[field]
 
-        # otga: our opponent's conceded rate, per game.
-        for abbr, row in sides.items():
-            opponent = next((a for a in sides if a != abbr), None)
-
-            if opponent is None:
+            if value is None:
+                # Season-debut games hold NULL for us by design (a team entering
+                # its first game has no rate), while the archive emits 0.
+                b["ours_null"] += 1
                 continue
 
-            ours = sides[opponent]["otga"]
-
-            if ours is None:
-                continue
-
-            t_stats["otga"]["n"] += 1
+            if abs(round(value, args.tol) - round(stored, args.tol)) < 10 ** (-args.tol):
+                b["match"] += 1
+            elif len(t_examples[field]) < 8:
+                t_examples[field].append((date, team, stored, round(value, 6)))
 
     print()
     for field in ("tgpg", "otga"):
@@ -295,14 +283,13 @@ def main():
 
         if b["n"]:
             pct = 100 * b["match"] / b["n"]
-            print(f"{field:<9} {b['match']:>7}/{b['n']:<7} {pct:6.2f}%   (skipped {b['skip']} ambiguous)")
+            print(
+                f"{field:<9} {b['match']:>7}/{b['n']:<7} {pct:6.2f}%   "
+                f"(unresolvable {b['no_team']}, no local team row {b['no_ours']}, ours null {b['ours_null']})"
+            )
 
             for ex in t_examples[field]:
                 print(f"          {ex[0]} {ex[1]} archive={ex[2]} ours={ex[3]}")
-
-    if t_stats["otga"]["n"] and t_stats["otga"]["match"] == 0:
-        print("\note: otga needs the archive value keyed to the OPPONENT's row; archive team")
-        print("identity is unavailable for these dates, so it is counted but not compared.")
 
 
 if __name__ == "__main__":

@@ -1,14 +1,27 @@
-"""local_store window SQL: strictly-before gpg/five_gpg and team otga semantics."""
+"""local_store window SQL: strictly-before gpg/five_gpg, team otga, and publish names."""
+
+from types import SimpleNamespace
 
 import local_store
 import pytest
 
 
-def _insert(conn, player_id, game_id, date, goals, team=None, tgf=None, season="20232024"):
+def _insert(  # noqa: PLR0913, PLR0917 - helper mirrors the table's shape; every extra has a default
+    conn,
+    player_id,
+    game_id,
+    date,
+    goals,
+    team=None,
+    tgf=None,
+    season="20232024",
+    name=None,
+    position="C",
+):
     conn.execute(
         "INSERT INTO player_games (player_id, game_id, season, game_date, goals,"
-        " team_abbrev, team_goals_for) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (player_id, game_id, season, date, goals, team, tgf),
+        " team_abbrev, team_goals_for, name, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (player_id, game_id, season, date, goals, team, tgf, name, position),
     )
 
 
@@ -80,3 +93,76 @@ def test_compute_derived_team_rejects_games_without_an_opponent(tmp_path):
     # Dropping the orphan silently would make otga wrong rather than absent.
     with pytest.raises(ValueError, match="no opponent"):
         local_store.compute_derived_team(conn, "20232024")
+
+
+class _FakeArchiveClient:
+    """Supabase stand-in: serves canned archive-name rows, captures upserts."""
+
+    def __init__(self, archive_rows):
+        self.archive_rows = archive_rows
+        self.upserted = []
+        self.table_names = []
+
+    def table(self, name):
+        self.table_names.append(name)
+        return _FakeTable(self)
+
+
+class _FakeTable:
+    def __init__(self, client):
+        self._client = client
+
+    def select(self, *args, **kwargs):
+        return _FakeSelect(self._client)
+
+    def upsert(self, batch, **kwargs):
+        self._client.upserted.extend(batch)
+        return _FakeDone()
+
+
+class _FakeSelect:
+    def __init__(self, client, ids=()):
+        self._client = client
+        self._ids = ids
+
+    def in_(self, column, ids):
+        return _FakeSelect(self._client, ids)
+
+    def execute(self):
+        wanted = set(self._ids)
+        rows = [r for r in self._client.archive_rows if r["player_id"] in wanted]
+        return SimpleNamespace(data=rows)
+
+
+class _FakeDone:
+    def execute(self):
+        return SimpleNamespace(data=None)
+
+
+def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypatch):
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    _insert(conn, 201, 8001, "2023-10-10", 1, team="BOS", tgf=3, name="B. Burns")
+    _insert(conn, 202, 8001, "2023-10-10", 0, team="BOS", tgf=3, name="J. Doe")
+    local_store.compute_derived(conn, "20232024")
+    conn.close()
+
+    # A NULL name row first: it must not shadow the real one for the same player.
+    client = _FakeArchiveClient(
+        [
+            {"player_id": 201, "name": None},
+            {"player_id": 201, "name": "Brent Burns"},
+        ]
+    )
+    monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
+
+    written = local_store.publish("20232024", db_path=tmp_path / "raw.sqlite")
+
+    assert written == 2
+    # Names were read from the archive table and rows written to the backtrack one.
+    assert set(client.table_names) == {"Player-Snapshots-dev", "Player-Snapshots-backtrack-dev"}
+    names = {r["player_id"]: r["name"] for r in client.upserted}
+    # The archive's full spelling wins where it exists...
+    assert names[201] == "Brent Burns"
+    # ...and a player the archive never saw keeps the box-score fallback.
+    assert names[202] == "J. Doe"
+    assert {r["team_name"] for r in client.upserted} == {local_store.to_place("BOS")}
