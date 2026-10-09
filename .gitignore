@@ -18,3 +18,26 @@ preview_email.html
 secret_readme.md
 .ocx/
 .opencode/
+
+# Backtrack raw store and background-task state.
+#
+# data/raw_nhl.sqlite is the working copy, rebuilt from the committed dumps - see
+# `make backtrack-load`. Committing it as well would duplicate every row. Git
+# compresses it to ~4 MB so it is not fatal either way, but there is no reason to
+# carry two copies of the same data that can drift.
+data/raw_nhl.sqlite
+data/*.sqlite-journal
+data/*.sqlite-wal
+data/*.sqlite-shm
+
+# PID files and logs from run_background.py - machine state, not source.
+data/bg/
+
+# HTTP payload cache under the backtrack scripts. Re-fetchable in ~5 minutes and
+# redundant with data/dumps/, which is the versioned source of truth.
+smartscore/scripts/backtrack/cache/
+
+# Scratch output from ad-hoc foreground runs. The tracked runner writes its own
+# logs to data/bg/ instead, which is already ignored above.
+data/*.log
+data/*.err

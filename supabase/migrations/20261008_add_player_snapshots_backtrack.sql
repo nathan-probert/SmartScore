@@ -1,0 +1,143 @@
+-- Player-Snapshots-backtrack: season-to-date stats reconstructed from NHL game logs.
+--
+-- WHY THIS EXISTS
+-- Player-Snapshots-{ENV} stores one row per player per date, captured live as the
+-- pipeline runs. Two properties of that capture limit it:
+--
+--   1. Sparse. Rows exist only for pick-relevant dates, not every game a player
+--      played, so the table cannot answer "what were this player's stats entering
+--      game X" for an arbitrary X.
+--   2. Lossy on early rows. Rows captured in the first weeks of a season store
+--      rates at 2 decimal places (0.31, 0.33) where later rows carry 6
+--      (0.320755). The rounding is baked in at capture time and cannot be undone.
+--
+-- This table is built by walking the NHL per-game box scores forward and
+-- accumulating, so every game date is present at full precision and the archive's
+-- two capture properties above both disappear. It is meant to REPLACE the live
+-- archive, not supplement it - the player set comes from the games themselves
+-- (see smartscore/scripts/backtrack/reconstruct.py), so a player picked for the
+-- first time appears without anyone adding them.
+--
+-- THE DERIVATION
+-- For a season and a date D, a player's totals are the sum over that player's
+-- games with game_date STRICTLY BEFORE D:
+--
+--     gp_to_date  = count(games before D)
+--     gpg         = goals_to_date / gp_to_date        (0 when gp_to_date = 0)
+--
+-- Strictly-before is the cutoff that reproduces the stored values: the stored
+-- 2024-03-02 row for Brett Kulak is 2/57, and 3/58 appears on 2024-03-03 once
+-- that night's goal lands. A row therefore reads as "entering the game on D".
+-- On a player's first game gp_to_date is 0 and the archive stores 0 there (not
+-- null - verified against rows where the player scored that very night), so 0/0
+-- normalises to 0 here too.
+--
+-- Scope is regular season AND playoffs (NHL gameTypeId 2 and 3), walked from
+-- regularSeasonStartDate to playoffEndDate - the archive accumulated playoff
+-- games too, so all 17,105 of its 2023-24 rows sit on game dates this table
+-- reproduces. Where playoff-window rows disagree, the archive is the stale
+-- side: our season totals match api-web.nhle.com player landing exactly
+-- (spot-checked Palmieri 31/87, Lee 21/86, DeBrusk 24/93, Frederic 21/95,
+-- Kuznetsov 12/73 with traded splits summed), while the archive's gpg freezes
+-- at the regular-season final value on many playoff dates. The archive's
+-- five_gpg, by contrast, still matches 100% across the playoff window.
+--
+-- WHY THERE ARE NO COUNTER COLUMNS HERE
+-- gp_to_date, goals_to_date and friends used to live in this table. They are gone,
+-- and deliberately so: they are the raw layer, and the raw layer now lives in
+-- data/raw_nhl.sqlite as one row per player per GAME. That store is the audit
+-- trail - any rate here is recomputable from it with a window function, and it is
+-- where a new feature gets added without re-crawling the API. Holding a partial
+-- copy of the counters here meant two places to drift.
+--
+-- Consequence, stated plainly: once the counters are gone, a rate in this table
+-- cannot be recomputed or audited from Supabase alone. It requires the SQLite file.
+-- That is the intended trade - SQLite is the source of truth.
+--
+-- COLUMN SET
+-- The columns below are exactly Player-Snapshots-{ENV}'s, so this table is a
+-- drop-in replacement and anything reading the archive reads this unchanged. Today
+-- date/player_id/name/team_name/home/gpg/five_gpg/ppg are populated (ppg added by
+-- 20261009_add_ppg_player_snapshots_backtrack.sql). The rest are
+-- declared so the shape matches, and are filled by later passes:
+--
+--   * hgpg, hppg  - 3-year windows per smartscore_info_client's get_hgpg(years=3),
+--                   which needs seasonTotals from the landing payload. NOT
+--                   reconstructable from one season of game logs.
+--   * tgpg, otga, otshga - team attributes, one value per team-game, denormalised
+--                   onto ~21 player rows per team-date in the archive. Their
+--                   definitions are established and they are computed - at their
+--                   honest grain - in Team-Stats-backtrack-{ENV} (see
+--                   20261008_add_team_stats_backtrack.sql); left null HERE by
+--                   design so one team number is not repeated across player rows.
+--   * injury_*, tims, opp_goalie_*, lineup_*, pp_unit
+--                   - not in the game-log feed at all. They come from the injury,
+--                     lineup and goalie endpoints. The live archive remains their
+--                     source until those passes exist.
+--   * scored       - derivable from the game itself (did the player score in it)
+--                     but not written yet; left null rather than half-populated.
+--
+-- Null here means "not reconstructed yet", never "not applicable".
+--
+-- `date` is TEXT, matching Player-Snapshots-{ENV}. write_historic_db compares dates
+-- as strings and joins across these tables, so both sides have to agree.
+--
+-- Idempotent because .github/workflows/deploy.yml pipes every file in this
+-- directory through psql on every deploy with no migration history.
+
+CREATE TABLE IF NOT EXISTS "Player-Snapshots-backtrack-__ENV__" (
+    -- Key and identity
+    "date" TEXT NOT NULL,
+    "player_id" BIGINT NOT NULL,
+    "name" TEXT NOT NULL,
+    "team_name" TEXT,
+    "home" BOOLEAN,
+
+    -- Goal-scoring rates. gpg is season-to-date, pre-game.
+    "gpg" DOUBLE PRECISION,
+    "hgpg" DOUBLE PRECISION,
+    "five_gpg" DOUBLE PRECISION,
+    "hppg" DOUBLE PRECISION,
+    "tgpg" DOUBLE PRECISION,
+    "otga" DOUBLE PRECISION,
+    "otshga" DOUBLE PRECISION,
+
+    -- Injury report. Not in the game-log feed.
+    "injury_status" TEXT,
+    "injury_desc" TEXT,
+
+    -- Tims' team projection.
+    "tims" INTEGER,
+
+    -- Opposing goalie. Not in the game-log feed; goalies are excluded from this
+    -- table as players, so this describes the opponent, not a row subject.
+    "opp_goalie_name" TEXT,
+    "opp_goalie_team" TEXT,
+    "opp_goalie_status" TEXT,
+    "opp_goalie_confirmed" BOOLEAN,
+    "opp_goalie_nhl_id" BIGINT,
+    "opp_goalie_gaa" DOUBLE PRECISION,
+    "opp_goalie_save_pct" DOUBLE PRECISION,
+    "opp_goalie_record" TEXT,
+    "opp_goalie_shutouts" INTEGER,
+    "opp_goalie_games_played" INTEGER,
+
+    -- Lineup. Not in the game-log feed.
+    "lineup_unit" TEXT,
+    "lineup_position_group" TEXT,
+    "pp_unit" TEXT,
+    "lineup_status" TEXT,
+
+    -- Training label. null = not graded, matching Player-Snapshots-{ENV}.
+    "scored" INTEGER,
+
+    CONSTRAINT "Player-Snapshots-backtrack-__ENV___pkey" PRIMARY KEY ("date", "player_id")
+);
+
+-- The PK covers `WHERE date = ?`. This serves the per-player rebuild and the diff
+-- against Player-Snapshots-{ENV}, which both filter on player_id.
+CREATE INDEX IF NOT EXISTS "Player-Snapshots-backtrack-__ENV___player_idx"
+    ON "Player-Snapshots-backtrack-__ENV__" ("player_id", "date");
+
+-- Same reasoning as the live archive: the training set is not publicly readable.
+ALTER TABLE "Player-Snapshots-backtrack-__ENV__" ENABLE ROW LEVEL SECURITY;
