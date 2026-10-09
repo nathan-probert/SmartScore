@@ -167,12 +167,12 @@ CREATE INDEX IF NOT EXISTS player_games_player_date_idx
 --   - the same event seen from opposite ends, exactly the otga argument - so
 --   summing this team's power_play_goals over the games shared with that
 --   opponent gives their shorthanded goals against directly, no separate
---   penalty-kill tally needed. (The old "needs the penaltykilltime endpoint"
---   note was wrong: verified against
---   api.nhle.com/stats/rest/en/team/penaltykilltime for 2023-24 - all 16
---   non-playoff teams match exactly. The endpoint's season totals include playoff
---   games while this store is regular season only, which is the entire difference
---   for the other 16.)
+--   penalty-kill tally needed. Verified against
+--   api.nhle.com/stats/rest/en/team/penaltykilltime for 2023-24: all 32 teams
+--   match exactly on season shorthanded-goals-against and games played, once
+--   the store includes playoff games (the endpoint's totals always did - the
+--   earlier 16/16 split was entirely this store stopping at the regular
+--   season).
 --
 --   First game of the season is NULL like tgpg/otga. Later games read 0.0 when
 --   nothing has been scored: only gp = 0 is "no rate yet", a 0/4 is a rate, and

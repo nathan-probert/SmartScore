@@ -32,13 +32,15 @@
 -- null - verified against rows where the player scored that very night), so 0/0
 -- normalises to 0 here too.
 --
--- Scope is regular season only (NHL gameTypeId 2). Kulak's 25-game, 1-goal 2024
--- playoff run would otherwise inflate both numerator and denominator. The one
--- coverage gap this leaves: the archive also holds rows on playoff dates (1,398
--- of them in 2023-24, from its pipeline running past the April 18 regular-season
--- end), which are not reproduced. Nothing else is missing - every one of the
--- archive's 17,105 2023-24 rows sits on a game date, and all 15,707 of them that
--- are not playoff dates are here.
+-- Scope is regular season AND playoffs (NHL gameTypeId 2 and 3), walked from
+-- regularSeasonStartDate to playoffEndDate - the archive accumulated playoff
+-- games too, so all 17,105 of its 2023-24 rows sit on game dates this table
+-- reproduces. Where playoff-window rows disagree, the archive is the stale
+-- side: our season totals match api-web.nhle.com player landing exactly
+-- (spot-checked Palmieri 31/87, Lee 21/86, DeBrusk 24/93, Frederic 21/95,
+-- Kuznetsov 12/73 with traded splits summed), while the archive's gpg freezes
+-- at the regular-season final value on many playoff dates. The archive's
+-- five_gpg, by contrast, still matches 100% across the playoff window.
 --
 -- WHY THERE ARE NO COUNTER COLUMNS HERE
 -- gp_to_date, goals_to_date and friends used to live in this table. They are gone,

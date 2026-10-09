@@ -35,10 +35,11 @@
 --   IS a shorthanded goal against the opponent, so summing this team's
 --   power_play_goals over the games shared with that opponent gives their
 --   shorthanded goals against directly. Verified against
---   api.nhle.com/stats/rest/en/team/penaltykilltime for 2023-24: all 16
---   non-playoff teams match exactly (the endpoint's season totals include playoff
---   games; this table is regular season only, which is the entire difference for
---   the other 16). First game of the season is NULL, and later games read 0.0
+--   api.nhle.com/stats/rest/en/team/penaltykilltime for 2023-24: all 32 teams
+--   match exactly on season shorthanded-goals-against and games played, once
+--   the store includes playoff games (the endpoint's totals always did - the
+--   earlier 16/16 split was entirely this store stopping at the regular
+--   season). First game of the season is NULL, and later games read 0.0
 --   when nothing has been scored - the archive stores zeros there too.
 --
 -- The archive's tgpg/otga are sparse and lossy the same way gpg was - Toronto
