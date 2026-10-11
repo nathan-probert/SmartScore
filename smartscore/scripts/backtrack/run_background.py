@@ -13,6 +13,8 @@ Usage::
 
     python smartscore/scripts/backtrack/run_background.py --name bt-2023 --season 20232024 --write
     python smartscore/scripts/backtrack/run_background.py --name build-2023 --cmd build --season 20232024
+    python smartscore/scripts/backtrack/run_background.py --name lineups-2023 --cmd lineups --season 20232024
+    python smartscore/scripts/backtrack/run_background.py --name publish-2023 --cmd publish --season 20232024
     python smartscore/scripts/backtrack/run_background.py --name bt-2023 --status
     python smartscore/scripts/backtrack/run_background.py --name bt-2023 --tail 40
     python smartscore/scripts/backtrack/run_background.py --name bt-2023 --stop
@@ -89,6 +91,15 @@ def cmd_start(args):
         # local_store --build crawls whatever the cache misses (schedule, box
         # scores, game logs) and then derives, so it needs only the season.
         command = [sys.executable, str(LOCAL_STORE), "--build", args.season]
+    elif args.cmd == "lineups":
+        # local_store --lineups is pure CPU over the shiftcharts cache, but a
+        # full season is still minutes of sweeps - detached like the crawls so
+        # the turn never eats its budget waiting on it.
+        command = [sys.executable, str(LOCAL_STORE), "--lineups", args.season]
+    elif args.cmd == "publish":
+        # --publish crawls any uncached tims dates (~180 per season) and then
+        # upserts tens of thousands of rows into Supabase.
+        command = [sys.executable, str(LOCAL_STORE), "--publish", args.season]
     else:
         command = [sys.executable, str(RECONSTRUCT), "--season", args.season]
 
@@ -205,9 +216,9 @@ def main():
     parser.add_argument("--name", required=True, help="Task name; state and log files are named after it.")
     parser.add_argument(
         "--cmd",
-        choices=("reconstruct", "build"),
+        choices=("reconstruct", "build", "lineups", "publish"),
         default="reconstruct",
-        help="reconstruct = discovery crawl into Supabase; build = local_store --build into SQLite.",
+        help="reconstruct = crawl Supabase; build = local_store --build; lineups; publish.",
     )
     parser.add_argument("--season", default="20232024")
     parser.add_argument("--env", default="dev", help="ENV for the target tables (default dev).")

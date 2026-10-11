@@ -147,3 +147,29 @@ def test_fetch_boxscore_retries_reset_connections(tmp_path, monkeypatch):
     assert [r["player_id"] for r in records] == [301]
     assert records[0]["game_id"] == 2023030001
     assert records[0]["goals"] == 1
+
+
+def test_fetch_shiftcharts_caches_and_serves_from_disk(tmp_path, monkeypatch):
+    payload = {
+        "total": 2,
+        "data": [
+            {"playerId": 301, "teamId": 100, "period": 1, "startTime": "00:00", "endTime": "01:00"},
+            {"playerId": 302, "teamId": 100, "period": 1, "startTime": "00:00", "endTime": "01:00"},
+        ],
+    }
+    calls = {"n": 0}
+
+    def fake_get(url, timeout=None):
+        calls["n"] += 1
+        return _FakeBoxscoreResponse(payload)
+
+    monkeypatch.setattr(nhl_client.requests, "get", fake_get)
+    monkeypatch.setattr(nhl_client.time, "sleep", lambda seconds: None)
+
+    shifts = nhl_client.fetch_shiftcharts(2023020002, delay_seconds=0.0, cache_dir=tmp_path)
+    again = nhl_client.fetch_shiftcharts(2023020002, delay_seconds=0.0, cache_dir=tmp_path)
+
+    assert len(shifts) == 2
+    assert again == shifts
+    assert calls["n"] == 1
+    assert (tmp_path / "shiftcharts-2023020002.json").exists()

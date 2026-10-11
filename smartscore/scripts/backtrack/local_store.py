@@ -55,9 +55,18 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from nhl_client import DEFAULT_DELAY_SECONDS, PLAYOFFS, fetch_boxscore, fetch_game_log, season_games  # noqa: E402
+from lineup_reconstruct import reconstruct_game  # noqa: E402
+from nhl_client import (  # noqa: E402
+    DEFAULT_DELAY_SECONDS,
+    PLAYOFFS,
+    fetch_boxscore,
+    fetch_game_log,
+    fetch_shiftcharts,
+    season_games,
+)
 from reconstruct import config  # noqa: E402 - lazy Supabase client, only needed by --publish
 from team_map import to_place  # noqa: E402
+from tims_client import tims_map  # noqa: E402
 
 DB_PATH = Path(__file__).resolve().parents[3] / "data" / "raw_nhl.sqlite"
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
@@ -221,6 +230,27 @@ CREATE TABLE IF NOT EXISTS derived_features (
     ppg       REAL,
     PRIMARY KEY (season, player_id, game_date)
 );
+
+-- Actual line / power-play assignments reconstructed from shift charts, one
+-- row per skater per game. See lineup_reconstruct for the method; the shift
+-- cache is the raw source and this table is rebuildable from it. Separate
+-- from player_games because the grain is deployment, not stats.
+--
+-- lineup_unit           F1-F4 / D1-D3 by that game's deployment rank, or NULL
+-- lineup_position_group "F" / "D" (goalies are excluded despite appearing in
+--                       shift data - see lineup_reconstruct)
+-- pp_unit               PP1 / PP2, NULL for skaters under the PP-time floor
+-- lineup_status         ACTUAL - reconstructed from what happened, unlike the
+--                       live archive's PROJECTED morning-scrape value
+CREATE TABLE IF NOT EXISTS player_lineups (
+    game_id               INTEGER NOT NULL,
+    player_id             INTEGER NOT NULL,
+    lineup_unit           TEXT,
+    lineup_position_group TEXT,
+    pp_unit               TEXT,
+    lineup_status         TEXT,
+    PRIMARY KEY (player_id, game_id)
+);
 """
 
 
@@ -373,6 +403,9 @@ def build(season, db_path=DB_PATH, delay_seconds=DEFAULT_DELAY_SECONDS):
 
     for game in games:
         records = fetch_boxscore(game["id"], cache_dir=CACHE_DIR)
+        # Shift charts alongside the box score: same per-game grain, and a
+        # cold run fetches them here so the lineup pass below is cache-only.
+        fetch_shiftcharts(game["id"], delay_seconds=delay_seconds, cache_dir=CACHE_DIR)
 
         rows = []
         for record in records:
@@ -433,8 +466,71 @@ def build(season, db_path=DB_PATH, delay_seconds=DEFAULT_DELAY_SECONDS):
 
     print(f"game logs -> {log_written} row(s) merged for {season}")
 
+    lineup_written = compute_lineups(conn, season, delay_seconds=delay_seconds)
+    print(f"lineups -> {lineup_written} row(s) reconstructed for {season}")
+
     conn.close()
     return written, log_written
+
+
+def compute_lineups(conn, season, delay_seconds=DEFAULT_DELAY_SECONDS):
+    """Fill player_lineups for one season from the shift-chart cache.
+
+    Reads every game the raw store has rows for. fetch_shiftcharts answers
+    from disk once a build has crawled it, so this is pure local computation
+    on a warm cache - rerunnable after a reconstruction fix without touching
+    the network.
+    """
+    conn.execute(
+        "DELETE FROM player_lineups WHERE game_id IN (SELECT DISTINCT game_id FROM player_games WHERE season = ?)",
+        (season,),
+    )
+
+    game_ids = [
+        r[0]
+        for r in conn.execute("SELECT DISTINCT game_id FROM player_games WHERE season = ? ORDER BY game_id", (season,))
+    ]
+
+    written = 0
+    for game_id in game_ids:
+        shifts = fetch_shiftcharts(game_id, delay_seconds=delay_seconds, cache_dir=CACHE_DIR)
+        if not shifts:
+            continue
+
+        positions = {
+            r["player_id"]: r["position"]
+            for r in conn.execute("SELECT player_id, position FROM player_games WHERE game_id = ?", (game_id,))
+        }
+
+        assignments = reconstruct_game(shifts, positions)
+        rows = [
+            {
+                "game_id": game_id,
+                "player_id": player_id,
+                "lineup_unit": entry["lineup_unit"],
+                "lineup_position_group": entry["lineup_position_group"],
+                "pp_unit": entry["pp_unit"],
+                "lineup_status": entry["lineup_status"],
+            }
+            for player_id, entry in assignments.items()
+        ]
+
+        if rows:
+            conn.executemany(
+                "INSERT INTO player_lineups (game_id, player_id, lineup_unit, lineup_position_group,"
+                " pp_unit, lineup_status) VALUES (:game_id, :player_id, :lineup_unit,"
+                " :lineup_position_group, :pp_unit, :lineup_status)"
+                " ON CONFLICT(player_id, game_id) DO UPDATE SET"
+                " lineup_unit = excluded.lineup_unit,"
+                " lineup_position_group = excluded.lineup_position_group,"
+                " pp_unit = excluded.pp_unit,"
+                " lineup_status = excluded.lineup_status",
+                rows,
+            )
+            conn.commit()
+            written += len(rows)
+
+    return written
 
 
 def compute_derived(conn, season):
@@ -769,7 +865,8 @@ def publish(season, db_path=DB_PATH):
 
     rows = conn.execute(
         """
-        SELECT d.player_id, d.game_date, d.gpg, d.five_gpg, d.ppg
+        SELECT d.player_id, d.game_date, d.gpg, d.five_gpg, d.ppg,
+               l.lineup_unit, l.lineup_position_group, l.pp_unit, l.lineup_status
         FROM derived_features d
         JOIN (
             -- Goalies are excluded, matching reconstruct.py. They have no
@@ -780,6 +877,12 @@ def publish(season, db_path=DB_PATH):
             FROM player_games
             WHERE season = ? AND position <> 'G'
         ) skaters ON skaters.player_id = d.player_id
+        -- One row per player-game is guaranteed (a skater cannot play two
+        -- games on one date), so this join cannot duplicate derived rows.
+        JOIN player_games pg
+          ON pg.player_id = d.player_id AND pg.game_date = d.game_date AND pg.season = d.season
+        LEFT JOIN player_lineups l
+          ON l.player_id = pg.player_id AND l.game_id = pg.game_id
         WHERE d.season = ?
         """,
         (season, season),
@@ -813,6 +916,14 @@ def publish(season, db_path=DB_PATH):
     table = f"Player-Snapshots-backtrack-{env_name}"
     full_names = _archive_names(supabase, f"Player-Snapshots-{env_name}", {r["player_id"] for r in rows})
 
+    # Historic pick groups from the helper API's history endpoint. A cold
+    # cache makes one request per game date (~180 per season); afterwards the
+    # tims-*.json files answer from disk. A total failure raises rather than
+    # shipping zeros over rows that may already carry real tims.
+    tims_by_date = tims_map(season)
+    mapped = sum(len(groups) for groups in tims_by_date.values())
+    print(f"tims: {mapped} player entries across {len(tims_by_date)} game date(s)")
+
     payload = []
     for r in rows:
         key = (r["player_id"], r["game_date"])
@@ -829,6 +940,14 @@ def publish(season, db_path=DB_PATH):
                 # window and stays NULL - ppg is an additional column (see
                 # 20261009_add_ppg_player_snapshots_backtrack.sql).
                 "ppg": r["ppg"],
+                # 0 for a skater the challenge never listed that day, matching
+                # the archive's convention (test fixtures carry tims: 0).
+                "tims": tims_by_date.get(r["game_date"], {}).get(r["player_id"], 0),
+                # ACTUAL deployment from shift charts - see lineup_reconstruct.
+                "lineup_unit": r["lineup_unit"],
+                "lineup_position_group": r["lineup_position_group"],
+                "pp_unit": r["pp_unit"],
+                "lineup_status": r["lineup_status"],
             }
         )
 
@@ -899,10 +1018,13 @@ def publish_team(season, db_path=DB_PATH):
     return written
 
 
-def main():
+def main():  # noqa: PLR0911 - one return per CLI mode; a dispatch table would obscure the flow
     parser = argparse.ArgumentParser(description="Local SQLite raw store for NHL per-game data.")
     parser.add_argument("--build", metavar="SEASON", help="Load raw rows for one season from the cache.")
     parser.add_argument("--derive", metavar="SEASON", help="Recompute derived features for one season.")
+    parser.add_argument(
+        "--lineups", metavar="SEASON", help="Recompute player_lineups from the shift-chart cache for one season."
+    )
     parser.add_argument("--publish", metavar="SEASON", help="Upsert player features into Supabase.")
     parser.add_argument("--publish-team", metavar="SEASON", help="Upsert team stats into Supabase.")
     parser.add_argument("--stats", action="store_true", help="Summarise what is stored.")
@@ -931,6 +1053,13 @@ def main():
         compute_derived_team(conn, args.derive)
         conn.close()
         print(f"derived features recomputed for {args.derive}")
+        return 0
+
+    if args.lineups:
+        conn = connect(Path(args.db))
+        written = compute_lineups(conn, args.lineups)
+        conn.close()
+        print(f"lineups -> {written} row(s) reconstructed for {args.lineups}")
         return 0
 
     if args.publish:

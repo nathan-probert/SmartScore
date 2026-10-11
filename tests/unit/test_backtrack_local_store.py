@@ -122,6 +122,8 @@ def test_build_merges_playoff_game_logs(tmp_path, monkeypatch):
     monkeypatch.setattr(local_store, "season_games", fake_games)
     monkeypatch.setattr(local_store, "fetch_boxscore", fake_boxscore)
     monkeypatch.setattr(local_store, "fetch_game_log", fake_log)
+    # No shift data in this fixture: the lineup pass runs but finds nothing.
+    monkeypatch.setattr(local_store, "fetch_shiftcharts", lambda game_id, **kwargs: [])
 
     local_store.build("20232024", db_path=tmp_path / "raw.sqlite")
 
@@ -274,6 +276,8 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
         ]
     )
     monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
+    # One player in tims group 2 on the fixture's date; the other defaults to 0.
+    monkeypatch.setattr(local_store, "tims_map", lambda season, **kwargs: {"2023-10-10": {201: 2}})
 
     written = local_store.publish("20232024", db_path=tmp_path / "raw.sqlite")
 
@@ -289,3 +293,90 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
     # ppg rides every payload row - a column the target table must declare first
     # (20261009_add_ppg_player_snapshots_backtrack.sql), or the batch would fail.
     assert all("ppg" in r for r in client.upserted)
+    # tims from the history map; lineup columns present (NULL without shifts).
+    tims = {r["player_id"]: r["tims"] for r in client.upserted}
+    assert tims == {201: 2, 202: 0}
+    assert all("lineup_unit" in r and "pp_unit" in r and "lineup_status" in r for r in client.upserted)
+
+
+def _shift(player_id, team_id, start, end, period=1):
+    """One synthetic shiftchart record; times are M:SS game-clock marks."""
+    return {
+        "playerId": player_id,
+        "teamId": team_id,
+        "period": period,
+        "startTime": start,
+        "endTime": end,
+    }
+
+
+def test_compute_lineups_reconstructs_lines_and_pp_units(tmp_path, monkeypatch):
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+
+    # Home (team 100): line1 = 1,2,3; line2 = 4,5,6. D pair = 7,8.
+    # Away (team 200): line1 = 30,31,32; line2 = 33,34,35. D pair = 42,43.
+    # PP window 01:00-03:00: home {1,2,3,4,7} (5) vs away {30,31,32,42} (4).
+    shifts = [
+        _shift(1, 100, "00:00", "10:00"),
+        _shift(2, 100, "00:00", "10:00"),
+        _shift(3, 100, "00:00", "10:00"),
+        _shift(4, 100, "01:00", "03:00"),  # PP-only stint for F4
+        _shift(4, 100, "10:00", "16:00"),
+        _shift(5, 100, "10:00", "16:00"),
+        _shift(6, 100, "10:00", "16:00"),
+        _shift(7, 100, "00:00", "10:00"),
+        _shift(8, 100, "03:00", "10:00"),
+        _shift(30, 200, "00:00", "10:00"),
+        _shift(31, 200, "00:00", "10:00"),
+        _shift(32, 200, "00:00", "10:00"),
+        _shift(33, 200, "10:00", "16:00"),
+        _shift(34, 200, "10:00", "16:00"),
+        _shift(35, 200, "10:00", "16:00"),
+        _shift(42, 200, "00:00", "10:00"),
+        _shift(43, 200, "03:00", "10:00"),
+    ]
+
+    positions = {
+        1: "C",
+        2: "L",
+        3: "R",
+        4: "C",
+        5: "L",
+        6: "R",
+        7: "D",
+        8: "D",
+        30: "C",
+        31: "L",
+        32: "R",
+        33: "C",
+        34: "L",
+        35: "R",
+        42: "D",
+        43: "D",
+    }
+
+    for player_id, position in positions.items():
+        _insert(conn, player_id, 7001, "2023-10-10", 0, team="BOS" if player_id < 100 else "TOR", position=position)
+
+    monkeypatch.setattr(local_store, "fetch_shiftcharts", lambda game_id, **kwargs: shifts)
+    local_store.compute_lineups(conn, "20232024")
+
+    rows = {r["player_id"]: r for r in conn.execute("SELECT * FROM player_lineups")}
+    conn.close()
+
+    # Line 1 (1,2,3) carries the PP minutes so it ranks above line 2 (4,5,6).
+    assert rows[1]["lineup_unit"] == rows[2]["lineup_unit"] == rows[3]["lineup_unit"] == "F1"
+    assert rows[4]["lineup_unit"] == rows[5]["lineup_unit"] == rows[6]["lineup_unit"] == "F2"
+    assert rows[4]["lineup_unit"] != rows[1]["lineup_unit"]
+    # D pair 7,8 (7 also on the PP) ranks first among pairs.
+    assert rows[7]["lineup_unit"] == rows[8]["lineup_unit"] == "D1"
+    # The five-man PP unit gets PP1; the second even line gets no PP time at all.
+    assert rows[1]["pp_unit"] == rows[2]["pp_unit"] == rows[3]["pp_unit"] == "PP1"
+    assert rows[4]["pp_unit"] == "PP1" and rows[7]["pp_unit"] == "PP1"
+    assert rows[5]["pp_unit"] is None and rows[6]["pp_unit"] is None
+    # Shorthanded time is not power-play time: away's PK trio has no pp_unit.
+    assert rows[30]["pp_unit"] is None and rows[42]["pp_unit"] is None
+    assert rows[30]["lineup_unit"] == rows[31]["lineup_unit"] == rows[32]["lineup_unit"] == "F1"
+    # Every matched skater is ACTUAL, position-grouped by role.
+    assert rows[1]["lineup_status"] == "ACTUAL" and rows[1]["lineup_position_group"] == "F"
+    assert rows[7]["lineup_position_group"] == "D"

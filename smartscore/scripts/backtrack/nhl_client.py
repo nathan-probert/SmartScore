@@ -32,6 +32,13 @@ import requests
 
 BASE_URL = "https://api-web.nhle.com/v1"
 
+# The legacy stats REST API - a different host and path prefix from BASE_URL.
+# It is the only public feed that still serves per-shift data (the gamecenter
+# time-on-ice / shiftchart endpoints under BASE_URL all 404, and
+# nhl.com/sitewide/json/shiftcharts now returns HTML), and per-shift data is
+# what actual line and power-play unit reconstruction runs on.
+BASE_STATS_URL = "https://api.nhle.com/stats/rest/en"
+
 # Game types for the schedule walk and the game-log endpoint: 2 = regular
 # season, 3 = playoffs, 1 = preseason. Regular season AND playoffs are in scope,
 # because the archive they replace keeps accumulating on playoff dates - its
@@ -280,7 +287,7 @@ def season_games(season, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DI
     return result
 
 
-def _get_json(url, delay_seconds=DEFAULT_DELAY_SECONDS):
+def _get_json(url, delay_seconds=DEFAULT_DELAY_SECONDS, headers=None):
     """GET ``url`` with the module's retry envelope; return the JSON payload.
 
     Transport errors and 5xx back off exponentially across ``MAX_RETRIES``
@@ -289,12 +296,18 @@ def _get_json(url, delay_seconds=DEFAULT_DELAY_SECONDS):
     exactly what happened to build-2023-full at box score 882 (ConnectionError
     10054). Any other non-2xx raises immediately: retrying a bad request just
     delays the error.
+
+    ``headers`` is passed through for hosts that reject header-less requests
+    (hockeychallengehelper.com answers 403 without its Origin/Referer).
     """
     for attempt in range(MAX_RETRIES):
         _throttle(delay_seconds)
 
         try:
-            response = requests.get(url, timeout=30)
+            if headers is None:
+                response = requests.get(url, timeout=30)
+            else:
+                response = requests.get(url, timeout=30, headers=headers)
         except requests.RequestException:
             if attempt == MAX_RETRIES - 1:
                 raise
@@ -425,6 +438,48 @@ def fetch_boxscore(game_id, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE
         json.dump(records, f)
 
     return records
+
+
+def fetch_shiftcharts(game_id, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DIR):
+    """One game's shift chart from the legacy stats API: every skater shift.
+
+    The only public feed of actual on-ice deployment (see BASE_STATS_URL).
+    Each record carries playerId, teamId, period and startTime/endTime as
+    M:SS clock times, which ``lineup_reconstruct`` turns into per-game line
+    and power-play unit assignments. Cached per game as
+    ``shiftcharts-{game_id}.json``; a completed game's shifts never change,
+    so the cache is as safe as the box score's.
+
+    The endpoint answers with ``{"data": [...], "total": N}`` and returns the
+    full list unpaginated (verified: total == len(data) on a 763-shift game).
+    An empty list is a real answer for a game the API has no shift data for,
+    and is cached as such.
+    """
+    path = Path(cache_dir) / f"shiftcharts-{game_id}.json"
+
+    if path.exists():
+        try:
+            with path.open(encoding="utf-8") as f:
+                cached = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            cached = None
+
+        if cached is not None:
+            if cached and not cached[0].get("playerId"):
+                cached = None
+            else:
+                return cached
+
+    payload = _get_json(f"{BASE_STATS_URL}/shiftcharts?cayenneExp=gameId={game_id}", delay_seconds)
+    shifts = payload.get("data") or []
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(shifts, f)
+    tmp.replace(path)
+
+    return shifts
 
 
 def fetch_player_name(player_id, delay_seconds=DEFAULT_DELAY_SECONDS):
