@@ -305,6 +305,8 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
     tims = {r["player_id"]: r["tims"] for r in client.upserted}
     assert tims == {201: 2, 202: 0}
     assert all("lineup_unit" in r and "pp_unit" in r and "lineup_status" in r for r in client.upserted)
+    # Training label from the fixture's goals column: 201 scored, 202 did not.
+    assert {r["player_id"]: r["scored"] for r in client.upserted} == {201: 1, 202: 0}
     # Opponent starter denormalized per the live schema: identity, upper-cased
     # status, separate confirmed boolean. Stat columns are never sent - they
     # stay NULL rather than shipping season-end totals as an October view.

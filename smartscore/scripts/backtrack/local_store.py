@@ -866,25 +866,18 @@ def publish(season, db_path=DB_PATH):
 
     rows = conn.execute(
         """
-        SELECT d.player_id, d.game_date, d.gpg, d.five_gpg, d.ppg,
+        SELECT d.player_id, d.game_date, d.gpg, d.five_gpg, d.ppg, pg.goals,
                l.lineup_unit, l.lineup_position_group, l.pp_unit, l.lineup_status
-        FROM derived_features d
-        JOIN (
-            -- Goalies are excluded, matching reconstruct.py. They have no
-            -- meaningful gpg and the live archive never held them (their numbers
-            -- live in opp_goalie_* instead). Position comes from the box score's
-            -- stat block, so this is the roster's own classification.
-            SELECT DISTINCT player_id
-            FROM player_games
-            WHERE season = ? AND position <> 'G'
-        ) skaters ON skaters.player_id = d.player_id
-        -- One row per player-game is guaranteed (a skater cannot play two
-        -- games on one date), so this join cannot duplicate derived rows.
-        JOIN player_games pg
-          ON pg.player_id = d.player_id AND pg.game_date = d.game_date AND pg.season = d.season
+        FROM player_games pg
+        -- Goalies are excluded, matching reconstruct.py. They have no
+        -- meaningful gpg and the live archive never held them (their numbers
+        -- live in opp_goalie_* instead). Position comes from the box score's
+        -- stat block, so this is the roster's own classification.
+        JOIN derived_features d
+          ON d.player_id = pg.player_id AND d.game_date = pg.game_date AND d.season = pg.season
         LEFT JOIN player_lineups l
           ON l.player_id = pg.player_id AND l.game_id = pg.game_id
-        WHERE d.season = ?
+        WHERE pg.season = ? AND pg.position <> 'G' AND d.season = ?
         """,
         (season, season),
     ).fetchall()
@@ -963,6 +956,12 @@ def publish(season, db_path=DB_PATH):
                 # 0 for a skater the challenge never listed that day, matching
                 # the archive's convention (test fixtures carry tims: 0).
                 "tims": tims_by_date.get(r["game_date"], {}).get(r["player_id"], 0),
+                # Training label from the game itself: did this skater score
+                # in it. The box score's goals column is ground truth and
+                # covers every published row; the challenge helper's own
+                # graded flag agrees with it on every listed skater checked
+                # (159/159 on 2023-10-14), so no second source is needed.
+                "scored": 1 if r["goals"] else 0,
                 # ACTUAL deployment from shift charts - see lineup_reconstruct.
                 "lineup_unit": r["lineup_unit"],
                 "lineup_position_group": r["lineup_position_group"],
