@@ -901,8 +901,14 @@ def stats(db_path=DB_PATH):
         )
 
     # Lineup and daily-feed ingest counts, per season, so an empty table after
-    # an upgrade is visible rather than discovered at publish time.
-    for row in conn.execute("SELECT season, COUNT(*) AS n FROM player_lineups GROUP BY season ORDER BY season"):
+    # an upgrade is visible rather than discovered at publish time. player_lineups
+    # is keyed by game_id alone, so the season comes from a join against the raw
+    # rows rather than a column of its own.
+    for row in conn.execute(
+        "SELECT pg.season, COUNT(*) AS n FROM player_lineups pl"
+        " JOIN (SELECT DISTINCT game_id, season FROM player_games) pg ON pg.game_id = pl.game_id"
+        " GROUP BY pg.season ORDER BY pg.season"
+    ):
         print(f"lineups {row['season']}: {row['n']} row(s)")
 
     for row in conn.execute(
