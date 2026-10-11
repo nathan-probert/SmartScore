@@ -5,16 +5,17 @@ from event_handler import (
     handle_emails,
     handle_get_goalies,
     handle_get_injuries,
+    handle_load_working_set,
     handle_make_predictions,
     handle_parse_teams,
     handle_publish_db,
-    handle_refresh_and_publish,
     handle_save_players,
 )
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.save_player_snapshots")
-def test_handle_save_players_archives_with_date(mock_save):
+def test_handle_save_players_archives_with_date(mock_save, mock_working_set):
     """Players are archived under the run's date."""
     players = [{"id": 1, "name": "Player 1", "tims": 1}]
 
@@ -24,13 +25,27 @@ def test_handle_save_players_archives_with_date(mock_save):
     mock_save.assert_called_once_with(players, date="2026-04-15")
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.save_player_snapshots")
-def test_handle_save_players_skips_upload_when_empty(mock_save):
+def test_handle_save_players_skips_upload_when_empty(mock_save, mock_working_set):
     """An empty player list must not hit Supabase (an empty upsert is a no-op error)."""
     result = handle_save_players({"players": [], "date": "2026-04-15"}, {})
 
     assert result == {"statusCode": 200, "players": []}
     mock_save.assert_not_called()
+    mock_working_set.assert_not_called()
+
+
+@patch("event_handler.save_working_set")
+@patch("event_handler.save_player_snapshots")
+def test_handle_save_players_persists_working_set(mock_save, mock_working_set):
+    """SaveToDb also persists the lean slices for normal_run re-entry."""
+    players = [{"id": 1, "name": "Player 1", "team_id": 10}]
+    teams = [{"team_id": 10, "opponent_id": 11}]
+
+    handle_save_players({"players": players, "teams": teams, "date": "2026-04-15"}, {})
+
+    mock_working_set.assert_called_once_with(players, teams)
 
 
 @patch("event_handler.check_db_for_date")
@@ -75,43 +90,32 @@ def test_handle_check_completed_never_returns_the_roster(mock_check_db):
     assert "players" not in result
 
 
-@patch("event_handler.publish_public_db")
-@patch("event_handler.get_tims")
-@patch("event_handler.get_published_picks")
-def test_handle_refresh_and_publish_republishes_with_fresh_tims(mock_get_picks, mock_get_tims, mock_publish):
-    """normal_run refreshes tims on the stored roster and republishes it."""
-    players = [
-        {"player_id": 1, "id": 1, "name": "Player 1", "stat": 0.8},
-        {"player_id": 2, "id": 2, "name": "Player 2", "stat": 0.9},
-    ]
-    refreshed = [
-        {"id": 1, "name": "Player 1", "stat": 0.8, "tims": 1},
-        {"id": 2, "name": "Player 2", "stat": 0.9, "tims": 0},
-    ]
-    mock_get_picks.return_value = players
-    mock_get_tims.return_value = refreshed
+@patch("event_handler.load_working_set")
+def test_handle_load_working_set_returns_separated_slices(mock_load):
+    """normal_run gets the lean players/teams slices plus the run status."""
+    players = [{"id": 1, "name": "Player 1", "team_id": 10, "stat": 0.8}]
+    teams = [{"team_id": 10, "opponent_id": 11}]
+    mock_load.return_value = (players, teams)
 
-    result = handle_refresh_and_publish({}, {})
+    result = handle_load_working_set({"status": "normal_run"}, {})
 
-    assert result == {"statusCode": 200}
-    # get_tims matches on the NHL id under "id", so player_id must be renamed first.
-    assert all("player_id" not in p for p in players)
-    mock_get_tims.assert_called_once_with(players)
-    mock_publish.assert_called_once_with(refreshed)
+    assert result == {
+        "statusCode": 200,
+        "status": "normal_run",
+        "players": players,
+        "teams": teams,
+    }
+    mock_load.assert_called_once()
 
 
-@patch("event_handler.publish_public_db")
-@patch("event_handler.get_tims")
-@patch("event_handler.get_published_picks")
-def test_handle_refresh_and_publish_never_wipes_an_empty_table(mock_get_picks, mock_get_tims, mock_publish):
-    """Publishing an empty list would delete every Picks row before upserting."""
-    mock_get_picks.return_value = []
+@patch("event_handler.load_working_set")
+def test_handle_load_working_set_passes_status_through(mock_load):
+    """last_run must survive to CheckInitialRun's routing."""
+    mock_load.return_value = ([{"id": 1}], [{"team_id": 10}])
 
-    result = handle_refresh_and_publish({}, {})
+    result = handle_load_working_set({"status": "last_run"}, {})
 
-    assert result == {"statusCode": 200}
-    mock_get_tims.assert_not_called()
-    mock_publish.assert_not_called()
+    assert result["status"] == "last_run"
 
 
 @patch("event_handler.publish_public_db")

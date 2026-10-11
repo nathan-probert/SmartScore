@@ -23,7 +23,7 @@ LAMBDA_FUNCTIONS=(
   "PerformBackfilling-$ENV"
   "PublishDb-$ENV"
   "CheckCompleted-$ENV"
-  "RefreshAndPublish-$ENV"
+  "LoadWorkingSet-$ENV"
   "ParseData-$ENV"
   "SavePlayers-$ENV"
   "UpdateHistory-$ENV"

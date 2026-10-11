@@ -87,6 +87,30 @@ def get_picks_for_date(date):
     return get_today_db(eq=("date", date))
 
 
+def put_working_set(date, players, teams):
+    """Persist the day's lean slices to the Working-* tables.
+
+    Full wipe then upsert, matching the Picks writer: these are single-day
+    snapshots keyed per (date, player_id) / (date, team_id) via the JSONB
+    payload, so a same-day re-run refreshes in place.
+    """
+    for table_name, rows, payload_key, row_key in (
+        # Lean players carry the NHL id under "id" (see merge_players_and_teams);
+        # the row-level player_id column exists only for the table's unique key.
+        (f"Working-Players-{ENV}", players, "player_id", "id"),
+        (f"Working-Teams-{ENV}", teams, "team_id", "team_id"),
+    ):
+        payload = [{"date": date, payload_key: row.get(row_key), "data": row} for row in rows]
+        exponential_backoff_supabase_request(table_name, method="post", json_data=payload)
+
+
+def fetch_working_set(date):
+    """The lean (players, teams) slices persisted for ``date``."""
+    player_rows = exponential_backoff_supabase_request(f"Working-Players-{ENV}", eq=("date", date))
+    team_rows = exponential_backoff_supabase_request(f"Working-Teams-{ENV}", eq=("date", date))
+    return [row["data"] for row in player_rows], [row["data"] for row in team_rows]
+
+
 def get_historical_data():
     return exponential_backoff_supabase_request(f"Historic-Picks-{ENV}")
 

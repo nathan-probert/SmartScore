@@ -17,9 +17,11 @@ from service import (
     get_nhl_client,
     get_players_from_team,
     get_published_picks,
+    load_working_set,
     merge_injury_data,
     merge_players_and_teams,
     resolve_team_names,
+    save_working_set,
     send_emails,
     write_historic_db,
 )
@@ -50,6 +52,37 @@ def test_get_published_picks_reads_today(mock_get_picks):
 
     assert get_published_picks() == [{"name": "Player 1"}]
     mock_get_picks.assert_called_once_with(get_date())
+
+
+@patch("service.put_working_set")
+def test_save_working_set_stamps_today(mock_put):
+    """first_run persists the slices under today's date."""
+    players = [{"id": 1}]
+    teams = [{"team_id": 10}]
+
+    save_working_set(players, teams)
+
+    mock_put.assert_called_once_with(get_date(), players, teams)
+
+
+@patch("service.fetch_working_set")
+def test_load_working_set_returns_slices(mock_fetch):
+    """normal_run reads back the lean slices for today."""
+    players = [{"id": 1}]
+    teams = [{"team_id": 10}]
+    mock_fetch.return_value = (players, teams)
+
+    assert load_working_set() == (players, teams)
+    mock_fetch.assert_called_once_with(get_date())
+
+
+@patch("service.fetch_working_set")
+def test_load_working_set_raises_when_missing(mock_fetch):
+    """A missing working set must fail loudly, not silently rebuild."""
+    mock_fetch.return_value = ([], [])
+
+    with pytest.raises(RuntimeError, match="No working set stored"):
+        load_working_set()
 
 
 @patch("service.datetime")

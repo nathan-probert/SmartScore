@@ -9,8 +9,8 @@ and PlayerProcessingPipeline hit the same wall on its normal_run branch.
 
 ``CheckCompleted`` is now status-only. NotifyUsers additionally projects its
 result down to ``status`` and ``handle_emails`` re-reads the day's picks;
-PlayerProcessingPipeline routes normal_run/last_run to RefreshAndPublish,
-which reads, refreshes and republishes the roster entirely inside the Lambda.
+PlayerProcessingPipeline routes normal_run/last_run to LoadWorkingSet, which
+reloads the day's separated lean slices and re-enters the enrichment chain.
 These assertions fail if any of those boundaries regress.
 """
 
@@ -72,26 +72,35 @@ def test_notify_users_never_carries_the_roster(notify_users):
     )
 
 
-def test_pipeline_normal_and_last_run_refresh_inside_a_lambda():
+def test_pipeline_normal_and_last_run_reload_separated_slices():
     """PlayerProcessingPipeline must never load the roster through GetDate.
 
     CheckCompleted is status-only, so the normal_run and last_run branches
-    land on RefreshAndPublish, which reads the roster, refreshes tims and
-    republishes entirely inside the Lambda. The roster must not ride the
-    state between states, and those branches must not re-run the enrichment
-    chain either.
+    land on LoadWorkingSet, which returns the day's lean players/teams slices
+    from the Working-* tables and re-enters the chain at GetInjuries. The
+    state always carries separated slices -- the same shape first_run uses --
+    and never denormalized rows.
     """
     pipeline = _definition("player_processing_pipeline.asl.json")
 
     routing = {choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckCompletion"]["Choices"]}
-    assert routing["normal_run"] == "RefreshAndPublish"
-    assert routing["last_run"] == "RefreshAndPublish"
+    assert routing["normal_run"] == "LoadWorkingSet"
+    assert routing["last_run"] == "LoadWorkingSet"
     assert routing["first_run"] == "Backfill"
 
-    refresh = pipeline["States"]["RefreshAndPublish"]
-    assert refresh["Type"] == "Task"
-    assert refresh["Resource"].endswith(":function:RefreshAndPublish-prod")
-    assert refresh["End"] is True
+    load = pipeline["States"]["LoadWorkingSet"]
+    assert load["Type"] == "Task"
+    assert load["Resource"].endswith(":function:LoadWorkingSet-prod")
+    assert load["Next"] == "GetInjuries"
+
+    # last_run now flows through the chain to CheckInitialRun and must route
+    # to PublishToDb, not fall through the Choice unhandled.
+    initial_routing = {
+        choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckInitialRun"]["Choices"]
+    }
+    assert initial_routing["last_run"] == "PublishToDb"
+    assert initial_routing["normal_run"] == "PublishToDb"
+    assert initial_routing["first_run"] == "SaveToDb"
 
     # GetDate must not trim anything for these branches any more -- its
     # result is already just the status, verified in test_handle_check_completed.

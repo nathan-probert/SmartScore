@@ -10,7 +10,9 @@ from utility import (
     create_cron_schedule,
     exponential_backoff_request,
     exponential_backoff_supabase_request,
+    fetch_working_set,
     get_picks_for_date,
+    put_working_set,
 )
 
 
@@ -47,6 +49,40 @@ def test_get_picks_for_date_filters_on_date(mock_request):
 
     assert result == [{"name": "Player 1"}]
     mock_request.assert_called_once_with(f"Picks-{ENV}", eq=("date", "2026-10-11"))
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_put_working_set_writes_both_slices(mock_request):
+    """Each slice lands in its own table as a date-keyed JSONB row."""
+    players = [{"id": 1, "team_id": 10, "name": "Player 1"}]
+    teams = [{"team_id": 10, "opponent_id": 11}]
+
+    put_working_set("2026-10-11", players, teams)
+
+    assert mock_request.call_count == 2
+    player_call, team_call = mock_request.call_args_list
+    assert player_call.args == (f"Working-Players-{ENV}",)
+    assert player_call.kwargs["method"] == "post"
+    assert player_call.kwargs["json_data"] == [{"date": "2026-10-11", "player_id": 1, "data": players[0]}]
+    assert team_call.args == (f"Working-Teams-{ENV}",)
+    assert team_call.kwargs["json_data"] == [{"date": "2026-10-11", "team_id": 10, "data": teams[0]}]
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_fetch_working_set_unwraps_jsonb_payloads(mock_request):
+    """The stored data blobs are the lean dicts verbatim."""
+    mock_request.side_effect = [
+        [{"date": "2026-10-11", "player_id": 1, "data": {"id": 1, "team_id": 10}}],
+        [{"date": "2026-10-11", "team_id": 10, "data": {"team_id": 10}}],
+    ]
+
+    players, teams = fetch_working_set("2026-10-11")
+
+    assert players == [{"id": 1, "team_id": 10}]
+    assert teams == [{"team_id": 10}]
+    assert mock_request.call_args_list[0].args == (f"Working-Players-{ENV}",)
+    assert mock_request.call_args_list[0].kwargs == {"eq": ("date", "2026-10-11")}
+    assert mock_request.call_args_list[1].args == (f"Working-Teams-{ENV}",)
 
 
 @patch("smartscore_info_client.utility.requests.get")

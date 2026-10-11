@@ -24,6 +24,7 @@ from service import (
     get_teams,
     get_tims,
     get_todays_schedule,
+    load_working_set,
     make_predictions_teams,
     mark_lineups_unknown,
     merge_injury_data,
@@ -31,6 +32,7 @@ from service import (
     merge_players_and_teams,
     publish_public_db,
     resolve_season_id,
+    save_working_set,
     send_emails,
     update_metrics,
     update_season_metrics,
@@ -92,40 +94,36 @@ def handle_check_completed(event, context):
 
 
 @lambda_handler_error_responder
-def handle_refresh_and_publish(event, context):
+def handle_load_working_set(event, context):
     """
-    Refreshes tims on today's published roster and republishes it.
+    Loads today's lean players/teams slices for a normal_run or last_run.
 
-    normal_run and last_run land here instead of carrying the roster through
-    the Step Functions state (it is over the 256KB limit) or re-running the
-    whole enrichment chain. The morning's predictions stand; only the Tims
-    groups are re-fetched -- the same work the old GetDate -> GetTims ->
-    PublishToDb path did, but entirely inside this Lambda.
+    Replaces the GetPlayers sub-machine on those branches: the morning's
+    roster, stats and predictions are reused from the Working-* tables, while
+    the downstream injuries/goalies/lineups/tims steps re-gather their own
+    data fresh. The state carries the same separated slices as first_run --
+    never denormalized rows, which blew the Step Functions 256KB limit.
 
     Args:
-        event (dict): Unused event data.
+        event (dict): The status-only state from CheckCompleted; ``status`` is
+            carried through so CheckInitialRun still routes correctly.
         context (dict): Unused Lambda context.
 
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
+            - "status" (str): The run status, passed through.
+            - "players" (list): Lean player data for today.
+            - "teams" (list): Lean team data for today.
     """
-    players = get_published_picks()
-    if not players:
-        # An empty publish would wipe Picks-{ENV} (save_to_db deletes before
-        # upserting), so a last_run before the first publish must not proceed.
-        logger.error("No published picks found for today; skipping refresh and republish")
-        return {"statusCode": 200}
+    players, teams = load_working_set()
 
-    # The stored rows keep the NHL id in player_id and a row number in id;
-    # get_tims matches on the NHL id under the "id" key (publish_public_db
-    # renames it back on the way out).
-    for player in players:
-        player["id"] = player.pop("player_id")
-
-    publish_public_db(get_tims(players))
-
-    return {"statusCode": 200}
+    return {
+        "statusCode": 200,
+        "status": event.get("status", "normal_run"),
+        "players": players,
+        "teams": teams,
+    }
 
 
 @lambda_handler_error_responder
@@ -283,6 +281,10 @@ def handle_save_players(event, context):
     Upserts on (date, player_id), so re-running the pipeline for a date
     refreshes that date's rows in place instead of appending a duplicate roster.
 
+    Also persists the day's lean players/teams slices to the Working-* tables
+    so normal_run/last_run can reload them without re-running the enrichment
+    chain or reloading the denormalized Picks rows.
+
     Joins relational ``players`` + ``teams`` + ``goalies`` into full rows
     for the upload only; the returned state stays lean so downstream steps
     stay under the Step Functions size limit.
@@ -309,6 +311,7 @@ def handle_save_players(event, context):
         else:
             upload_rows = players
         save_player_snapshots(upload_rows, date=date)
+        save_working_set(players, event.get("teams") or [])
 
     output = {"statusCode": 200, "players": players}
     if "teams" in event:

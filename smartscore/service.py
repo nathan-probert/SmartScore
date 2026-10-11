@@ -21,6 +21,7 @@ from nhl_lineups import normalize_player_name
 from player_archive import backfill_scored, delete_game_snapshots, get_players_for_date, get_unscored_dates
 from utility import (
     count_picks_for_date,
+    fetch_working_set,
     get_cur_pick_pct,
     get_emails,
     get_historical_data,
@@ -28,6 +29,7 @@ from utility import (
     get_season_id,
     get_season_pick_pct,
     get_tims_players,
+    put_working_set,
     save_to_db,
     schedule_run,
     update_historical_data,
@@ -339,6 +341,28 @@ def check_db_for_date():
 def get_published_picks():
     """Today's published roster from Picks-{ENV}, read inside a Lambda."""
     return get_picks_for_date(get_date())
+
+
+def save_working_set(players, teams):
+    """Persist today's lean slices so normal/last runs skip GetPlayers.
+
+    Called at the end of the first_run chain (SaveToDb); the published Picks
+    rows stay denormalized for the frontend, but these slices keep players
+    and teams separated for the next run's state.
+    """
+    put_working_set(get_date(), players, teams)
+
+
+def load_working_set():
+    """Today's lean (players, teams) slices, for normal_run/last_run re-entry.
+
+    Raises when nothing was persisted (e.g. the day's first_run predates this
+    feature): silently rebuilding would double-run the first_run tail.
+    """
+    players, teams = fetch_working_set(get_date())
+    if not players:
+        raise RuntimeError(f"No working set stored for {get_date()}; wipe today's Picks rows to force a first_run")
+    return players, teams
 
 
 def merge_players_and_teams(team_payloads):
