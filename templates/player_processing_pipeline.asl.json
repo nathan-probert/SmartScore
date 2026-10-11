@@ -1,5 +1,5 @@
 {
-    "Comment": "A state machine to handle all player processing, predictions, and publishing.",
+    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit, so normal_run and last_run recompute it through the same enrichment chain as first_run.",
     "StartAt": "GetDate",
     "States": {
         "GetDate": {
@@ -13,7 +13,7 @@
                 {
                     "Variable": "$.status",
                     "StringEquals": "normal_run",
-                    "Next": "GetTims"
+                    "Next": "GetPlayersStateMachine"
                 },
                 {
                     "Variable": "$.status",
@@ -23,7 +23,7 @@
                 {
                     "Variable": "$.status",
                     "StringEquals": "last_run",
-                    "Next": "PublishToDb"
+                    "Next": "GetPlayersStateMachine"
                 }
             ]
         },
@@ -44,8 +44,7 @@
             "ResultSelector": {
                 "parsed.$": "States.StringToJson($.Output)"
             },
-            "ResultPath": "$",
-            "OutputPath": "$.parsed",
+            "ResultPath": "$.getPlayers",
             "Retry": [
                 {
                     "ErrorEquals": [
@@ -56,6 +55,15 @@
                     "BackoffRate": 5.0
                 }
             ],
+            "Next": "FlattenGetPlayers"
+        },
+        "FlattenGetPlayers": {
+            "Type": "Pass",
+            "Parameters": {
+                "status.$": "$.status",
+                "players.$": "$.getPlayers.parsed.players",
+                "teams.$": "$.getPlayers.parsed.teams"
+            },
             "Next": "CheckIfPlayersOutputIsEmpty"
         },
         "CheckIfPlayersOutputIsEmpty": {
@@ -105,6 +113,11 @@
                 {
                     "Variable": "$.status",
                     "StringEquals": "normal_run",
+                    "Next": "PublishToDb"
+                },
+                {
+                    "Variable": "$.status",
+                    "StringEquals": "last_run",
                     "Next": "PublishToDb"
                 }
             ]

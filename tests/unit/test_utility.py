@@ -4,7 +4,49 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from utility import create_cron_schedule, exponential_backoff_request
+from config import ENV
+from utility import (
+    count_picks_for_date,
+    create_cron_schedule,
+    exponential_backoff_request,
+    exponential_backoff_supabase_request,
+    get_picks_for_date,
+)
+
+
+@patch("utility.SUPABASE_CLIENT")
+def test_supabase_count_only_returns_row_count(mock_client):
+    """count_only issues a HEAD request and returns the count, not the rows."""
+    execute = mock_client.table.return_value.select.return_value.eq.return_value.execute
+    execute.return_value.count = 7
+
+    result = exponential_backoff_supabase_request(
+        f"Picks-{ENV}", select="id", eq=("date", "2026-10-11"), count_only=True
+    )
+
+    assert result == 7
+    mock_client.table.return_value.select.assert_called_once_with("id", count="exact", head=True)
+    mock_client.table.return_value.select.return_value.eq.assert_called_once_with("date", "2026-10-11")
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_count_picks_for_date_uses_count_only(mock_request):
+    """The run-status check must not download the roster."""
+    mock_request.return_value = 3
+
+    assert count_picks_for_date("2026-10-11") == 3
+    mock_request.assert_called_once_with(f"Picks-{ENV}", select="id", eq=("date", "2026-10-11"), count_only=True)
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_get_picks_for_date_filters_on_date(mock_request):
+    """Emails read today's published rows, not the whole table."""
+    mock_request.return_value = [{"name": "Player 1"}]
+
+    result = get_picks_for_date("2026-10-11")
+
+    assert result == [{"name": "Player 1"}]
+    mock_request.assert_called_once_with(f"Picks-{ENV}", eq=("date", "2026-10-11"))
 
 
 @patch("smartscore_info_client.utility.requests.get")

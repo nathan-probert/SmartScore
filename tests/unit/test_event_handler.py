@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 from event_handler import (
+    handle_backfill,
     handle_check_completed,
     handle_emails,
     handle_get_goalies,
@@ -35,43 +36,61 @@ def test_handle_save_players_skips_upload_when_empty(mock_save):
 @patch("event_handler.check_db_for_date")
 def test_handle_check_completed_first_run(mock_check_db):
     """Test when no date exists in database (first run)."""
-    mock_check_db.return_value = None
+    mock_check_db.return_value = False
 
     result = handle_check_completed({}, {})
 
-    assert result == {"statusCode": 200, "status": "first_run", "players": None}
+    assert result == {"statusCode": 200, "status": "first_run"}
     mock_check_db.assert_called_once()
 
 
 @patch("event_handler.check_db_for_date")
 def test_handle_check_completed_normal_run(mock_check_db):
     """Test when date exists in database (normal run)."""
-    mock_entries = [
-        {"player_id": 1, "name": "Player 1", "date": "2024-01-15"},
-        {"player_id": 2, "name": "Player 2", "date": "2024-01-15"},
-    ]
-    mock_check_db.return_value = mock_entries
+    mock_check_db.return_value = True
 
     result = handle_check_completed({}, {})
 
-    assert result["statusCode"] == 200
-    assert result["status"] == "normal_run"
-    assert result["players"] == mock_entries
+    assert result == {"statusCode": 200, "status": "normal_run"}
     mock_check_db.assert_called_once()
 
 
 @patch("event_handler.check_db_for_date")
 def test_handle_check_completed_last_game(mock_check_db):
     """Test when last_game flag is set."""
-    mock_entries = [
-        {"player_id": 1, "name": "Player 1", "date": "2024-01-15"},
-        {"player_id": 2, "name": "Player 2", "date": "2024-01-15"},
-    ]
-    mock_check_db.return_value = mock_entries
+    mock_check_db.return_value = True
 
     result = handle_check_completed({"last_game": True}, {})
 
-    assert result == {"statusCode": 200, "status": "last_run", "players": mock_entries}
+    assert result == {"statusCode": 200, "status": "last_run"}
+
+
+@patch("event_handler.check_db_for_date")
+def test_handle_check_completed_never_returns_the_roster(mock_check_db):
+    """The result must stay status-only: the roster exceeds the SFN 256KB state limit."""
+    mock_check_db.return_value = True
+
+    result = handle_check_completed({}, {})
+
+    assert "players" not in result
+
+
+@patch("event_handler.backfill_dates")
+def test_handle_backfill_passes_status_through(mock_backfill):
+    """first_run routing depends on Backfill preserving ``status``."""
+    result = handle_backfill({"statusCode": 200, "status": "first_run"}, {})
+
+    assert result == {"statusCode": 200, "status": "first_run"}
+    mock_backfill.assert_called_once()
+
+
+@patch("event_handler.backfill_dates")
+def test_handle_backfill_without_status(mock_backfill):
+    """A direct invocation with no status stays status-free."""
+    result = handle_backfill({}, {})
+
+    assert result == {"statusCode": 200}
+    mock_backfill.assert_called_once()
 
 
 @patch("event_handler.publish_public_db")
@@ -293,31 +312,31 @@ def _roster() -> list:
 
 @patch("event_handler.send_emails")
 @patch("event_handler.get_all_emails", return_value=[{"email": "test@example.com", "display_name": "Tester"}])
-@patch("event_handler.check_db_for_date")
-def test_handle_emails_reads_picks_when_not_in_state(mock_check_db, mock_get_emails, mock_send):
+@patch("event_handler.get_published_picks")
+def test_handle_emails_reads_picks_when_not_in_state(mock_get_picks, mock_get_emails, mock_send):
     """NotifyUsers only passes ``status``, so picks come from the DB.
 
     The roster used to ride in the Step Functions state, where it exceeded the
     256KB limit. It is re-read here instead.
     """
-    mock_check_db.return_value = _roster()
+    mock_get_picks.return_value = _roster()
 
     result = handle_emails({"status": "normal_run"}, {})
 
     assert result == {"statusCode": 200}
-    mock_check_db.assert_called_once()
+    mock_get_picks.assert_called_once()
     picks = mock_send.call_args[0][1]
     assert [p["name"] for p in picks] == ["Player 2", "Player 3", "Player 4"]
 
 
 @patch("event_handler.send_emails")
 @patch("event_handler.get_all_emails", return_value=[{"email": "test@example.com", "display_name": "Tester"}])
-@patch("event_handler.check_db_for_date")
-def test_handle_emails_prefers_players_from_state(mock_check_db, mock_get_emails, mock_send):
+@patch("event_handler.get_published_picks")
+def test_handle_emails_prefers_players_from_state(mock_get_picks, mock_get_emails, mock_send):
     """A direct invocation carrying players still uses them."""
-    mock_check_db.return_value = _roster()
+    mock_get_picks.return_value = _roster()
 
     handle_emails({"players": _roster()}, {})
 
-    mock_check_db.assert_not_called()
+    mock_get_picks.assert_not_called()
     assert [p["name"] for p in mock_send.call_args[0][1]] == ["Player 2", "Player 3", "Player 4"]

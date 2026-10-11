@@ -20,13 +20,14 @@ from mock_nhl_client import MockNHLClient
 from nhl_lineups import normalize_player_name
 from player_archive import backfill_scored, delete_game_snapshots, get_players_for_date, get_unscored_dates
 from utility import (
+    count_picks_for_date,
     get_cur_pick_pct,
     get_emails,
     get_historical_data,
+    get_picks_for_date,
     get_season_id,
     get_season_pick_pct,
     get_tims_players,
-    get_today_db,
     save_to_db,
     schedule_run,
     update_historical_data,
@@ -323,15 +324,21 @@ def publish_public_db(players):
 
 
 def check_db_for_date():
+    """Whether today's picks have already been published.
+
+    A count-only query: the roster itself is well over the Step Functions
+    256KB state limit, so it must never leave the Lambda -- only the boolean
+    run status flows through the state machine.
+    """
     date = get_date()
     logger.info(f"Checking date: {date}")
 
-    entries = get_today_db()
-    if entries and entries[0]["date"] == date:
-        for entry in entries:
-            entry["id"] = entry.pop("player_id")
-        return entries
-    return None
+    return count_picks_for_date(date) > 0
+
+
+def get_published_picks():
+    """Today's published roster from Picks-{ENV}, read inside a Lambda."""
+    return get_picks_for_date(get_date())
 
 
 def merge_players_and_teams(team_payloads):

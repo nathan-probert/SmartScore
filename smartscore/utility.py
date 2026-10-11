@@ -69,8 +69,22 @@ def save_to_db(players):
     exponential_backoff_supabase_request(f"Picks-{ENV}", method="post", json_data=players)
 
 
-def get_today_db():
-    return exponential_backoff_supabase_request(f"Picks-{ENV}")
+def get_today_db(eq=None):
+    return exponential_backoff_supabase_request(f"Picks-{ENV}", eq=eq)
+
+
+def count_picks_for_date(date):
+    """Count Picks-{ENV} rows for ``date`` without downloading the roster.
+
+    A HEAD request with Prefer: count=exact; the roster is hundreds of KB and
+    only its existence is ever needed for the run-status check.
+    """
+    return exponential_backoff_supabase_request(f"Picks-{ENV}", select="id", eq=("date", date), count_only=True)
+
+
+def get_picks_for_date(date):
+    """The published Picks-{ENV} roster for ``date`` (full rows, as stored)."""
+    return get_today_db(eq=("date", date))
 
 
 def get_historical_data():
@@ -163,8 +177,32 @@ def schedule_run(times):
         print(f"Scheduled event for {trigger_time} with rule name {rule_name}")
 
 
-def exponential_backoff_supabase_request(
-    table_name, method="get", data=None, json_data=None, max_retries=5, base_delay=1, select="*", eq=None
+def _supabase_get(table_name, select, eq, count_only):
+    """GET branch of exponential_backoff_supabase_request."""
+    if count_only:
+        query = SUPABASE_CLIENT.table(table_name).select(select, count="exact", head=True)
+    else:
+        query = SUPABASE_CLIENT.table(table_name).select(select)
+    if eq is not None:
+        # eq should be a tuple: (column, value)
+        col, val = eq
+        query = query.eq(col, val)
+    if count_only:
+        return query.execute().count
+    return query.execute().data
+
+
+def exponential_backoff_supabase_request(  # noqa: PLR0913
+    table_name,
+    method="get",
+    data=None,
+    json_data=None,
+    max_retries=5,
+    base_delay=1,
+    select="*",
+    eq=None,
+    *,
+    count_only=False,
 ):
     """
     Makes Supabase requests with exponential backoff retry strategy.
@@ -176,9 +214,12 @@ def exponential_backoff_supabase_request(
         max_retries: Maximum number of retry attempts
         base_delay: Base delay between retries in seconds
         select: Columns to select in GET requests
+        eq: Optional (column, value) filter, applied to GET and POST-delete
+        count_only: GET only -- issue a HEAD request and return the row count
+            instead of the rows (PostgREST Prefer: count=exact)
 
     Returns:
-        Parsed JSON response
+        Parsed JSON response, or the row count (int) when count_only is set
     """
     method = method.upper()
 
@@ -186,12 +227,7 @@ def exponential_backoff_supabase_request(
     for attempt in range(max_retries):
         try:
             if method == "GET":
-                query = SUPABASE_CLIENT.table(table_name).select(select)
-                if eq is not None:
-                    # eq should be a tuple: (column, value)
-                    col, val = eq
-                    query = query.eq(col, val)
-                response = query.execute().data
+                response = _supabase_get(table_name, select, eq, count_only)
             elif method == "POST":
                 # Scoped delete when eq is given (e.g. Metrics rows share a table),
                 # otherwise legacy full-table wipe (e.g. Picks / Historic-Picks).

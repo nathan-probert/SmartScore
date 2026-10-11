@@ -71,13 +71,37 @@ def test_notify_users_never_carries_the_roster(notify_users):
     )
 
 
-def test_pipeline_still_receives_the_roster():
-    """The roster is only droppable where it is unused.
+def test_pipeline_normal_and_last_run_recompute_rather_than_carry_the_roster():
+    """PlayerProcessingPipeline must never load the roster through GetDate.
 
-    PlayerProcessingPipeline feeds CheckCompleted's players into GetTims on the
-    normal_run branch, so its GetDate must keep passing them through. This
-    guards against a well-meaning 'same fix everywhere' edit breaking that run.
+    CheckCompleted is status-only, so the normal_run and last_run branches
+    route through the GetPlayers sub-machine -- the same enrichment chain as
+    first_run -- instead of skipping straight to GetTims/PublishToDb with a
+    roster that no longer exists in the state.
     """
     pipeline = _definition("player_processing_pipeline.asl.json")
-    assert "ResultSelector" not in pipeline["States"]["GetDate"]
-    assert pipeline["States"]["GetPlayersStateMachine"]["Parameters"]["Input"]["input.$"] == "$"
+
+    routing = {choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckCompletion"]["Choices"]}
+    assert routing["normal_run"] == "GetPlayersStateMachine"
+    assert routing["last_run"] == "GetPlayersStateMachine"
+    assert routing["first_run"] == "Backfill"
+
+    # The sub-machine output is nested (not spliced over the state) so the
+    # run status survives; FlattenGetPlayers then rebuilds the lean state.
+    get_players = pipeline["States"]["GetPlayersStateMachine"]
+    assert get_players["ResultPath"] == "$.getPlayers"
+    assert "OutputPath" not in get_players
+
+    flatten = pipeline["States"]["FlattenGetPlayers"]
+    assert flatten["Parameters"]["status.$"] == "$.status"
+    assert flatten["Parameters"]["players.$"] == "$.getPlayers.parsed.players"
+    assert flatten["Parameters"]["teams.$"] == "$.getPlayers.parsed.teams"
+
+    # last_run now arrives at CheckInitialRun via the chain and must route
+    # to PublishToDb, not fall through the Choice unhandled.
+    initial_routing = {
+        choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckInitialRun"]["Choices"]
+    }
+    assert initial_routing["last_run"] == "PublishToDb"
+    assert initial_routing["normal_run"] == "PublishToDb"
+    assert initial_routing["first_run"] == "SaveToDb"

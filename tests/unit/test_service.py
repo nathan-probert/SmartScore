@@ -11,16 +11,45 @@ from smartscore_info_client.models.team import GameTeam
 from mock_nhl_client import MockNHLClient
 from service import (
     backfill_dates,
+    check_db_for_date,
     choose_picks,
     get_date,
     get_nhl_client,
     get_players_from_team,
+    get_published_picks,
     merge_injury_data,
     merge_players_and_teams,
     resolve_team_names,
     send_emails,
     write_historic_db,
 )
+
+
+@patch("service.count_picks_for_date")
+def test_check_db_for_date_true_when_rows_exist(mock_count):
+    """A non-zero count for today means the pipeline already ran."""
+    mock_count.return_value = 5
+
+    assert check_db_for_date() is True
+    mock_count.assert_called_once_with(get_date())
+
+
+@patch("service.count_picks_for_date")
+def test_check_db_for_date_false_when_no_rows(mock_count):
+    """Zero rows for today means first_run."""
+    mock_count.return_value = 0
+
+    assert check_db_for_date() is False
+    mock_count.assert_called_once_with(get_date())
+
+
+@patch("service.get_picks_for_date")
+def test_get_published_picks_reads_today(mock_get_picks):
+    """Emails re-read the published roster for today's date."""
+    mock_get_picks.return_value = [{"name": "Player 1"}]
+
+    assert get_published_picks() == [{"name": "Player 1"}]
+    mock_get_picks.assert_called_once_with(get_date())
 
 
 @patch("service.datetime")

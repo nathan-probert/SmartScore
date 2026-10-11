@@ -20,6 +20,7 @@ from service import (
     get_date,
     get_injury_data,
     get_players_from_team,
+    get_published_picks,
     get_teams,
     get_tims,
     get_todays_schedule,
@@ -45,18 +46,21 @@ def handle_backfill(event, context):
     Backfills the database with who scored for each game
 
     Args:
-        event (dict): Unused event data.
+        event (dict): The state so far; ``status`` is passed through so the
+            first_run routing survives the state replacement in the ASL.
         context (dict): Unused Lambda context.
 
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
+            - "status" (str, optional): The run status, when present on the input.
     """
     backfill_dates()
 
-    return {
-        "statusCode": 200,
-    }
+    output = {"statusCode": 200}
+    if "status" in event:
+        output["status"] = event["status"]
+    return output
 
 
 @lambda_handler_error_responder
@@ -64,26 +68,30 @@ def handle_check_completed(event, context):
     """
     Checks if the data has been previously retrieved for the day.
 
+    Returns only the run status: the roster is well over the Step Functions
+    256KB state limit, so every branch of PlayerProcessingPipeline recomputes
+    it via the GetPlayers sub-machine instead of carrying it here.
+
     Args:
-        event (dict): Unused event data.
+        event (dict): Optional ``last_game`` flag set by the final
+            EventBridge game-start trigger of the day.
         context (dict): Unused Lambda context.
 
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
             - "status" (str): The current status of data retrieval.
-            - "players" (list | None): Retrieved player data, if available.
     """
 
-    entries = check_db_for_date()
+    already_published = check_db_for_date()
     if event.get("last_game"):
         status = "last_run"
-    elif entries:
+    elif already_published:
         status = "normal_run"
     else:
         status = "first_run"
 
-    return {"statusCode": 200, "status": status, "players": entries}
+    return {"statusCode": 200, "status": status}
 
 
 @lambda_handler_error_responder
@@ -448,10 +456,8 @@ def handle_emails(event, context):
     Sends out emails to users with their smartscore picks.
 
     Picks are read here rather than carried in the Step Functions state.
-    NotifyUsers' first state projects CheckCompleted's result down to ``status``
-    alone (see templates/notify_users.asl.json): that result is the whole
-    Picks-prod roster, which exceeds the 256KB state limit now that each skater
-    row carries the opp_goalie_* and lineup columns, and ``choose_picks``
+    The roster is well over the 256KB state limit now that each skater row
+    carries the opp_goalie_* and lineup columns, and ``choose_picks``
     reduces it to a handful of rows regardless.
 
     Args:
@@ -462,7 +468,7 @@ def handle_emails(event, context):
     Returns:
         dict: A dictionary containing status code.
     """
-    picks = choose_picks(event.get("players") or check_db_for_date())
+    picks = choose_picks(event.get("players") or get_published_picks())
 
     users = get_all_emails()  # Now returns list of dicts with email and display_name
     for user in users:
