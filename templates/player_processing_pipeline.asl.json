@@ -1,5 +1,5 @@
 {
-    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit, so normal_run and last_run recompute it through the same enrichment chain as first_run.",
+    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit. normal_run and last_run refresh tims and republish inside a single Lambda (RefreshAndPublish) instead of carrying the roster through the state.",
     "StartAt": "GetDate",
     "States": {
         "GetDate": {
@@ -13,7 +13,7 @@
                 {
                     "Variable": "$.status",
                     "StringEquals": "normal_run",
-                    "Next": "GetPlayersStateMachine"
+                    "Next": "RefreshAndPublish"
                 },
                 {
                     "Variable": "$.status",
@@ -23,7 +23,7 @@
                 {
                     "Variable": "$.status",
                     "StringEquals": "last_run",
-                    "Next": "GetPlayersStateMachine"
+                    "Next": "RefreshAndPublish"
                 }
             ]
         },
@@ -44,7 +44,8 @@
             "ResultSelector": {
                 "parsed.$": "States.StringToJson($.Output)"
             },
-            "ResultPath": "$.getPlayers",
+            "ResultPath": "$",
+            "OutputPath": "$.parsed",
             "Retry": [
                 {
                     "ErrorEquals": [
@@ -55,15 +56,6 @@
                     "BackoffRate": 5.0
                 }
             ],
-            "Next": "FlattenGetPlayers"
-        },
-        "FlattenGetPlayers": {
-            "Type": "Pass",
-            "Parameters": {
-                "status.$": "$.status",
-                "players.$": "$.getPlayers.parsed.players",
-                "teams.$": "$.getPlayers.parsed.teams"
-            },
             "Next": "CheckIfPlayersOutputIsEmpty"
         },
         "CheckIfPlayersOutputIsEmpty": {
@@ -114,11 +106,6 @@
                     "Variable": "$.status",
                     "StringEquals": "normal_run",
                     "Next": "PublishToDb"
-                },
-                {
-                    "Variable": "$.status",
-                    "StringEquals": "last_run",
-                    "Next": "PublishToDb"
                 }
             ]
         },
@@ -135,6 +122,11 @@
         "PublishToDb": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:PublishDb-${ENV}",
+            "End": true
+        },
+        "RefreshAndPublish": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:RefreshAndPublish-${ENV}",
             "End": true
         }
     }

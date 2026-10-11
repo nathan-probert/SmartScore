@@ -1,7 +1,6 @@
 from unittest.mock import patch
 
 from event_handler import (
-    handle_backfill,
     handle_check_completed,
     handle_emails,
     handle_get_goalies,
@@ -9,6 +8,7 @@ from event_handler import (
     handle_make_predictions,
     handle_parse_teams,
     handle_publish_db,
+    handle_refresh_and_publish,
     handle_save_players,
 )
 
@@ -75,22 +75,43 @@ def test_handle_check_completed_never_returns_the_roster(mock_check_db):
     assert "players" not in result
 
 
-@patch("event_handler.backfill_dates")
-def test_handle_backfill_passes_status_through(mock_backfill):
-    """first_run routing depends on Backfill preserving ``status``."""
-    result = handle_backfill({"statusCode": 200, "status": "first_run"}, {})
+@patch("event_handler.publish_public_db")
+@patch("event_handler.get_tims")
+@patch("event_handler.get_published_picks")
+def test_handle_refresh_and_publish_republishes_with_fresh_tims(mock_get_picks, mock_get_tims, mock_publish):
+    """normal_run refreshes tims on the stored roster and republishes it."""
+    players = [
+        {"player_id": 1, "id": 1, "name": "Player 1", "stat": 0.8},
+        {"player_id": 2, "id": 2, "name": "Player 2", "stat": 0.9},
+    ]
+    refreshed = [
+        {"id": 1, "name": "Player 1", "stat": 0.8, "tims": 1},
+        {"id": 2, "name": "Player 2", "stat": 0.9, "tims": 0},
+    ]
+    mock_get_picks.return_value = players
+    mock_get_tims.return_value = refreshed
 
-    assert result == {"statusCode": 200, "status": "first_run"}
-    mock_backfill.assert_called_once()
-
-
-@patch("event_handler.backfill_dates")
-def test_handle_backfill_without_status(mock_backfill):
-    """A direct invocation with no status stays status-free."""
-    result = handle_backfill({}, {})
+    result = handle_refresh_and_publish({}, {})
 
     assert result == {"statusCode": 200}
-    mock_backfill.assert_called_once()
+    # get_tims matches on the NHL id under "id", so player_id must be renamed first.
+    assert all("player_id" not in p for p in players)
+    mock_get_tims.assert_called_once_with(players)
+    mock_publish.assert_called_once_with(refreshed)
+
+
+@patch("event_handler.publish_public_db")
+@patch("event_handler.get_tims")
+@patch("event_handler.get_published_picks")
+def test_handle_refresh_and_publish_never_wipes_an_empty_table(mock_get_picks, mock_get_tims, mock_publish):
+    """Publishing an empty list would delete every Picks row before upserting."""
+    mock_get_picks.return_value = []
+
+    result = handle_refresh_and_publish({}, {})
+
+    assert result == {"statusCode": 200}
+    mock_get_tims.assert_not_called()
+    mock_publish.assert_not_called()
 
 
 @patch("event_handler.publish_public_db")

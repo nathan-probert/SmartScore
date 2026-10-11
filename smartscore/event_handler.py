@@ -46,21 +46,18 @@ def handle_backfill(event, context):
     Backfills the database with who scored for each game
 
     Args:
-        event (dict): The state so far; ``status`` is passed through so the
-            first_run routing survives the state replacement in the ASL.
+        event (dict): Unused event data.
         context (dict): Unused Lambda context.
 
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
-            - "status" (str, optional): The run status, when present on the input.
     """
     backfill_dates()
 
-    output = {"statusCode": 200}
-    if "status" in event:
-        output["status"] = event["status"]
-    return output
+    return {
+        "statusCode": 200,
+    }
 
 
 @lambda_handler_error_responder
@@ -92,6 +89,43 @@ def handle_check_completed(event, context):
         status = "first_run"
 
     return {"statusCode": 200, "status": status}
+
+
+@lambda_handler_error_responder
+def handle_refresh_and_publish(event, context):
+    """
+    Refreshes tims on today's published roster and republishes it.
+
+    normal_run and last_run land here instead of carrying the roster through
+    the Step Functions state (it is over the 256KB limit) or re-running the
+    whole enrichment chain. The morning's predictions stand; only the Tims
+    groups are re-fetched -- the same work the old GetDate -> GetTims ->
+    PublishToDb path did, but entirely inside this Lambda.
+
+    Args:
+        event (dict): Unused event data.
+        context (dict): Unused Lambda context.
+
+    Returns:
+        dict: A dictionary containing:
+            - "statusCode" (int): HTTP status code.
+    """
+    players = get_published_picks()
+    if not players:
+        # An empty publish would wipe Picks-{ENV} (save_to_db deletes before
+        # upserting), so a last_run before the first publish must not proceed.
+        logger.error("No published picks found for today; skipping refresh and republish")
+        return {"statusCode": 200}
+
+    # The stored rows keep the NHL id in player_id and a row number in id;
+    # get_tims matches on the NHL id under the "id" key (publish_public_db
+    # renames it back on the way out).
+    for player in players:
+        player["id"] = player.pop("player_id")
+
+    publish_public_db(get_tims(players))
+
+    return {"statusCode": 200}
 
 
 @lambda_handler_error_responder

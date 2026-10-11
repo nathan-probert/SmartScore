@@ -102,6 +102,7 @@ Resources:
                   - !GetAtt GetLineupsFunction.Arn
                   - !GetAtt SendEmailsFunction.Arn
                   - !GetAtt SavePlayersFunction.Arn
+                  - !GetAtt RefreshAndPublishFunction.Arn
               - Effect: Allow
                 Action:
                   - states:StartExecution
@@ -298,6 +299,30 @@ Resources:
     Properties:
       FunctionName: !Sub "CheckCompleted-${ENV}"
       Handler: event_handler.handle_check_completed
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
+
+  # normal_run/last_run: refresh tims on the published roster and republish,
+  # entirely inside the Lambda -- the roster is over the Step Functions 256KB
+  # state limit, so it must never flow between states.
+  RefreshAndPublishFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "RefreshAndPublish-${ENV}"
+      Handler: event_handler.handle_refresh_and_publish
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
       Timeout: 30

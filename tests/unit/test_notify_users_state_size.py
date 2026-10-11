@@ -1,16 +1,17 @@
-"""Guards on the NotifyUsers state machine's Step Functions payload size.
+"""Guards on the Step Functions payload size in the daily state machines.
 
 Step Functions caps the JSON state that flows between states at 262,144 bytes.
-``CheckCompleted`` returns the entire Picks-prod roster, which is roughly 640
-skater rows; before the opp_goalie_* and lineup columns were added to that table
-this state sat at ~68% of the limit, and afterwards it serialized to ~440KB.
-NotifyUsers then failed every afternoon with ``States.DataLimitExceeded`` in step
-``GetDate`` and no email was ever sent.
+``CheckCompleted`` used to return the entire Picks-prod roster (roughly 640
+skater rows), which serialized to ~440KB once the opp_goalie_* and lineup
+columns were added: NotifyUsers failed every afternoon with
+``States.DataLimitExceeded`` in step ``GetDate`` and no email was ever sent,
+and PlayerProcessingPipeline hit the same wall on its normal_run branch.
 
-The roster was never needed here -- ``choose_picks`` reduces it to one pick per
-Tims bucket and the template renders four fields -- so ``GetDate`` projects the
-Lambda result down to ``status`` and ``handle_emails`` re-reads the day's picks.
-These assertions fail if that projection is ever removed.
+``CheckCompleted`` is now status-only. NotifyUsers additionally projects its
+result down to ``status`` and ``handle_emails`` re-reads the day's picks;
+PlayerProcessingPipeline routes normal_run/last_run to RefreshAndPublish,
+which reads, refreshes and republishes the roster entirely inside the Lambda.
+These assertions fail if any of those boundaries regress.
 """
 
 import json
@@ -71,37 +72,27 @@ def test_notify_users_never_carries_the_roster(notify_users):
     )
 
 
-def test_pipeline_normal_and_last_run_recompute_rather_than_carry_the_roster():
+def test_pipeline_normal_and_last_run_refresh_inside_a_lambda():
     """PlayerProcessingPipeline must never load the roster through GetDate.
 
     CheckCompleted is status-only, so the normal_run and last_run branches
-    route through the GetPlayers sub-machine -- the same enrichment chain as
-    first_run -- instead of skipping straight to GetTims/PublishToDb with a
-    roster that no longer exists in the state.
+    land on RefreshAndPublish, which reads the roster, refreshes tims and
+    republishes entirely inside the Lambda. The roster must not ride the
+    state between states, and those branches must not re-run the enrichment
+    chain either.
     """
     pipeline = _definition("player_processing_pipeline.asl.json")
 
     routing = {choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckCompletion"]["Choices"]}
-    assert routing["normal_run"] == "GetPlayersStateMachine"
-    assert routing["last_run"] == "GetPlayersStateMachine"
+    assert routing["normal_run"] == "RefreshAndPublish"
+    assert routing["last_run"] == "RefreshAndPublish"
     assert routing["first_run"] == "Backfill"
 
-    # The sub-machine output is nested (not spliced over the state) so the
-    # run status survives; FlattenGetPlayers then rebuilds the lean state.
-    get_players = pipeline["States"]["GetPlayersStateMachine"]
-    assert get_players["ResultPath"] == "$.getPlayers"
-    assert "OutputPath" not in get_players
+    refresh = pipeline["States"]["RefreshAndPublish"]
+    assert refresh["Type"] == "Task"
+    assert refresh["Resource"].endswith(":function:RefreshAndPublish-prod")
+    assert refresh["End"] is True
 
-    flatten = pipeline["States"]["FlattenGetPlayers"]
-    assert flatten["Parameters"]["status.$"] == "$.status"
-    assert flatten["Parameters"]["players.$"] == "$.getPlayers.parsed.players"
-    assert flatten["Parameters"]["teams.$"] == "$.getPlayers.parsed.teams"
-
-    # last_run now arrives at CheckInitialRun via the chain and must route
-    # to PublishToDb, not fall through the Choice unhandled.
-    initial_routing = {
-        choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckInitialRun"]["Choices"]
-    }
-    assert initial_routing["last_run"] == "PublishToDb"
-    assert initial_routing["normal_run"] == "PublishToDb"
-    assert initial_routing["first_run"] == "SaveToDb"
+    # GetDate must not trim anything for these branches any more -- its
+    # result is already just the status, verified in test_handle_check_completed.
+    assert "ResultSelector" not in pipeline["States"]["GetDate"]
