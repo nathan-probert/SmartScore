@@ -102,6 +102,7 @@ Resources:
                   - !GetAtt GetLineupsFunction.Arn
                   - !GetAtt SendEmailsFunction.Arn
                   - !GetAtt SavePlayersFunction.Arn
+                  - !GetAtt LoadWorkingSetFunction.Arn
               - Effect: Allow
                 Action:
                   - states:StartExecution
@@ -298,6 +299,31 @@ Resources:
     Properties:
       FunctionName: !Sub "CheckCompleted-${ENV}"
       Handler: event_handler.handle_check_completed
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
+
+  # normal_run/last_run: load the day's lean players/teams slices from the
+  # Working-* tables and re-enter the chain at GetInjuries. The roster is over
+  # the Step Functions 256KB state limit in denormalized form, so it must never
+  # flow between states; these separated slices keep it under the limit.
+  LoadWorkingSetFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "LoadWorkingSet-${ENV}"
+      Handler: event_handler.handle_load_working_set
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
       Timeout: 30

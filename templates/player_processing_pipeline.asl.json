@@ -1,5 +1,5 @@
 {
-    "Comment": "A state machine to handle all player processing, predictions, and publishing.",
+    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit. normal_run and last_run reload the day's lean players/teams slices (Working-* tables) via LoadWorkingSet and re-enter the chain at GetInjuries, so the state always carries separated slices, never denormalized rows.",
     "StartAt": "GetDate",
     "States": {
         "GetDate": {
@@ -13,7 +13,7 @@
                 {
                     "Variable": "$.status",
                     "StringEquals": "normal_run",
-                    "Next": "GetTims"
+                    "Next": "LoadWorkingSet"
                 },
                 {
                     "Variable": "$.status",
@@ -23,9 +23,14 @@
                 {
                     "Variable": "$.status",
                     "StringEquals": "last_run",
-                    "Next": "PublishToDb"
+                    "Next": "LoadWorkingSet"
                 }
             ]
+        },
+        "LoadWorkingSet": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:LoadWorkingSet-${ENV}",
+            "Next": "GetInjuries"
         },
         "Backfill": {
             "Type": "Task",
@@ -105,6 +110,11 @@
                 {
                     "Variable": "$.status",
                     "StringEquals": "normal_run",
+                    "Next": "PublishToDb"
+                },
+                {
+                    "Variable": "$.status",
+                    "StringEquals": "last_run",
                     "Next": "PublishToDb"
                 }
             ]

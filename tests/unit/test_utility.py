@@ -4,7 +4,85 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from utility import create_cron_schedule, exponential_backoff_request
+from config import ENV
+from utility import (
+    count_picks_for_date,
+    create_cron_schedule,
+    exponential_backoff_request,
+    exponential_backoff_supabase_request,
+    fetch_working_set,
+    get_picks_for_date,
+    put_working_set,
+)
+
+
+@patch("utility.SUPABASE_CLIENT")
+def test_supabase_count_only_returns_row_count(mock_client):
+    """count_only issues a HEAD request and returns the count, not the rows."""
+    execute = mock_client.table.return_value.select.return_value.eq.return_value.execute
+    execute.return_value.count = 7
+
+    result = exponential_backoff_supabase_request(
+        f"Picks-{ENV}", select="id", eq=("date", "2026-10-11"), count_only=True
+    )
+
+    assert result == 7
+    mock_client.table.return_value.select.assert_called_once_with("id", count="exact", head=True)
+    mock_client.table.return_value.select.return_value.eq.assert_called_once_with("date", "2026-10-11")
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_count_picks_for_date_uses_count_only(mock_request):
+    """The run-status check must not download the roster."""
+    mock_request.return_value = 3
+
+    assert count_picks_for_date("2026-10-11") == 3
+    mock_request.assert_called_once_with(f"Picks-{ENV}", select="id", eq=("date", "2026-10-11"), count_only=True)
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_get_picks_for_date_filters_on_date(mock_request):
+    """Emails read today's published rows, not the whole table."""
+    mock_request.return_value = [{"name": "Player 1"}]
+
+    result = get_picks_for_date("2026-10-11")
+
+    assert result == [{"name": "Player 1"}]
+    mock_request.assert_called_once_with(f"Picks-{ENV}", eq=("date", "2026-10-11"))
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_put_working_set_writes_both_slices(mock_request):
+    """Each slice lands in its own table as a date-keyed JSONB row."""
+    players = [{"id": 1, "team_id": 10, "name": "Player 1"}]
+    teams = [{"team_id": 10, "opponent_id": 11}]
+
+    put_working_set("2026-10-11", players, teams)
+
+    assert mock_request.call_count == 2
+    player_call, team_call = mock_request.call_args_list
+    assert player_call.args == (f"Working-Players-{ENV}",)
+    assert player_call.kwargs["method"] == "post"
+    assert player_call.kwargs["json_data"] == [{"date": "2026-10-11", "player_id": 1, "data": players[0]}]
+    assert team_call.args == (f"Working-Teams-{ENV}",)
+    assert team_call.kwargs["json_data"] == [{"date": "2026-10-11", "team_id": 10, "data": teams[0]}]
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_fetch_working_set_unwraps_jsonb_payloads(mock_request):
+    """The stored data blobs are the lean dicts verbatim."""
+    mock_request.side_effect = [
+        [{"date": "2026-10-11", "player_id": 1, "data": {"id": 1, "team_id": 10}}],
+        [{"date": "2026-10-11", "team_id": 10, "data": {"team_id": 10}}],
+    ]
+
+    players, teams = fetch_working_set("2026-10-11")
+
+    assert players == [{"id": 1, "team_id": 10}]
+    assert teams == [{"team_id": 10}]
+    assert mock_request.call_args_list[0].args == (f"Working-Players-{ENV}",)
+    assert mock_request.call_args_list[0].kwargs == {"eq": ("date", "2026-10-11")}
+    assert mock_request.call_args_list[1].args == (f"Working-Teams-{ENV}",)
 
 
 @patch("smartscore_info_client.utility.requests.get")

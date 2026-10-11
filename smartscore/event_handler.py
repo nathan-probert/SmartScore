@@ -20,9 +20,11 @@ from service import (
     get_date,
     get_injury_data,
     get_players_from_team,
+    get_published_picks,
     get_teams,
     get_tims,
     get_todays_schedule,
+    load_working_set,
     make_predictions_teams,
     mark_lineups_unknown,
     merge_injury_data,
@@ -30,6 +32,7 @@ from service import (
     merge_players_and_teams,
     publish_public_db,
     resolve_season_id,
+    save_working_set,
     send_emails,
     update_metrics,
     update_season_metrics,
@@ -64,26 +67,63 @@ def handle_check_completed(event, context):
     """
     Checks if the data has been previously retrieved for the day.
 
+    Returns only the run status: the roster is well over the Step Functions
+    256KB state limit, so every branch of PlayerProcessingPipeline recomputes
+    it via the GetPlayers sub-machine instead of carrying it here.
+
     Args:
-        event (dict): Unused event data.
+        event (dict): Optional ``last_game`` flag set by the final
+            EventBridge game-start trigger of the day.
         context (dict): Unused Lambda context.
 
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
             - "status" (str): The current status of data retrieval.
-            - "players" (list | None): Retrieved player data, if available.
     """
 
-    entries = check_db_for_date()
+    already_published = check_db_for_date()
     if event.get("last_game"):
         status = "last_run"
-    elif entries:
+    elif already_published:
         status = "normal_run"
     else:
         status = "first_run"
 
-    return {"statusCode": 200, "status": status, "players": entries}
+    return {"statusCode": 200, "status": status}
+
+
+@lambda_handler_error_responder
+def handle_load_working_set(event, context):
+    """
+    Loads today's lean players/teams slices for a normal_run or last_run.
+
+    Replaces the GetPlayers sub-machine on those branches: the morning's
+    roster, stats and predictions are reused from the Working-* tables, while
+    the downstream injuries/goalies/lineups/tims steps re-gather their own
+    data fresh. The state carries the same separated slices as first_run --
+    never denormalized rows, which blew the Step Functions 256KB limit.
+
+    Args:
+        event (dict): The status-only state from CheckCompleted; ``status`` is
+            carried through so CheckInitialRun still routes correctly.
+        context (dict): Unused Lambda context.
+
+    Returns:
+        dict: A dictionary containing:
+            - "statusCode" (int): HTTP status code.
+            - "status" (str): The run status, passed through.
+            - "players" (list): Lean player data for today.
+            - "teams" (list): Lean team data for today.
+    """
+    players, teams = load_working_set()
+
+    return {
+        "statusCode": 200,
+        "status": event.get("status", "normal_run"),
+        "players": players,
+        "teams": teams,
+    }
 
 
 @lambda_handler_error_responder
@@ -241,6 +281,10 @@ def handle_save_players(event, context):
     Upserts on (date, player_id), so re-running the pipeline for a date
     refreshes that date's rows in place instead of appending a duplicate roster.
 
+    Also persists the day's lean players/teams slices to the Working-* tables
+    so normal_run/last_run can reload them without re-running the enrichment
+    chain or reloading the denormalized Picks rows.
+
     Joins relational ``players`` + ``teams`` + ``goalies`` into full rows
     for the upload only; the returned state stays lean so downstream steps
     stay under the Step Functions size limit.
@@ -267,6 +311,7 @@ def handle_save_players(event, context):
         else:
             upload_rows = players
         save_player_snapshots(upload_rows, date=date)
+        save_working_set(players, event.get("teams") or [])
 
     output = {"statusCode": 200, "players": players}
     if "teams" in event:
@@ -448,10 +493,8 @@ def handle_emails(event, context):
     Sends out emails to users with their smartscore picks.
 
     Picks are read here rather than carried in the Step Functions state.
-    NotifyUsers' first state projects CheckCompleted's result down to ``status``
-    alone (see templates/notify_users.asl.json): that result is the whole
-    Picks-prod roster, which exceeds the 256KB state limit now that each skater
-    row carries the opp_goalie_* and lineup columns, and ``choose_picks``
+    The roster is well over the 256KB state limit now that each skater row
+    carries the opp_goalie_* and lineup columns, and ``choose_picks``
     reduces it to a handful of rows regardless.
 
     Args:
@@ -462,7 +505,7 @@ def handle_emails(event, context):
     Returns:
         dict: A dictionary containing status code.
     """
-    picks = choose_picks(event.get("players") or check_db_for_date())
+    picks = choose_picks(event.get("players") or get_published_picks())
 
     users = get_all_emails()  # Now returns list of dicts with email and display_name
     for user in users:
