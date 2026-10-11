@@ -18,12 +18,13 @@ def _insert(  # noqa: PLR0913, PLR0917 - helper mirrors the table's shape; every
     name=None,
     position="C",
     pp=None,
+    opponent=None,
 ):
     conn.execute(
         "INSERT INTO player_games (player_id, game_id, season, game_date, goals,"
-        " team_abbrev, team_goals_for, name, position, power_play_goals)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (player_id, game_id, season, date, goals, team, tgf, name, position, pp),
+        " team_abbrev, team_goals_for, name, position, power_play_goals, opponent_abbrev)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (player_id, game_id, season, date, goals, team, tgf, name, position, pp, opponent),
     )
 
 
@@ -263,8 +264,8 @@ class _FakeDone:
 
 def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypatch):
     conn = local_store.connect(tmp_path / "raw.sqlite")
-    _insert(conn, 201, 8001, "2023-10-10", 1, team="BOS", tgf=3, name="B. Burns")
-    _insert(conn, 202, 8001, "2023-10-10", 0, team="BOS", tgf=3, name="J. Doe")
+    _insert(conn, 201, 8001, "2023-10-10", 1, team="BOS", tgf=3, name="B. Burns", opponent="TOR")
+    _insert(conn, 202, 8001, "2023-10-10", 0, team="BOS", tgf=3, name="J. Doe", opponent="TOR")
     local_store.compute_derived(conn, "20232024")
     conn.close()
 
@@ -278,6 +279,13 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
     monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
     # One player in tims group 2 on the fixture's date; the other defaults to 0.
     monkeypatch.setattr(local_store, "tims_map", lambda season, **kwargs: {"2023-10-10": {201: 2}})
+    # TOR starts Samsonov (Confirmed) on the fixture's date; BOS has no entry,
+    # which only matters for skaters on the other side (none in this fixture).
+    monkeypatch.setattr(
+        local_store,
+        "goalies_map",
+        lambda season, **kwargs: {"2023-10-10": {"TOR": {"name": "Ilya Samsonov", "status": "Confirmed"}}},
+    )
 
     written = local_store.publish("20232024", db_path=tmp_path / "raw.sqlite")
 
@@ -297,6 +305,17 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
     tims = {r["player_id"]: r["tims"] for r in client.upserted}
     assert tims == {201: 2, 202: 0}
     assert all("lineup_unit" in r and "pp_unit" in r and "lineup_status" in r for r in client.upserted)
+    # Opponent starter denormalized per the live schema: identity, upper-cased
+    # status, separate confirmed boolean. Stat columns are never sent - they
+    # stay NULL rather than shipping season-end totals as an October view.
+    assert all(
+        r["opp_goalie_name"] == "Ilya Samsonov"
+        and r["opp_goalie_team"] == "TOR"
+        and r["opp_goalie_status"] == "CONFIRMED"
+        and r["opp_goalie_confirmed"] is True
+        for r in client.upserted
+    )
+    assert all("opp_goalie_gaa" not in r for r in client.upserted)
 
 
 def _shift(player_id, team_id, start, end, period=1):
