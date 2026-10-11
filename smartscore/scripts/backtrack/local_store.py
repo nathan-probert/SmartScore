@@ -43,6 +43,7 @@ Usage::
 
     uv run python smartscore/scripts/backtrack/local_store.py --build 20232024
     uv run python smartscore/scripts/backtrack/local_store.py --derive 20232024
+    uv run python smartscore/scripts/backtrack/local_store.py --feeds 20232024
     uv run python smartscore/scripts/backtrack/local_store.py --publish 20232024
     uv run python smartscore/scripts/backtrack/local_store.py --publish-team 20232024
     uv run python smartscore/scripts/backtrack/local_store.py --stats
@@ -252,6 +253,44 @@ CREATE TABLE IF NOT EXISTS player_lineups (
     lineup_status         TEXT,
     PRIMARY KEY (player_id, game_id)
 );
+
+-- Challenge pick groups and graded outcomes, one row per listed player per
+-- date, from the helper API's history endpoint (see tims_client). Stored here
+-- as well as the JSON cache so the raw layer answers "who was in group N on
+-- date D, and did they score" without re-parsing payload files - the SQL is
+-- the re-parseable record, the cache is just what the fetch came back as.
+--
+-- group_id 1-3, the challenge's three daily groups. scored 1/0 is the helper's
+-- own grading of whether that player scored that night; the publish's scored
+-- label comes from the box score instead (it covers unlisted skaters too) -
+-- this column keeps the helper's view for cross-checking.
+CREATE TABLE IF NOT EXISTS tims_daily (
+    season     TEXT NOT NULL,
+    game_date  TEXT NOT NULL,
+    player_id  INTEGER NOT NULL,
+    group_id   INTEGER NOT NULL,
+    scored     INTEGER,
+    PRIMARY KEY (game_date, player_id)
+);
+
+CREATE INDEX IF NOT EXISTS tims_daily_season_date_idx
+    ON tims_daily (season, game_date);
+
+-- Projected starting goalies per team per date, from Rotowire's
+-- projected-goalies table (see goalie_client). Stored for the same reason as
+-- tims_daily: the publish reads these tables, and any future re-parse reads
+-- SQL rather than the cache files.
+CREATE TABLE IF NOT EXISTS goalies_daily (
+    season      TEXT NOT NULL,
+    game_date   TEXT NOT NULL,
+    team_abbrev TEXT NOT NULL,
+    goalie_name TEXT NOT NULL,
+    status      TEXT,
+    PRIMARY KEY (game_date, team_abbrev)
+);
+
+CREATE INDEX IF NOT EXISTS goalies_daily_season_date_idx
+    ON goalies_daily (season, game_date);
 """
 
 
@@ -470,6 +509,9 @@ def build(season, db_path=DB_PATH, delay_seconds=DEFAULT_DELAY_SECONDS):
     lineup_written = compute_lineups(conn, season, delay_seconds=delay_seconds)
     print(f"lineups -> {lineup_written} row(s) reconstructed for {season}")
 
+    feed_written = ingest_challenge_feeds(conn, season, delay_seconds=delay_seconds)
+    print(f"feeds -> {feed_written} row(s) ingested for {season}")
+
     conn.close()
     return written, log_written
 
@@ -531,6 +573,43 @@ def compute_lineups(conn, season, delay_seconds=DEFAULT_DELAY_SECONDS):
             conn.commit()
             written += len(rows)
 
+    return written
+
+
+def ingest_challenge_feeds(conn, season, delay_seconds=DEFAULT_DELAY_SECONDS):
+    """Fill tims_daily and goalies_daily for one season from the helper APIs.
+
+    Reads through tims_map/goalies_map, which answer from the JSON cache once a
+    build has crawled it, so a re-ingest on a warm cache is pure local SQL.
+    Rebuild semantics match compute_lineups: the season's rows are deleted and
+    re-inserted, so a source-shape change can be re-ingested without leftovers.
+    """
+    conn.execute("DELETE FROM tims_daily WHERE season = ?", (season,))
+    conn.execute("DELETE FROM goalies_daily WHERE season = ?", (season,))
+
+    written = 0
+
+    for date_str, players in tims_map(season, delay_seconds=delay_seconds).items():
+        conn.executemany(
+            "INSERT INTO tims_daily (season, game_date, player_id, group_id, scored)"
+            " VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(game_date, player_id) DO UPDATE SET"
+            " group_id = excluded.group_id, scored = excluded.scored",
+            [(season, date_str, player_id, entry["group"], entry["scored"]) for player_id, entry in players.items()],
+        )
+        written += len(players)
+
+    for date_str, teams in goalies_map(season, delay_seconds=delay_seconds).items():
+        conn.executemany(
+            "INSERT INTO goalies_daily (season, game_date, team_abbrev, goalie_name, status)"
+            " VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(game_date, team_abbrev) DO UPDATE SET"
+            " goalie_name = excluded.goalie_name, status = excluded.status",
+            [(season, date_str, team, info["name"], info["status"]) for team, info in teams.items()],
+        )
+        written += len(teams)
+
+    conn.commit()
     return written
 
 
@@ -821,6 +900,23 @@ def stats(db_path=DB_PATH):
             f"otshga {row['min_otshga']}..{row['max_otshga']}"
         )
 
+    # Lineup and daily-feed ingest counts, per season, so an empty table after
+    # an upgrade is visible rather than discovered at publish time.
+    for row in conn.execute("SELECT season, COUNT(*) AS n FROM player_lineups GROUP BY season ORDER BY season"):
+        print(f"lineups {row['season']}: {row['n']} row(s)")
+
+    for row in conn.execute(
+        "SELECT season, COUNT(*) AS n, COUNT(DISTINCT game_date) AS dates"
+        " FROM tims_daily GROUP BY season ORDER BY season"
+    ):
+        print(f"tims {row['season']}: {row['n']} player entries across {row['dates']} date(s)")
+
+    for row in conn.execute(
+        "SELECT season, COUNT(*) AS n, COUNT(DISTINCT game_date) AS dates"
+        " FROM goalies_daily GROUP BY season ORDER BY season"
+    ):
+        print(f"goalies {row['season']}: {row['n']} team entries across {row['dates']} date(s)")
+
     conn.close()
 
 
@@ -914,20 +1010,28 @@ def publish(season, db_path=DB_PATH):
     table = f"Player-Snapshots-backtrack-{env_name}"
     full_names = _archive_names(supabase, f"Player-Snapshots-{env_name}", {r["player_id"] for r in rows})
 
-    # Historic pick groups from the helper API's history endpoint. A cold
-    # cache makes one request per game date (~180 per season); afterwards the
-    # tims-*.json files answer from disk. A total failure raises rather than
-    # shipping zeros over rows that may already carry real tims.
-    tims_by_date = tims_map(season)
+    # Historic pick groups and projected starters, read back from the daily
+    # feed tables that build/--feeds populated. Reading SQL rather than the
+    # helper APIs keeps publish purely local: the JSON caches and the ingest
+    # pass are the only places that ever touch the network.
+    tims_by_date = {}
+    for r in conn.execute("SELECT game_date, player_id, group_id FROM tims_daily WHERE season = ?", (season,)):
+        tims_by_date.setdefault(r["game_date"], {})[r["player_id"]] = r["group_id"]
     mapped = sum(len(groups) for groups in tims_by_date.values())
     print(f"tims: {mapped} player entries across {len(tims_by_date)} game date(s)")
 
-    # Opponent starting goalies from Rotowire's projected-goalies table, the
-    # same source the live pipeline scrapes for today. A cold cache makes one
-    # request per game date. Goalie stat columns (gaa, save_pct, ...) stay
-    # absent from the payload: they came from same-day club-stats in live,
-    # which is current-season-only, so NULL is the honest historic value.
-    goalies_by_date = goalies_map(season)
+    # Opponent starting goalies, same live-schema denormalization below. The
+    # goalie stat columns (gaa, save_pct, ...) stay absent from the payload:
+    # they came from same-day club-stats in live, which is current-season-only,
+    # so NULL is the honest historic value.
+    goalies_by_date = {}
+    for r in conn.execute(
+        "SELECT game_date, team_abbrev, goalie_name, status FROM goalies_daily WHERE season = ?", (season,)
+    ):
+        goalies_by_date.setdefault(r["game_date"], {})[r["team_abbrev"]] = {
+            "name": r["goalie_name"],
+            "status": r["status"],
+        }
     goalie_teams = sum(len(g) for g in goalies_by_date.values())
     print(f"goalies: {goalie_teams} team entries across {len(goalies_by_date)} game date(s)")
 
@@ -1048,6 +1152,9 @@ def main():  # noqa: PLR0911 - one return per CLI mode; a dispatch table would o
     parser.add_argument(
         "--lineups", metavar="SEASON", help="Recompute player_lineups from the shift-chart cache for one season."
     )
+    parser.add_argument(
+        "--feeds", metavar="SEASON", help="Re-ingest tims_daily and goalies_daily from the JSON caches."
+    )
     parser.add_argument("--publish", metavar="SEASON", help="Upsert player features into Supabase.")
     parser.add_argument("--publish-team", metavar="SEASON", help="Upsert team stats into Supabase.")
     parser.add_argument("--stats", action="store_true", help="Summarise what is stored.")
@@ -1083,6 +1190,13 @@ def main():  # noqa: PLR0911 - one return per CLI mode; a dispatch table would o
         written = compute_lineups(conn, args.lineups)
         conn.close()
         print(f"lineups -> {written} row(s) reconstructed for {args.lineups}")
+        return 0
+
+    if args.feeds:
+        conn = connect(Path(args.db))
+        written = ingest_challenge_feeds(conn, args.feeds)
+        conn.close()
+        print(f"feeds -> {written} row(s) ingested for {args.feeds}")
         return 0
 
     if args.publish:

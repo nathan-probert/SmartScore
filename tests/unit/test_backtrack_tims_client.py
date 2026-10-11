@@ -12,13 +12,16 @@ def _history_payload(group_players):
     return {
         "date": "2024-02-20T00:00:00",
         "playerLists": [
-            {"id": index + 1, "players": [{"nhlPlayerId": pid} for pid in pids]}
+            {
+                "id": index + 1,
+                "players": [{"nhlPlayerId": pid, "scored": bool(pid % 2)} for pid in pids],
+            }
             for index, pids in enumerate(group_players)
         ],
     }
 
 
-def test_tims_map_reads_group_ids_per_date(monkeypatch):
+def test_tims_map_reads_groups_and_scores_per_date(monkeypatch):
     monkeypatch.setattr(
         tims_client,
         "season_games",
@@ -36,7 +39,13 @@ def test_tims_map_reads_group_ids_per_date(monkeypatch):
     monkeypatch.setattr(tims_client, "fetch_history", fake_fetch)
     result = tims_client.tims_map("20232024")
 
-    assert result["2024-02-20"] == {111: 1, 112: 1, 221: 2, 331: 3, 332: 3}
+    assert result["2024-02-20"] == {
+        111: {"group": 1, "scored": True},
+        112: {"group": 1, "scored": False},
+        221: {"group": 2, "scored": True},
+        331: {"group": 3, "scored": True},
+        332: {"group": 3, "scored": False},
+    }
     # A date with no challenge data contributes an empty map, not a crash.
     assert result["2024-02-21"] == {}
 

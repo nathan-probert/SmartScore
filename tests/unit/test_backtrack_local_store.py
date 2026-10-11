@@ -125,6 +125,18 @@ def test_build_merges_playoff_game_logs(tmp_path, monkeypatch):
     monkeypatch.setattr(local_store, "fetch_game_log", fake_log)
     # No shift data in this fixture: the lineup pass runs but finds nothing.
     monkeypatch.setattr(local_store, "fetch_shiftcharts", lambda game_id, **kwargs: [])
+    # The feed ingest runs at the end of build; stub both maps so it never
+    # reaches the network, with just enough data to prove the tables fill.
+    monkeypatch.setattr(
+        local_store,
+        "tims_map",
+        lambda season, **kwargs: {"2024-04-20": {301: {"group": 1, "scored": True}}},
+    )
+    monkeypatch.setattr(
+        local_store,
+        "goalies_map",
+        lambda season, **kwargs: {"2024-04-20": {"BOS": {"name": "J. Swayman", "status": "Confirmed"}}},
+    )
 
     local_store.build("20232024", db_path=tmp_path / "raw.sqlite")
 
@@ -137,6 +149,53 @@ def test_build_merges_playoff_game_logs(tmp_path, monkeypatch):
     assert row["position"] == "C"
     assert row["shorthanded_goals"] == 1
     assert row["gamelog_fields"] is not None
+    # The feed ingest wrote its tables alongside the raw rows.
+    tims_row = conn.execute("SELECT * FROM tims_daily WHERE player_id = 301").fetchone()
+    assert tims_row["group_id"] == 1 and tims_row["scored"] == 1
+    goalie_row = conn.execute("SELECT * FROM goalies_daily WHERE team_abbrev = 'BOS'").fetchone()
+    assert goalie_row["goalie_name"] == "J. Swayman" and goalie_row["status"] == "Confirmed"
+    conn.close()
+
+
+def test_ingest_challenge_feeds_rebuilds_the_season_rows(tmp_path, monkeypatch):
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    monkeypatch.setattr(
+        local_store,
+        "tims_map",
+        lambda season, **kwargs: {"2023-10-10": {201: {"group": 2, "scored": False}}},
+    )
+    monkeypatch.setattr(
+        local_store,
+        "goalies_map",
+        lambda season, **kwargs: {"2023-10-10": {"TOR": {"name": "I. Samsonov", "status": "Confirmed"}}},
+    )
+
+    local_store.ingest_challenge_feeds(conn, "20232024")
+    # A second run is a delete-and-reinsert, not a duplicate.
+    local_store.ingest_challenge_feeds(conn, "20232024")
+
+    tims_rows = conn.execute("SELECT * FROM tims_daily").fetchall()
+    assert len(tims_rows) == 1
+    assert tims_rows[0]["season"] == "20232024"
+    assert tims_rows[0]["group_id"] == 2
+    assert tims_rows[0]["scored"] == 0
+
+    goalie_rows = conn.execute("SELECT * FROM goalies_daily").fetchall()
+    assert len(goalie_rows) == 1
+    assert goalie_rows[0]["goalie_name"] == "I. Samsonov"
+    assert goalie_rows[0]["status"] == "Confirmed"
+
+    # Another season's rows survive a rebuild of this one: the delete is
+    # scoped by season, so backfilled seasons cannot clobber each other.
+    conn.execute(
+        "INSERT INTO tims_daily (season, game_date, player_id, group_id) VALUES ('20222023', '2023-01-01', 999, 1)"
+    )
+    conn.commit()
+    monkeypatch.setattr(local_store, "tims_map", lambda season, **kwargs: {})
+    local_store.ingest_challenge_feeds(conn, "20232024")
+
+    assert conn.execute("SELECT COUNT(*) FROM tims_daily WHERE season = '20222023'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM tims_daily WHERE season = '20232024'").fetchone()[0] == 0
     conn.close()
 
 
@@ -267,6 +326,18 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
     _insert(conn, 201, 8001, "2023-10-10", 1, team="BOS", tgf=3, name="B. Burns", opponent="TOR")
     _insert(conn, 202, 8001, "2023-10-10", 0, team="BOS", tgf=3, name="J. Doe", opponent="TOR")
     local_store.compute_derived(conn, "20232024")
+    # Feed rows seeded the way build/--feeds would leave them: one player in
+    # tims group 2, and TOR's starter Samsonov (Confirmed) on the fixture's
+    # date. BOS has no goalie entry, which only matters for the other side.
+    conn.execute(
+        "INSERT INTO tims_daily (season, game_date, player_id, group_id, scored)"
+        " VALUES ('20232024', '2023-10-10', 201, 2, 1)"
+    )
+    conn.execute(
+        "INSERT INTO goalies_daily (season, game_date, team_abbrev, goalie_name, status)"
+        " VALUES ('20232024', '2023-10-10', 'TOR', 'Ilya Samsonov', 'Confirmed')"
+    )
+    conn.commit()
     conn.close()
 
     # A NULL name row first: it must not shadow the real one for the same player.
@@ -277,15 +348,6 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
         ]
     )
     monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
-    # One player in tims group 2 on the fixture's date; the other defaults to 0.
-    monkeypatch.setattr(local_store, "tims_map", lambda season, **kwargs: {"2023-10-10": {201: 2}})
-    # TOR starts Samsonov (Confirmed) on the fixture's date; BOS has no entry,
-    # which only matters for skaters on the other side (none in this fixture).
-    monkeypatch.setattr(
-        local_store,
-        "goalies_map",
-        lambda season, **kwargs: {"2023-10-10": {"TOR": {"name": "Ilya Samsonov", "status": "Confirmed"}}},
-    )
 
     written = local_store.publish("20232024", db_path=tmp_path / "raw.sqlite")
 

@@ -60,7 +60,12 @@ def fetch_history(date_str, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE
 
 
 def tims_map(season, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DIR):
-    """``{game_date: {player_id: group_id}}`` for every game date in a season."""
+    """``{game_date: {player_id: {"group", "scored"}}}`` for a season's games.
+
+    ``group`` is the challenge's pick group (1-3) and ``scored`` the helper's
+    own grading of whether that player scored that night - kept alongside the
+    group so the local store can persist both from one walk of the payloads.
+    """
     games = season_games(season, delay_seconds=delay_seconds, cache_dir=cache_dir)
     dates = sorted({game["date"] for game in games if game.get("date")})
 
@@ -74,7 +79,10 @@ def tims_map(season, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DIR):
             for player in group.get("players") or []:
                 player_id = player.get("nhlPlayerId")
                 if player_id and group_id:
-                    groups[player_id] = group_id
+                    groups[player_id] = {
+                        "group": group_id,
+                        "scored": player.get("scored"),
+                    }
 
         result[date_str] = groups
 
