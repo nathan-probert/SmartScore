@@ -88,6 +88,51 @@ def _classify_strength(home_on, away_on):
     return "pp-home" if home_on > away_on else "pp-away"
 
 
+def _normalize_shifts(shifts):
+    """Collapse a corrupted shift feed into one record per real shift.
+
+    Some games come back from shiftcharts with every shift repeated - three
+    copies in 2021020513 - and the copies split across TWO team ids per club
+    (four ids where two teams played). The sweep expects exactly two sides per
+    period, so the corruption has to go before accumulation:
+
+    * team ids whose rosters are identical are one club under two labels.
+      Real rosters are disjoint within a game, so equality only fires on
+      this duplication, never on a genuine side split.
+    * repeated (player, period, start, end, team) records are one shift.
+
+    The cache keeps the raw payload untouched; this runs at reconstruction
+    time so a feed fix only needs a --lineups re-run, not a re-crawl.
+    """
+    rosters = {}
+    for shift in shifts:
+        team = shift.get("teamId")
+        player = shift.get("playerId")
+        if team and player:
+            rosters.setdefault(team, set()).add(player)
+
+    canonical = {}
+    distinct = []
+    for team, roster in sorted(rosters.items()):
+        twin = next((known for known in distinct if rosters[known] == roster), None)
+        canonical[team] = twin if twin is not None else team
+        if twin is None:
+            distinct.append(team)
+
+    normalized = []
+    seen = set()
+    for shift in shifts:
+        team = canonical.get(shift.get("teamId"), shift.get("teamId"))
+        record = shift if team == shift.get("teamId") else {**shift, "teamId": team}
+        key = (record.get("playerId"), record.get("period"), record.get("startTime"), record.get("endTime"), team)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(record)
+
+    return normalized
+
+
 def _accumulate(shifts):
     """Sweep one game's shifts into per-team shared-TOI and per-player TOI.
 
@@ -260,6 +305,7 @@ def reconstruct_game(shifts, positions):
     # detection) and their ~60 shared minutes would glue every line together
     # and outrank them all. Nothing in the game needs their time in net.
     shifts = [shift for shift in shifts if positions.get(shift.get("playerId")) != "G"]
+    shifts = _normalize_shifts(shifts)
 
     pair_toi, player_toi = _accumulate(shifts)
     assignments = {}

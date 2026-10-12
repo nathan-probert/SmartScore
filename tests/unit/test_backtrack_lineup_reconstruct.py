@@ -163,3 +163,24 @@ def test_size_cap_stops_the_mega_cluster_collapse():
     assert len(clusters) == 3
     assert all(len(c) <= 3 for c in clusters)
     assert any({1, 2, 3} == set(c) for c in clusters)
+
+
+def test_duplicated_team_ids_and_repeated_shifts_reconstruct_the_same_game():
+    # 2021020513 came back from shiftcharts with every shift tripled and the
+    # copies split across two team ids per club - four ids, two rosters. The
+    # sweep needs two sides, so normalization collapses the twins and repeats
+    # and the assignments match the clean feed exactly.
+    shifts, positions = _game()
+    # Each copy tags home with one of {100, 77} and away with one of {200, 88},
+    # so each id consistently carries one club's roster - the real corruption.
+    aliases = ({100: 100, 200: 200}, {100: 77, 200: 88}, {100: 77, 200: 200})
+
+    corrupted = []
+    for alias in aliases:
+        for shift in shifts:
+            corrupted.append({**shift, "teamId": alias[shift["teamId"]]})
+
+    clean = lineup_reconstruct.reconstruct_game(shifts, positions)
+    repaired = lineup_reconstruct.reconstruct_game(corrupted, positions)
+
+    assert repaired == clean
