@@ -184,3 +184,19 @@ def test_duplicated_team_ids_and_repeated_shifts_reconstruct_the_same_game():
     repaired = lineup_reconstruct.reconstruct_game(corrupted, positions)
 
     assert repaired == clean
+
+
+def test_a_one_sided_overtime_period_is_skipped_not_crashed():
+    # 63 games in 20212022 end with an overtime period carrying shifts from
+    # only the scoring side. No opponent counts means no strength state, so
+    # the period drops; regulation still reconstructs.
+    shifts, positions = _game()
+    shifts = shifts + [
+        _shift(1, 100, "00:00", "02:00", period=5),
+        _shift(2, 100, "00:00", "02:00", period=5),
+    ]
+
+    result = lineup_reconstruct.reconstruct_game(shifts, positions)
+
+    assert result[1]["lineup_unit"] == result[2]["lineup_unit"] == result[3]["lineup_unit"] == "F1"
+    assert result[4]["lineup_unit"] == result[5]["lineup_unit"] == result[6]["lineup_unit"] == "F2"

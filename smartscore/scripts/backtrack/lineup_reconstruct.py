@@ -164,7 +164,16 @@ def _accumulate(shifts):
     period_ids = {period for period, _ in by_period}
 
     for period in period_ids:
-        home_team, away_team = sorted({team for p, team in by_period if p == period})
+        sides = sorted({team for p, team in by_period if p == period})
+        # A short overtime period can carry shifts from only the scoring
+        # side's final rush - 63 games in 20212022 end this way. Strength
+        # needs both sides' counts, so a one-sided period contributes
+        # nothing, and losing a few OT seconds cannot move a line's pair
+        # weights. (A period with MORE than two sides is the corruption
+        # _normalize_shifts exists to collapse; skipping is the safe floor.)
+        if len(sides) != 2:
+            continue
+        home_team, away_team = sides
 
         def _events(team_id):
             events = []
