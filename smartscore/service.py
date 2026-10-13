@@ -1258,13 +1258,22 @@ def send_emails(users: List[str], picks: List[Dict]) -> None:
     if not picks:
         raise RuntimeError(f"No picks found for {get_date()}; refusing to send an empty picks email")
 
+    failures = []
     with ThreadPoolExecutor() as executor:
-        futures = [
-            executor.submit(send_email, user["email"], picks, user.get("display_name", ""), get_date())
+        futures = {
+            executor.submit(send_email, user["email"], picks, user.get("display_name", ""), get_date()): user["email"]
             for user in users
-        ]
+        }
         for future in as_completed(futures):
             try:
                 future.result()
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Error sending email in parallel: {e}")
+                failures.append(futures[future])
+
+    # A single bad address is worth retrying by hand, but every send failing
+    # means the relay credentials or the mail path itself is broken. Reporting
+    # success there would leave NotifyUsers green while no subscriber received
+    # anything, so fail the execution and let the day be visible.
+    if users and len(failures) == len(users):
+        raise RuntimeError(f"All {len(failures)} email sends failed ({', '.join(sorted(failures))})")
