@@ -1,4 +1,5 @@
 import datetime as real_datetime
+import smtplib
 from datetime import datetime
 from unittest.mock import patch
 
@@ -441,6 +442,51 @@ def test_send_emails_refuses_empty_picks(mock_feature_enabled, mock_get_date, mo
         send_emails(users, [])
 
     mock_send_email.assert_not_called()
+
+
+@patch("service.send_email")
+@patch("service.get_date", return_value="2026-04-16")
+@patch("service.is_feature_enabled", return_value=True)
+def test_send_emails_raises_when_every_send_fails(mock_feature_enabled, mock_get_date, mock_send_email):
+    """A total send failure must fail NotifyUsers instead of returning 200.
+
+    Brevo rejects a stale SMTP key with ``535 5.7.8 Authentication failed``,
+    and swallowing that let the state machine report a healthy run while no
+    subscriber received anything.
+    """
+    mock_send_email.side_effect = smtplib.SMTPAuthenticationError(535, b"5.7.8 Authentication failed")
+    users = [
+        {"email": "one@example.com", "display_name": "One"},
+        {"email": "two@example.com", "display_name": "Two"},
+    ]
+    picks = [{"name": "Player 1", "stat": 0.9, "tims": 1}]
+
+    with pytest.raises(RuntimeError, match="All 2 email sends failed"):
+        send_emails(users, picks)
+
+    assert mock_send_email.call_count == 2
+
+
+@patch("service.send_email")
+@patch("service.get_date", return_value="2026-04-16")
+@patch("service.is_feature_enabled", return_value=True)
+def test_send_emails_tolerates_partial_failure(mock_feature_enabled, mock_get_date, mock_send_email):
+    """One bad address is a partial success; only a clean sweep fails the run."""
+    users = [
+        {"email": "good@example.com", "display_name": "Good"},
+        {"email": "bad@example.com", "display_name": "Bad"},
+    ]
+    picks = [{"name": "Player 1", "stat": 0.9, "tims": 1}]
+
+    def _send(email, *args, **kwargs):
+        if email == "bad@example.com":
+            raise smtplib.SMTPAuthenticationError(535, b"5.7.8 Authentication failed")
+
+    mock_send_email.side_effect = _send
+
+    send_emails(users, picks)
+
+    assert mock_send_email.call_count == 2
 
 
 @patch("service.send_email")

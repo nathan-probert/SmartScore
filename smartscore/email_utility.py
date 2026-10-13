@@ -139,3 +139,4 @@ def send_email(email: str, picks: List[Dict], display_name: str = "", date: str 
 
     except (smtplib.SMTPException, ConnectionError) as e:
         logger.error(f"Failed to send email to {email}: {e}")
+        raise
