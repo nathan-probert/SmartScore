@@ -63,6 +63,62 @@ def test_compute_derived_ppg_is_strictly_before_and_debut_is_zero(tmp_path):
     assert rows["2023-10-14"]["ppg"] == 0.5
 
 
+def test_compute_historic_spans_three_seasons_and_is_strictly_before(tmp_path):
+    """hgpg/hppg = window totals / window games, current season strictly before the row."""
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    # Prior seasons, complete: 3 goals (2 PP) in 2 games of 20212022...
+    _insert(conn, 201, 7001, "2021-11-01", 1, season="20212022", pp=1)
+    _insert(conn, 201, 7002, "2022-01-15", 2, season="20212022", pp=1)
+    # ...plus 1 goal (0 PP) in 1 game of 20222023: window so far 4 goals, 2 pp, 3 games.
+    _insert(conn, 201, 7501, "2022-10-20", 1, season="20222023", pp=0)
+    # Current season: strictly-before frame adds each earlier 20232024 game only.
+    _insert(conn, 201, 8001, "2023-10-10", 2, season="20232024", pp=1)
+    _insert(conn, 201, 8002, "2023-10-12", 1, season="20232024", pp=0)
+
+    local_store.compute_derived(conn, "20232024")
+    rows = {r["game_date"]: r for r in conn.execute("SELECT * FROM derived_features")}
+
+    # Season debut: the window is the two prior seasons only (no current-season
+    # games strictly before it).
+    assert rows["2023-10-10"]["hgpg"] == pytest.approx(4 / 3)
+    assert rows["2023-10-10"]["hppg"] == pytest.approx(2 / 3)
+    # Next game: the debut joins the window (goals 4+2=6, pp 2+1=3, games 3+1=4),
+    # while its own game stays out - strictly-before, like gpg.
+    assert rows["2023-10-12"]["hgpg"] == pytest.approx(6 / 4)
+    assert rows["2023-10-12"]["hppg"] == pytest.approx(3 / 4)
+
+
+def test_compute_historic_is_null_until_the_full_window_exists(tmp_path):
+    """A partial window would divide by a missing denominator - NULL means 'unavailable'."""
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    _insert(conn, 201, 7501, "2022-10-20", 1, season="20222023")
+    _insert(conn, 201, 8001, "2023-10-10", 1, season="20232024")
+
+    local_store.compute_derived(conn, "20232024")
+    row = conn.execute("SELECT hgpg, hppg FROM derived_features").fetchone()
+
+    # 20212022 was never crawled, so a "3-year" rate here would silently be a
+    # 2-year one - stay null instead.
+    assert row["hgpg"] is None
+    assert row["hppg"] is None
+
+
+def test_compute_historic_pre_debut_window_reads_zero(tmp_path):
+    """Window exists but has no games for this player: 0/0 -> 0, the archive's convention."""
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    # Both prior seasons crawled, but only another player appears in them...
+    _insert(conn, 999, 7001, "2021-11-01", 1, season="20212022")
+    _insert(conn, 999, 7501, "2022-10-20", 1, season="20222023")
+    # ...so this player's debut has an empty window: 0 games, not "unavailable".
+    _insert(conn, 201, 8001, "2023-10-10", 2, season="20232024")
+
+    local_store.compute_derived(conn, "20232024")
+    row = conn.execute("SELECT hgpg, hppg FROM derived_features").fetchone()
+
+    assert row["hgpg"] == 0
+    assert row["hppg"] == 0
+
+
 def test_build_merges_playoff_game_logs(tmp_path, monkeypatch):
     boxscore = {
         "player_id": 301,
@@ -363,6 +419,9 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
     # ppg rides every payload row - a column the target table must declare first
     # (20261009_add_ppg_player_snapshots_backtrack.sql), or the batch would fail.
     assert all("ppg" in r for r in client.upserted)
+    # hgpg/hppg likewise (20261008 declares them). The fixture has no prior
+    # seasons, so the values are NULL - the payload must still carry the keys.
+    assert all("hgpg" in r and "hppg" in r for r in client.upserted)
     # tims from the history map; lineup columns present (NULL without shifts).
     tims = {r["player_id"]: r["tims"] for r in client.upserted}
     assert tims == {201: 2, 202: 0}

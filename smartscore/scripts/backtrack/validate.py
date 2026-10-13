@@ -14,8 +14,10 @@ per club. ``team_name`` is never used as a key - it is only ever read for displa
 
 Two shapes are compared:
 
-* per-player features - gpg, five_gpg - joined on (date, player_id), both keys
-  natural and unique.
+* per-player features - gpg, five_gpg, hgpg, hppg - joined on (date, player_id),
+  both keys natural and unique. hgpg/hppg compare only where the local window
+  exists (both prior seasons crawled), so 2021-22/2022-23 rows count as "ours
+  null" there rather than as disagreement.
 * team features - tgpg, otga - joined on (date, player_id) too, then resolved to
   a team through our own player_games: the archive denormalises each team's
   values onto every one of its player rows, and a player plays for exactly one
@@ -78,7 +80,7 @@ def fetch_archive(start_date, end_date):
 
     while True:
         response = (
-            client.select("date,player_id,gpg,five_gpg,tgpg,otga,team_name")
+            client.select("date,player_id,gpg,five_gpg,hgpg,hppg,tgpg,otga,team_name")
             .gte("date", start_date)
             .lte("date", end_date)
             .order("date")
@@ -124,7 +126,10 @@ def load_derived(db_path=DB_PATH, season=None):
     # S608: `where` is a fixed literal above; the value it binds is `season`.
     players = {
         (r["game_date"], r["player_id"]): r
-        for r in conn.execute(f"SELECT game_date, player_id, gpg, five_gpg FROM derived_features {where}", params)  # noqa: S608
+        for r in conn.execute(
+            f"SELECT game_date, player_id, gpg, five_gpg, hgpg, hppg FROM derived_features {where}",  # noqa: S608
+            params,
+        )
     }
 
     teams = {
@@ -191,7 +196,7 @@ def main():
 
         stats["_row"]["n"] += 1
 
-        for field in ("gpg", "five_gpg"):
+        for field in ("gpg", "five_gpg", "hgpg", "hppg"):
             stored = arch.get(field)
             ours = mine[field]
 
@@ -211,7 +216,7 @@ def main():
                 examples[field].append((date, player_id, stored, round(ours, 6)))
 
     print()
-    for field in ("gpg", "five_gpg"):
+    for field in ("gpg", "five_gpg", "hgpg", "hppg"):
         b = stats[field]
         if b["n"]:
             pct = 100 * b["match"] / b["n"]

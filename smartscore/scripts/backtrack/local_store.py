@@ -218,11 +218,18 @@ CREATE INDEX IF NOT EXISTS derived_team_stats_date_idx
 -- make the column reproduce a bug rather than the intent.
 --
 -- ppg - power play goals per game: power play goals to date / games to date,
---   strictly-before like gpg, 0 on the pre-debut row. This is NOT the archive's
---   hppg, which is a 3-year window per smartscore_info_client's get_hppg(years=3)
---   fed from seasonTotals in the landing payload - a different quantity that
---   stays null here until a historic pass can build it. ppg is the single-season
---   rate, and the per-season building block that pass will accumulate.
+--   strictly-before like gpg, 0 on the pre-debut row. The single-season rate.
+--
+-- hgpg / hppg - the archive's 3-year windows per smartscore_info_client's
+--   get_hgpg(years=3) / get_hppg(years=3): goals (power play goals) over the
+--   season and the two before it, divided by games over the same window, filled
+--   by compute_historic. The current season's share is strictly-before the
+--   row's own game - the frame gpg was validated against the archive at 99.93% -
+--   while the two prior seasons contribute their complete totals. Both prior
+--   seasons must exist in this store: a partial window would divide by a
+--   silently small denominator and read as a real rate, so 20212022 and
+--   20222023 stay null until 20192020 and 20202021 are crawled (NULL means
+--   "window unavailable", not "no games" - 0 is the no-games value).
 CREATE TABLE IF NOT EXISTS derived_features (
     season    TEXT NOT NULL,
     player_id INTEGER NOT NULL,
@@ -230,6 +237,8 @@ CREATE TABLE IF NOT EXISTS derived_features (
     gpg       REAL,
     five_gpg  REAL,
     ppg       REAL,
+    hgpg      REAL,
+    hppg      REAL,
     PRIMARY KEY (season, player_id, game_date)
 );
 
@@ -309,6 +318,8 @@ def connect(db_path=DB_PATH):
     additive_columns = (
         ("derived_features", "five_gpg", "REAL"),
         ("derived_features", "ppg", "REAL"),
+        ("derived_features", "hgpg", "REAL"),
+        ("derived_features", "hppg", "REAL"),
         ("player_games", "team_goals_for", "INTEGER"),
     )
 
@@ -666,9 +677,9 @@ def compute_derived(conn, season):
                 ELSE 1.0 * goals_last5 / games_before
             END,
             -- Power play goals per game over the same strictly-before frame,
-            -- 0 on the pre-debut row like gpg. Single-season by construction:
-            -- the archive's hppg is a 3-year window and stays null until a
-            -- historic pass exists.
+            -- 0 on the pre-debut row like gpg. Single-season by construction -
+            -- the archive's 3-year hppg is compute_historic's column, written
+            -- right after this INSERT.
             CASE
                 WHEN prev_gp = 0 THEN 0
                 ELSE 1.0 * prev_pp / prev_gp
@@ -711,6 +722,116 @@ def compute_derived(conn, season):
         (season,),
     )
     conn.commit()
+
+    # hgpg/hppg read raw rows from the two prior seasons as well, so they cannot
+    # ride the single-season INSERT above - see compute_historic.
+    compute_historic(conn, season)
+
+
+def _previous_season(season):
+    """One season back by id arithmetic: '20232024' -> '20222023'.
+
+    Mirrors get_previous_season in smartscore_info_client, which walks the
+    seasonTotals entries the same way (start year - 1, end year - 1).
+    """
+    start = int(season[:4])
+    end = int(season[4:8])
+    return f"{start - 1:04d}{end - 1:04d}"
+
+
+def compute_historic(conn, season):
+    """Fill derived_features.hgpg/hppg for one season: the archive's 3-year windows.
+
+    get_hgpg(years=3) in smartscore_info_client sums goals (get_hppg: power play
+    goals) and gamesPlayed over the seasonTotals entries for the season and the
+    two before it, then divides ONCE - a ratio of window totals, not an average
+    of per-season rates. The same shape here:
+
+    * the two prior seasons contribute their complete totals (SUM/COUNT over
+      player_games for those season ids, any date);
+    * the current season contributes games strictly BEFORE this row's own game -
+      the frame gpg was validated against the archive at 99.93%, and landing
+      scraped on a given morning held that season's totals only through the
+      previous day's games anyway.
+
+    Both prior seasons must exist in the store before a window is computed. A
+    partial window (say 20222023 missing 20202021) would divide by a smaller
+    denominator than the archive did and read as a real - wrong - rate, so when
+    a prior season is absent the columns stay NULL: "window unavailable".
+    0 is reserved for the archive's no-games convention (get_hgpg returns 0.0
+    when games == 0), which is what a rookie's debut row gets.
+
+    Order matters only in that this runs after compute_derived has INSERTed the
+    rows; it reads raw player_games, not derived_features, so the prior seasons
+    need only their raw rows - their own derived pass is irrelevant.
+    """
+    window = [_previous_season(season), _previous_season(_previous_season(season))]
+    crawled = {r[0] for r in conn.execute("SELECT DISTINCT season FROM player_games")}
+
+    if not set(window) <= crawled:
+        # NULL already (compute_derived's INSERT omits the columns), but be
+        # explicit so a re-run after a schema change cannot leave stale values.
+        conn.execute("UPDATE derived_features SET hgpg = NULL, hppg = NULL WHERE season = ?", (season,))
+        conn.commit()
+        print(f"{season}: hgpg/hppg left null - prior season(s) not in store: {sorted(set(window) - crawled)}")
+        return 0
+
+    prior = {
+        r["player_id"]: (r["goals"], r["gp"], r["pp"])
+        for r in conn.execute(
+            """
+            SELECT player_id,
+                   SUM(COALESCE(goals, 0))              AS goals,
+                   COUNT(*)                             AS gp,
+                   SUM(COALESCE(power_play_goals, 0))   AS pp
+            FROM player_games
+            WHERE season IN (?, ?)
+            GROUP BY player_id
+            """,
+            (window[0], window[1]),
+        )
+    }
+
+    # Same strictly-before frame as compute_derived's w2: every row of this
+    # player's season before this one. One UPDATE per (player, date) row of
+    # derived_features, which is exactly the grain player_games has.
+    updates = []
+    for r in conn.execute(
+        """
+        SELECT player_id, game_date,
+               SUM(COALESCE(goals, 0))            OVER w AS goals_before,
+               COUNT(*)                           OVER w AS gp_before,
+               SUM(COALESCE(power_play_goals, 0)) OVER w AS pp_before
+        FROM player_games
+        WHERE season = ?
+        WINDOW w AS (PARTITION BY player_id ORDER BY game_date, game_id
+                     ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+        """,
+        (season,),
+    ):
+        prior_goals, prior_gp, prior_pp = prior.get(r["player_id"], (0, 0, 0))
+        # SUM over an empty frame (a player's first game of the season) is NULL,
+        # COUNT is 0 - coalesce so the debut adds the prior seasons, not NULL.
+        gp = (r["gp_before"] or 0) + prior_gp
+        goals = (r["goals_before"] or 0) + prior_goals
+        pp = (r["pp_before"] or 0) + prior_pp
+        updates.append(
+            (
+                1.0 * goals / gp if gp else 0.0,
+                1.0 * pp / gp if gp else 0.0,
+                season,
+                r["player_id"],
+                r["game_date"],
+            )
+        )
+
+    conn.executemany(
+        "UPDATE derived_features SET hgpg = ?, hppg = ? WHERE season = ? AND player_id = ? AND game_date = ?",
+        updates,
+    )
+    conn.commit()
+    print(f"{season}: hgpg/hppg computed for {len(updates)} row(s) over window {window + [season]}")
+    return len(updates)
 
 
 def compute_derived_team(conn, season):
@@ -877,10 +998,14 @@ def stats(db_path=DB_PATH):
         )
 
     for row in conn.execute(
-        "SELECT season, COUNT(*) AS n, SUM(ppg IS NULL) AS null_ppg"
+        "SELECT season, COUNT(*) AS n, SUM(ppg IS NULL) AS null_ppg,"
+        " SUM(hgpg IS NULL) AS null_hgpg"
         " FROM derived_features GROUP BY season ORDER BY season"
     ):
-        print(f"derived {row['season']}: {row['n']} feature row(s), null ppg={row['null_ppg']}")
+        print(
+            f"derived {row['season']}: {row['n']} feature row(s), "
+            f"null ppg={row['null_ppg']} null hgpg={row['null_hgpg']}"
+        )
 
     for row in conn.execute(
         """
@@ -968,7 +1093,7 @@ def publish(season, db_path=DB_PATH):
 
     rows = conn.execute(
         """
-        SELECT d.player_id, d.game_date, d.gpg, d.five_gpg, d.ppg, pg.goals,
+        SELECT d.player_id, d.game_date, d.gpg, d.five_gpg, d.ppg, d.hgpg, d.hppg, pg.goals,
                l.lineup_unit, l.lineup_position_group, l.pp_unit, l.lineup_status
         FROM player_games pg
         -- Goalies are excluded, matching reconstruct.py. They have no
@@ -1059,10 +1184,16 @@ def publish(season, db_path=DB_PATH):
                 "home": bool(homes.get(key)) if homes.get(key) is not None else None,
                 "gpg": r["gpg"],
                 "five_gpg": r["five_gpg"],
-                # Single-season rate; the archive's hppg column is a 3-year
-                # window and stays NULL - ppg is an additional column (see
-                # 20261009_add_ppg_player_snapshots_backtrack.sql).
+                # Single-season rate, an additional column (see
+                # 20261009_add_ppg_player_snapshots_backtrack.sql). hgpg/hppg
+                # below are the archive's own 3-year windows.
                 "ppg": r["ppg"],
+                # 3-year windows per get_hgpg/get_hppg(years=3) - compute_historic.
+                # NULL on 20212022/20222023 rows until 20192020/20202021 exist in
+                # the store; sending NULL is correct there (it is the value, and
+                # the columns are already NULL in the table).
+                "hgpg": r["hgpg"],
+                "hppg": r["hppg"],
                 # 0 for a skater the challenge never listed that day, matching
                 # the archive's convention (test fixtures carry tims: 0).
                 "tims": tims_by_date.get(r["game_date"], {}).get(r["player_id"], 0),
