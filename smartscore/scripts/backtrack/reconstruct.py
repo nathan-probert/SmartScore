@@ -51,10 +51,11 @@ goals and points, OT goals, GWG, TOI, shifts, and the home/road flag. All of tho
 are accumulated here.
 
 It does **not** carry ``opp_goalie_*``, ``lineup_*``, ``pp_unit``, or
-``injury_status``. Those come from the lineup and injury endpoints and are out of
-scope; the live archive remains their source. The corresponding columns exist in
-the backtrack table but are never written here, so they stay null: null means
-"not reconstructed", never "not applicable".
+``injury_status``, so none of them are written here. ``local_store.publish``
+fills the first three groups on its own pass over the same table - shift charts
+for the lineup block, cached game logs and the goalie feeds for ``opp_goalie_*``
+- so those columns ship filled; ``injury_*`` has no reconstructed source and
+stays null. Null there means "not reconstructed", never "not applicable".
 
 Usage::
 
