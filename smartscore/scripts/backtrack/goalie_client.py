@@ -7,12 +7,12 @@ parameter serves history - verified back to 2023-10-10 and into the 2024
 playoffs - and offseason dates answer 200 with an empty list rather than a
 404, so nothing needs special-casing for July.
 
-Only the identity and status columns are backfillable from this source. The
-``opp_goalie_gaa/save_pct/record/...`` stat columns come in the live product
-from same-day ``club-stats`` scrapes, which are current-season-only; filling
-them for 2023/24 would mean season-end totals standing in for an October
-game's as-of-date view. They stay NULL, matching what the archive itself
-carries for early-season rows.
+This source provides identity and status only. The ``opp_goalie_gaa/save_pct/
+record/shutouts/games_played`` stat columns are reconstructed separately in
+``local_store.compute_goalie_features`` from the NHL game logs already cached
+by --build - strictly-before each date, the same as-of-morning view a live
+``club-stats`` scrape captured, and team-scoped like club-stats itself.
+``opp_goalie_nhl_id`` is the matched goalie's player_id from those rows.
 """
 
 import json

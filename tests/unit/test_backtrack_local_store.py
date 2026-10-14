@@ -429,8 +429,8 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
     # Training label from the fixture's goals column: 201 scored, 202 did not.
     assert {r["player_id"]: r["scored"] for r in client.upserted} == {201: 1, 202: 0}
     # Opponent starter denormalized per the live schema: identity, upper-cased
-    # status, separate confirmed boolean. Stat columns are never sent - they
-    # stay NULL rather than shipping season-end totals as an October view.
+    # status, separate confirmed boolean. Stat keys are present on every payload
+    # row; this fixture has no goalie appearance rows, so the values are NULL.
     assert all(
         r["opp_goalie_name"] == "Ilya Samsonov"
         and r["opp_goalie_team"] == "TOR"
@@ -438,7 +438,15 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
         and r["opp_goalie_confirmed"] is True
         for r in client.upserted
     )
-    assert all("opp_goalie_gaa" not in r for r in client.upserted)
+    assert all(
+        r["opp_goalie_gaa"] is None
+        and r["opp_goalie_save_pct"] is None
+        and r["opp_goalie_record"] is None
+        and r["opp_goalie_shutouts"] is None
+        and r["opp_goalie_games_played"] is None
+        and r["opp_goalie_nhl_id"] is None
+        for r in client.upserted
+    )
 
 
 def _shift(player_id, team_id, start, end, period=1):
@@ -522,3 +530,264 @@ def test_compute_lineups_reconstructs_lines_and_pp_units(tmp_path, monkeypatch):
     # Every matched skater is ACTUAL, position-grouped by role.
     assert rows[1]["lineup_status"] == "ACTUAL" and rows[1]["lineup_position_group"] == "F"
     assert rows[7]["lineup_position_group"] == "D"
+
+
+def _insert_goalie(  # noqa: PLR0913, PLR0917 - helper mirrors the table's shape; every extra has a default
+    conn,
+    player_id,
+    game_id,
+    date,
+    ga,
+    sa,
+    toi,
+    decision,
+    team,
+    shutouts=0,
+    season="20232024",
+    name=None,
+    saves=None,
+):
+    """One goalie appearance row: game-log-only columns, like a merged build.
+
+    ``saves`` defaults to ``sa - ga`` (the usual case); pass an explicit value
+    to exercise club-stats' saves-based quirk where official saves exceed it.
+    """
+    if saves is None:
+        saves = sa - ga
+    conn.execute(
+        "INSERT INTO player_games (player_id, game_id, season, game_date, position,"
+        " team_abbrev, name, toi, goals_against, shots_against, saves, shutouts, decision, games_started)"
+        " VALUES (?, ?, ?, ?, 'G', ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+        (player_id, game_id, season, date, team, name, toi, ga, sa, saves, shutouts, decision),
+    )
+
+
+def test_merge_gamelog_maps_goalie_fields():
+    row = local_store._merge_gamelog(  # noqa: SLF001 - unit-testing the mapping itself
+        {
+            "gameId": 2023020001,
+            "gameDate": "2023-10-10",
+            "teamAbbrev": "TBL",
+            "opponentAbbrev": "DET",
+            "homeRoadFlag": "H",
+            "goals": 0,
+            "assists": 0,
+            "toi": "59:12",
+            "gamesStarted": 1,
+            "decision": "W",
+            "shotsAgainst": 28,
+            "goalsAgainst": 1,
+            "savePctg": 0.964286,
+            "shutouts": 0,
+        },
+        "20232024",
+    )
+
+    assert row["goals_against"] == 1
+    assert row["shots_against"] == 28
+    # Official saves = round(savePctg * shots) = round(0.964286 * 28) = 27;
+    # equals sa - ga here, but the derivation is what club-stats sums.
+    assert row["saves"] == 27
+    assert row["shutouts"] == 0
+    assert row["decision"] == "W"
+    assert row["games_started"] == 1
+
+
+def test_merge_gamelog_saves_round_trips_official_saves():
+    """savePctg * shots reproduces official saves even when they exceed sa - ga."""
+    row = local_store._merge_gamelog(  # noqa: SLF001 - unit-testing the mapping itself
+        {
+            "gameId": 2023020001,
+            "gameDate": "2023-10-10",
+            "teamAbbrev": "ANA",
+            "shotsAgainst": 44,
+            "goalsAgainst": 5,
+            "savePctg": 0.909091,  # 40/44 - official saves 40, sa - ga = 39
+        },
+        "20232024",
+    )
+    assert row["saves"] == 40
+
+    # No shots / no pct: NULL, and a skater entry has neither.
+    empty = local_store._merge_gamelog({"gameId": 2023020002, "goals": 1}, "20232024")  # noqa: SLF001
+    assert empty["saves"] is None
+
+
+def test_compute_goalie_features_is_strictly_before(tmp_path):
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    # Two full games then a third: strictly-before frames of 0, then 1, then 2.
+    # 60:00 each, 2 GA / 30 SA, then 3 GA / 24 SA, then 1 GA / 20 SA.
+    _insert_goalie(conn, 9001, 90001, "2023-10-10", 2, 30, "60:00", "W", "TBL")
+    _insert_goalie(conn, 9001, 90002, "2023-10-12", 3, 24, "60:00", "L", "TBL")
+    _insert_goalie(conn, 9001, 90003, "2023-10-14", 1, 20, "60:00", "O", "TBL", shutouts=1)
+
+    local_store.compute_goalie_features(conn, "20232024")
+    rows = {r["game_date"]: r for r in conn.execute("SELECT * FROM goalie_features")}
+    conn.close()
+
+    # Club debut: NULL, not 0 - club-stats does not list him yet.
+    assert rows["2023-10-10"]["gaa"] is None
+    assert rows["2023-10-10"]["save_pct"] is None
+    assert rows["2023-10-10"]["record"] is None
+    assert rows["2023-10-10"]["shutouts"] is None
+    assert rows["2023-10-10"]["games_played"] is None
+
+    # After one game: per-60 GAA = 3600 * 2 / 3600 = 2.0; SV = 28/30.
+    assert rows["2023-10-12"]["gaa"] == pytest.approx(2.0)
+    assert rows["2023-10-12"]["save_pct"] == pytest.approx(28 / 30)
+    assert rows["2023-10-12"]["record"] == "1-0-0"
+    assert rows["2023-10-12"]["shutouts"] == 0
+    assert rows["2023-10-12"]["games_played"] == 1
+
+    # After two: 5 GA over 120 min = 2.5; saves (54-5)/54; W-L-O 1-1-0.
+    assert rows["2023-10-14"]["gaa"] == pytest.approx(2.5)
+    assert rows["2023-10-14"]["save_pct"] == pytest.approx(49 / 54)
+    assert rows["2023-10-14"]["record"] == "1-1-0"
+    assert rows["2023-10-14"]["shutouts"] == 0
+    assert rows["2023-10-14"]["games_played"] == 2
+
+
+def test_compute_goalie_features_uses_official_saves(tmp_path):
+    """save_pct is saves/shots, not (sa-ga)/sa: club-stats sums its saves field.
+
+    Official saves can exceed sa - ga (Stolarz 2022-23: 444 vs 443), and
+    savePercentage is saves/shots - the sa - ga shortcut reads low and fails
+    the club-stats validation.
+    """
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    _insert_goalie(conn, 9001, 90001, "2023-10-10", 2, 30, "60:00", "W", "TBL", saves=29)
+    _insert_goalie(conn, 9001, 90002, "2023-10-12", 3, 24, "60:00", "L", "TBL")
+    _insert_goalie(conn, 9001, 90003, "2023-10-14", 1, 20, "60:00", "W", "TBL")
+
+    local_store.compute_goalie_features(conn, "20232024")
+    rows = {r["game_date"]: r for r in conn.execute("SELECT * FROM goalie_features")}
+    conn.close()
+
+    # Window of one: saves 29 over 30 shots - NOT 28/30.
+    assert rows["2023-10-12"]["save_pct"] == pytest.approx(29 / 30)
+    # Window of two: saves 29 + 21 over 54 - NOT 49/54.
+    assert rows["2023-10-14"]["save_pct"] == pytest.approx(50 / 54)
+
+
+def test_compute_goalie_features_refuses_unmerged_saves(tmp_path):
+    """A row with shots but no merged saves would silently read sv% 0."""
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    conn.execute(
+        "INSERT INTO player_games (player_id, game_id, season, game_date, position,"
+        " team_abbrev, toi, goals_against, shots_against) VALUES"
+        " (9001, 90001, '20232024', '2023-10-10', 'G', 'TBL', '60:00', 2, 30)"
+    )
+    conn.commit()
+
+    with pytest.raises(RuntimeError, match="no saves"):
+        local_store.compute_goalie_features(conn, "20232024")
+    conn.close()
+
+
+def test_compute_goalie_features_zero_shots_reads_zero_not_null(tmp_path):
+    """Post-debut 0-shot window: club-stats says savePercentage 0.0, sa 0.
+
+    Seen in 2022-2023 TOR: a 1:10 stint with no shots against. NULL stays
+    exclusive to a club debut, where the goalie is not listed at all.
+    """
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    _insert_goalie(conn, 9001, 90001, "2023-10-10", 0, 0, "01:10", None, "TOR")
+    _insert_goalie(conn, 9001, 90002, "2023-10-12", 2, 30, "60:00", "L", "TOR")
+
+    local_store.compute_goalie_features(conn, "20232024")
+    rows = {r["game_date"]: r for r in conn.execute("SELECT * FROM goalie_features")}
+    conn.close()
+
+    # Debut: still NULL - not listed yet.
+    assert rows["2023-10-10"]["save_pct"] is None
+    # After the 0-shot game: listed, 0 saves over 0 shots -> 0.0, not NULL.
+    assert rows["2023-10-12"]["save_pct"] == 0.0
+    # And the 0-goal/70-second stint reads a perfect 0.0 GAA, as theirs does.
+    assert rows["2023-10-12"]["gaa"] == 0.0
+
+
+def test_compute_goalie_features_resets_on_a_trade(tmp_path):
+    """A mid-season trade restarts the window: club-stats is team-scoped."""
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    _insert_goalie(conn, 9001, 90001, "2023-10-10", 4, 20, "60:00", "L", "SJS")
+    _insert_goalie(conn, 9001, 90002, "2023-10-12", 1, 30, "60:00", "W", "SJS")
+    # Traded to COL: the COL window starts empty even though SJS games exist.
+    _insert_goalie(conn, 9001, 90003, "2023-11-01", 2, 28, "60:00", "W", "COL")
+    _insert_goalie(conn, 9001, 90004, "2023-11-03", 0, 25, "60:00", "W", "COL", shutouts=1)
+
+    local_store.compute_goalie_features(conn, "20232024")
+    rows = {(r["team_abbrev"], r["game_date"]): r for r in conn.execute("SELECT * FROM goalie_features")}
+    conn.close()
+
+    # COL debut is a club debut: NULL even though he played for SJS already.
+    assert rows[("COL", "2023-11-01")]["gaa"] is None
+    assert rows[("COL", "2023-11-01")]["games_played"] is None
+    # Second COL game sees only the first COL game: 2 GA / 60 min, not 6/180.
+    assert rows[("COL", "2023-11-03")]["gaa"] == pytest.approx(2.0)
+    assert rows[("COL", "2023-11-03")]["record"] == "1-0-0"
+    assert rows[("COL", "2023-11-03")]["shutouts"] == 0
+    # SJS side accumulated independently.
+    assert rows[("SJS", "2023-10-12")]["gaa"] == pytest.approx(3600.0 * 4 / 3600)
+    assert rows[("SJS", "2023-10-12")]["record"] == "0-1-0"
+
+
+def test_compute_goalie_features_skips_dressed_backups(tmp_path):
+    """A box-score-only row (toi 00:00, no game-log stats) is not an appearance."""
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    _insert_goalie(conn, 9001, 90001, "2023-10-10", 2, 30, "60:00", "L", "TBL", name="J. Doe")
+    # Backup dressed, never played: goals_against stays NULL.
+    conn.execute(
+        "INSERT INTO player_games (player_id, game_id, season, game_date, position,"
+        " team_abbrev, name, toi) VALUES (9002, 90001, '20232024', '2023-10-10', 'G', 'TBL', 'R. Backup', '00:00')"
+    )
+
+    local_store.compute_goalie_features(conn, "20232024")
+    rows = list(conn.execute("SELECT * FROM goalie_features"))
+    conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["player_id"] == 9001
+
+
+def test_match_goalie_resolves_full_name_to_box_initial():
+    candidates = [(100, "J. Johansson"), (101, "A. Vasilevskiy")]
+    assert local_store._match_goalie("Jonas Johansson", candidates) == 100  # noqa: SLF001
+    assert local_store._match_goalie("Andrei Vasilevskiy", candidates) == 101  # noqa: SLF001
+    # No last-name match, no first-initial match, empty name: refuse.
+    assert local_store._match_goalie("Someone Else", candidates) is None  # noqa: SLF001
+    assert local_store._match_goalie("Jonas Vasilevskiy", candidates) is None  # noqa: SLF001
+    assert local_store._match_goalie("", candidates) is None  # noqa: SLF001
+    # Ambiguity: two candidates, refuse rather than guess.
+    assert local_store._match_goalie("Jonas Johansson", [(100, "J. Johansson"), (102, "J. Johansson")]) is None  # noqa: SLF001
+
+
+def test_publish_attaches_goalie_stats_via_name_match(tmp_path, monkeypatch):
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    # Skater facing TOR on 2023-10-12.
+    _insert(conn, 201, 8002, "2023-10-12", 1, team="BOS", tgf=3, name="B. Burns", opponent="TOR")
+    # TOR's goalie Samsonov: two prior appearances, then the game being picked.
+    _insert_goalie(conn, 9001, 90010, "2023-10-08", 2, 25, "60:00", "W", "TOR", name="I. Samsonov")
+    _insert_goalie(conn, 9001, 90011, "2023-10-10", 1, 30, "60:00", "L", "TOR", name="I. Samsonov")
+    _insert_goalie(conn, 9001, 90012, "2023-10-12", 3, 20, "60:00", "L", "TOR", name="I. Samsonov")
+    local_store.compute_derived(conn, "20232024")
+    conn.execute(
+        "INSERT INTO goalies_daily (season, game_date, team_abbrev, goalie_name, status)"
+        " VALUES ('20232024', '2023-10-12', 'TOR', 'Ilya Samsonov', 'Confirmed')"
+    )
+    conn.commit()
+    conn.close()
+
+    client = _FakeArchiveClient([])
+    monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
+    local_store.publish("20232024", db_path=tmp_path / "raw.sqlite")
+
+    (row,) = client.upserted
+    # As of 2023-10-12, entering that game: two prior, 3 GA / 120 min = 1.5 GAA.
+    assert row["opp_goalie_nhl_id"] == 9001
+    assert row["opp_goalie_gaa"] == pytest.approx(1.5)
+    assert row["opp_goalie_save_pct"] == pytest.approx(52 / 55)
+    assert row["opp_goalie_record"] == "1-1-0"
+    assert row["opp_goalie_shutouts"] == 0
+    assert row["opp_goalie_games_played"] == 2
+    assert row["opp_goalie_name"] == "Ilya Samsonov"
+    assert row["opp_goalie_status"] == "CONFIRMED"

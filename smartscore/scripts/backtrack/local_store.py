@@ -32,6 +32,9 @@ shots (sog)      from                                     shots
                  -                                        game-winning goals
                  -                                        power-play points
 home/road        from                                     home/road flag
+                 -                                        goalie: goals against,
+                                                          shots against, shutouts,
+                                                          decision, games started
 ===============  =========================================  ====================
 
 Neither is a superset, so both are read and merged into one wide row keyed on
@@ -84,7 +87,8 @@ BOXSCORE_FIELDS = (
 GAMELOG_FIELDS = (
     "gameId,gameDate,teamAbbrev,opponentAbbrev,homeRoadFlag,goals,assists,points,"
     "shots,pim,toi,plusMinus,shifts,powerPlayGoals,powerPlayPoints,shorthandedGoals,"
-    "shorthandedPoints,otGoals,gameWinningGoals"
+    "shorthandedPoints,otGoals,gameWinningGoals,"
+    "goalsAgainst,shotsAgainst,savePctg,shutouts,decision,gamesStarted"
 )
 
 # One row per player-game. Every column is nullable because the two endpoints
@@ -121,8 +125,29 @@ CREATE TABLE IF NOT EXISTS player_games (
     power_play_points    INTEGER,
     shorthanded_goals    INTEGER,
     shorthanded_points   INTEGER,
-    ot_goals             INTEGER,
-    game_winning_goals   INTEGER,
+    ot_goals            INTEGER,
+    game_winning_goals  INTEGER,
+
+    -- Goalie-only appearance stats, from the game log's goalie block. NULL on
+    -- skater rows (a skater's log entry carries none of these keys) and on
+    -- dressed-but-unused backup rows (the box score lists them, the game log
+    -- does not - about half of all position='G' rows). goals_against IS NOT
+    -- NULL is therefore the appearance marker compute_goalie_features filters
+    -- on; toi alone is not enough, because a backup's box-score toi is 00:00.
+    goals_against  INTEGER,
+    shots_against  INTEGER,
+    -- Official saves, derived at merge time as round(savePctg * shots_against).
+    -- NOT shots_against - goals_against: club-stats is internally saves-based
+    -- and its season totals exceed sa - ga by a save or two (Stolarz 2022-23:
+    -- saves 444, sa - ga 443), and save_pct must reproduce the saves-based
+    -- percentage live's club-stats scrape carried. Per-game savePctg * shots
+    -- reproduces those season totals exactly (verified vs club-stats).
+    saves          INTEGER,
+    shutouts       INTEGER,
+    -- W / L / O only; O covers both overtime and shootout losses, the same
+    -- lump the NHL's W-L-OTL record uses. No decision on a skater row.
+    decision       TEXT,
+    games_started  INTEGER,
 
     boxscore_fields TEXT,
     gamelog_fields  TEXT,
@@ -300,6 +325,63 @@ CREATE TABLE IF NOT EXISTS goalies_daily (
 
 CREATE INDEX IF NOT EXISTS goalies_daily_season_date_idx
     ON goalies_daily (season, game_date);
+
+-- Opponent-goalie season-to-date stats, one row per goalie appearance.
+--
+-- The archive's opp_goalie_gaa/save_pct/record/shutouts/games_played came from
+-- same-day club-stats scrapes in live (service.get_goalie_stats_for_team),
+-- which has no date parameter and only answers for the in-progress season.
+-- These columns reconstruct the same numbers for history by walking each
+-- goalie's game log forward - strictly-before the row's own game, the same
+-- frame gpg uses, and the same as-of-morning view a live scrape would have
+-- captured. See compute_goalie_features for the formulas.
+--
+-- TEAM-SCOPED, LIKE CLUB-STATS ITSELF
+-- -----------------------------------
+-- club-stats is fetched per team (/v1/club-stats/{team}/{season}/{type}), and a
+-- traded goalie's totals are scoped to the club being asked about: Blackwood
+-- 2024-25 reads 19 GP / 3.004 GAA on SJS and 37 GP / 2.328 on COL, not a
+-- combined 56. Live therefore stored team-split numbers for a traded goalie,
+-- so this window partitions on (player_id, team_abbrev) - a mid-season trade
+-- resets the accumulation for the new club, matching what club-stats/COL would
+-- have answered while he was starting there.
+--
+-- NULL, NOT 0, ON A CLUB DEBUT
+-- -----------------------------
+-- A goalie's first game with a club has no games before it. club-stats does
+-- not list him until he appears, so live left every stat key None; a zero GAA
+-- would claim a perfect rate that was never observed. This is the opposite of
+-- gpg's debut-0 convention, and deliberately so - the archive stores 0 there
+-- and NULL here.
+--
+-- Grain: (season, player_id, game_date). One row per appearance; the window
+-- reads raw player_games, so a rebuild is --derive after --build, no crawl.
+CREATE TABLE IF NOT EXISTS goalie_features (
+    season       TEXT NOT NULL,
+    player_id    INTEGER NOT NULL,
+    team_abbrev  TEXT NOT NULL,
+    game_date    TEXT NOT NULL,
+    -- Goals-against average, official formula: 60 * GA / minutes played.
+    -- NOT GA / games - a pulled goalie's partial night counts less than a
+    -- full one. Verified: accumulating Vasilevskiy 2023-24 gives 2.89924,
+    -- club-stats returns goalsAgainstAverage 2.899242.
+    gaa          REAL,
+    -- Saves / shots against over the window, a fraction (0.905, not 90.5),
+    -- ratio of window totals rather than a mean of per-game percentages.
+    -- saves is the official per-game count summed (see player_games.saves),
+    -- not shots - goals: club-stats' savePercentage is saves/shots and its
+    -- saves exceed sa - ga by a save or two on some goalies.
+    save_pct     REAL,
+    -- "W-L-OTL" text, the archive's own format; O covers both overtime and
+    -- shootout losses, the same lump the NHL record uses.
+    record       TEXT,
+    shutouts     INTEGER,
+    games_played INTEGER,
+    PRIMARY KEY (season, player_id, game_date)
+);
+
+CREATE INDEX IF NOT EXISTS goalie_features_team_date_idx
+    ON goalie_features (season, team_abbrev, game_date);
 """
 
 
@@ -321,6 +403,12 @@ def connect(db_path=DB_PATH):
         ("derived_features", "hgpg", "REAL"),
         ("derived_features", "hppg", "REAL"),
         ("player_games", "team_goals_for", "INTEGER"),
+        ("player_games", "goals_against", "INTEGER"),
+        ("player_games", "shots_against", "INTEGER"),
+        ("player_games", "saves", "INTEGER"),
+        ("player_games", "shutouts", "INTEGER"),
+        ("player_games", "decision", "TEXT"),
+        ("player_games", "games_started", "INTEGER"),
     )
 
     for table, column, definition in additive_columns:
@@ -363,6 +451,14 @@ def _merge_boxscore(record):
         "shorthanded_points": None,
         "ot_goals": None,
         "game_winning_goals": None,
+        # Goalie block: game-log only; NULL here so a box-score-first insert
+        # does not shadow the merge that fills them.
+        "goals_against": None,
+        "shots_against": None,
+        "saves": None,
+        "shutouts": None,
+        "decision": None,
+        "games_started": None,
         "boxscore_fields": BOXSCORE_FIELDS,
         "gamelog_fields": None,
     }
@@ -395,6 +491,22 @@ def _merge_gamelog(game, season):
         "shorthanded_points": game.get("shorthandedPoints"),
         "ot_goals": game.get("otGoals"),
         "game_winning_goals": game.get("gameWinningGoals"),
+        # Goalie block: present only on a goalie's log entry, so a skater's
+        # merge writes NULLs here and COALESCE leaves the box-score row alone.
+        "goals_against": game.get("goalsAgainst"),
+        "shots_against": game.get("shotsAgainst"),
+        # Official per-game saves: savePctg is saves/shots at 6dp, so the
+        # round-trip lands on the integer saves exactly (max error sa * 5e-7,
+        # far from a .5 boundary). This is the number club-stats sums - see
+        # the SCHEMA comment on saves.
+        "saves": (
+            round(game["savePctg"] * game["shotsAgainst"])
+            if game.get("savePctg") is not None and game.get("shotsAgainst")
+            else None
+        ),
+        "shutouts": game.get("shutouts"),
+        "decision": game.get("decision"),
+        "games_started": game.get("gamesStarted"),
         "boxscore_fields": None,
         "gamelog_fields": GAMELOG_FIELDS,
     }
@@ -407,8 +519,8 @@ def _upsert(conn, rows):
     box score has position/sweater_number, the game log has shorthanded and OT
     goals - so replacing on the second pass throws away the first pass's columns.
     That is not hypothetical: with REPLACE, position and sweater_number survived
-    only for goalies (whose game logs are empty and so never got overwritten),
-    leaving 95% of rows missing them.
+    only for rows whose game logs were empty and so never got overwritten, leaving
+    95% of rows missing them.
 
     Each column is written with COALESCE(existing, incoming), so whichever payload
     populated a field first keeps it and the second only fills what is NULL.
@@ -468,16 +580,35 @@ def build(season, db_path=DB_PATH, delay_seconds=DEFAULT_DELAY_SECONDS):
 
     print(f"box scores -> {written} row(s) for {season}")
 
-    # Second pass: the game log supplies the four stat families the box score omits.
-    # Progress is logged every 100 players - this loop is ~1,000 commits, so a
-    # silent run is indistinguishable from a hung one, which is exactly the
-    # visibility gap that made an earlier build impossible to monitor.
-    #
-    # Playoffs are a separate feed under the same season id (gameType 3), so the
-    # players who appeared in playoff box scores need that log fetched too -
-    # otherwise their playoff rows miss the gamelog stat families and the
-    # strictly-before windows over them are built on partial rows. Everyone else's
-    # request would come back empty and be cached as empty.
+    log_written = merge_gamelogs(conn, season, delay_seconds=delay_seconds)
+
+    lineup_written = compute_lineups(conn, season, delay_seconds=delay_seconds)
+    print(f"lineups -> {lineup_written} row(s) reconstructed for {season}")
+
+    feed_written = ingest_challenge_feeds(conn, season, delay_seconds=delay_seconds)
+    print(f"feeds -> {feed_written} row(s) ingested for {season}")
+
+    conn.close()
+    return written, log_written
+
+
+def merge_gamelogs(conn, season, delay_seconds=DEFAULT_DELAY_SECONDS):
+    """Second build pass: the game log supplies the stat families the box omits.
+
+    Progress is logged every 100 players - this loop is ~1,000 commits, so a
+    silent run is indistinguishable from a hung one, and that visibility gap is
+    what earlier made a build impossible to monitor.
+
+    Playoffs are a separate feed under the same season id (gameType 3), so the
+    players who appeared in playoff box scores need that log fetched too -
+    otherwise their playoff rows miss the gamelog stat families and the
+    strictly-before windows over them are built on partial rows. Everyone else's
+    request would come back empty and be cached as empty.
+
+    Standalone (``--gamelogs``) as well as part of ``build``: a schema or
+    formula change to the goalie columns (saves, save_pct) only needs this
+    pass plus ``--derive`` - box scores, lineups, and feeds are unaffected.
+    """
     playoff_ids = {
         r[0]
         for r in conn.execute("SELECT DISTINCT player_id, game_id FROM player_games WHERE season = ?", (season,))
@@ -516,15 +647,7 @@ def build(season, db_path=DB_PATH, delay_seconds=DEFAULT_DELAY_SECONDS):
             print(f"  game logs: {index}/{len(player_ids)} players, {log_written} row(s) merged", flush=True)
 
     print(f"game logs -> {log_written} row(s) merged for {season}")
-
-    lineup_written = compute_lineups(conn, season, delay_seconds=delay_seconds)
-    print(f"lineups -> {lineup_written} row(s) reconstructed for {season}")
-
-    feed_written = ingest_challenge_feeds(conn, season, delay_seconds=delay_seconds)
-    print(f"feeds -> {feed_written} row(s) ingested for {season}")
-
-    conn.close()
-    return written, log_written
+    return log_written
 
 
 def compute_lineups(conn, season, delay_seconds=DEFAULT_DELAY_SECONDS):
@@ -727,6 +850,11 @@ def compute_derived(conn, season):
     # ride the single-season INSERT above - see compute_historic.
     compute_historic(conn, season)
 
+    # Goalie stats are a separate table off the same raw rows - see
+    # compute_goalie_features. Called here so --derive covers them and a
+    # publish after a derive cannot ship NULL goalie columns by accident.
+    compute_goalie_features(conn, season)
+
 
 def _previous_season(season):
     """One season back by id arithmetic: '20232024' -> '20222023'.
@@ -832,6 +960,130 @@ def compute_historic(conn, season):
     conn.commit()
     print(f"{season}: hgpg/hppg computed for {len(updates)} row(s) over window {window + [season]}")
     return len(updates)
+
+
+def compute_goalie_features(conn, season):
+    """Fill goalie_features for one season: as-of-date opponent-goalie stats.
+
+    Reconstructs what live's same-day ``club-stats/{team}/now`` scrape would
+    have answered on each date, from the game logs already cached on disk. The
+    window is strictly-before the row's own game (the frame gpg was validated
+    on), so a row reads "entering that game" - the as-of-morning view a live
+    scrape captured. ``_merge_gamelog`` must have run first (via --build) for
+    the raw goalie columns to be populated.
+
+    Formulas, matching club-stats' own fields at full precision:
+
+    * gaa       - ``60 * GA / minutes``, the official per-60 formula. NOT
+      ``GA / games``: a goalie pulled halfway through a 6-goal night has played
+      30 minutes, and counting that as a full game understates his rate.
+      Verified against club-stats: accumulating Vasilevskiy's 2023-24 log gives
+      2.89924; the endpoint returns goalsAgainstAverage 2.899242.
+    * save_pct  - ``saves / shots`` as a ratio of window totals (0.905, not
+      90.5), not a mean of per-game percentages. saves is the official
+      per-game figure (``savePctg * shots_against`` rounded, merged into its
+      own column), NOT ``shots_against - goals_against``: club-stats sums its
+      saves field, which can exceed sa - ga by a save or two (Stolarz
+      2022-23: saves 444 vs sa - ga 443), and savePercentage is
+      saves/shots. The sa - ga shortcut reads ~0.002 low on such goalies and
+      fails a club-stats comparison; validated across all four seasons.
+    * record    - ``W-L-OTL`` text; decision O covers both overtime and
+      shootout losses, the same lump the NHL's record uses.
+    * shutouts / games_played - window sums / counts.
+
+    The window partitions on ``(player_id, team_abbrev)`` because club-stats
+    is team-scoped: a traded goalie's numbers restart with his new club (see
+    the SCHEMA comment). Rows with ``goals_against IS NULL`` - dressed backups
+    who never played - are excluded entirely; counting them would inflate
+    games_played with nights the goalie never tended net.
+
+    NULL on a club debut, not 0: club-stats does not list a goalie until he
+    appears for that club, so live left the stat keys None there. Opposite of
+    gpg's debut-0 convention, and deliberately so. Once listed, a 0-shot
+    window reads 0.0 for save_pct - club-stats pairs shotsAgainst 0 with
+    savePercentage 0.0, not null.
+    """
+    conn.execute("DELETE FROM goalie_features WHERE season = ?", (season,))
+
+    # Every appearance must have merged its official saves: a NULL here with
+    # shots_against > 0 means the game-log re-merge has not run since the
+    # column was added, and save_pct would silently read 0 (or drift low).
+    stale = conn.execute(
+        """
+        SELECT COUNT(*) FROM player_games
+        WHERE season = ? AND position = 'G' AND goals_against IS NOT NULL
+          AND shots_against > 0 AND saves IS NULL
+        """,
+        (season,),
+    ).fetchone()[0]
+    if stale:
+        raise RuntimeError(
+            f"{season}: {stale} appearance row(s) have shots_against but no saves - "
+            "re-run the game-log merge (--gamelogs or --build) before deriving"
+        )
+
+    conn.execute(
+        """
+        INSERT INTO goalie_features (
+            season, player_id, team_abbrev, game_date,
+            gaa, save_pct, record, shutouts, games_played
+        )
+        SELECT
+            season,
+            player_id,
+            team_abbrev,
+            game_date,
+            -- NULL on a club debut (prev_gp = 0): not listed, not zero.
+            CASE WHEN prev_gp = 0 OR prev_toi_sec = 0 THEN NULL
+                 ELSE 3600.0 * prev_ga / prev_toi_sec END,
+            -- NULL only on a club debut (not listed at all). Once listed, a
+            -- window with 0 shots reads 0.0 - club-stats returns
+            -- savePercentage 0.0 alongside shotsAgainst 0 (seen in
+            -- 2022-2023 TOR: one 1:10 stint, no shots), not null.
+            CASE WHEN prev_gp = 0 THEN NULL
+                 WHEN prev_sa = 0 THEN 0.0
+                 ELSE 1.0 * prev_saves / prev_sa END,
+            CASE WHEN prev_gp = 0 THEN NULL
+                 ELSE prev_w || '-' || prev_l || '-' || prev_o END,
+            CASE WHEN prev_gp = 0 THEN NULL ELSE prev_so END,
+            CASE WHEN prev_gp = 0 THEN NULL ELSE prev_gp END
+        FROM (
+            SELECT
+                season, player_id, team_abbrev, game_date,
+                SUM(COALESCE(goals_against, 0)) OVER w AS prev_ga,
+                SUM(COALESCE(shots_against, 0)) OVER w AS prev_sa,
+                SUM(COALESCE(saves, 0))         OVER w AS prev_saves,
+                SUM(COALESCE(shutouts, 0))      OVER w AS prev_so,
+                COUNT(*)                         OVER w AS prev_gp,
+                SUM(CASE WHEN decision = 'W' THEN 1 ELSE 0 END) OVER w AS prev_w,
+                SUM(CASE WHEN decision = 'L' THEN 1 ELSE 0 END) OVER w AS prev_l,
+                SUM(CASE WHEN decision = 'O' THEN 1 ELSE 0 END) OVER w AS prev_o,
+                -- toi is "MM:SS" from the game log; club-stats reports TOI in
+                -- seconds and GAA off it, so parse once here. Every appearance
+                -- row carries toi (the WHERE below is goals_against IS NOT
+                -- NULL, which is a real log entry, never a dressed backup).
+                SUM(
+                    CAST(substr(toi, 1, instr(toi, ':') - 1) AS INTEGER) * 60
+                    + CAST(substr(toi, instr(toi, ':') + 1) AS INTEGER)
+                ) OVER w AS prev_toi_sec
+            FROM player_games
+            WHERE season = ?
+              AND position = 'G'
+              AND goals_against IS NOT NULL
+            WINDOW w AS (
+                PARTITION BY season, player_id, team_abbrev
+                ORDER BY game_date, game_id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            )
+        )
+        """,
+        (season,),
+    )
+    conn.commit()
+
+    written = conn.execute("SELECT COUNT(*) FROM goalie_features WHERE season = ?", (season,)).fetchone()[0]
+    print(f"{season}: goalie_features computed for {written} appearance row(s)")
+    return written
 
 
 def compute_derived_team(conn, season):
@@ -1048,7 +1300,59 @@ def stats(db_path=DB_PATH):
     ):
         print(f"goalies {row['season']}: {row['n']} team entries across {row['dates']} date(s)")
 
+    for row in conn.execute(
+        """
+        SELECT season, COUNT(*) AS rows, COUNT(DISTINCT player_id) AS goalies,
+               SUM(gaa IS NULL) AS null_gaa, SUM(save_pct IS NULL) AS null_sv,
+               SUM(record IS NULL) AS null_rec
+        FROM goalie_features GROUP BY season ORDER BY season
+        """
+    ):
+        print(
+            f"goalie_features {row['season']}: {row['rows']} appearance row(s), "
+            f"{row['goalies']} goalie(s), "
+            f"null gaa={row['null_gaa']} sv%={row['null_sv']} record={row['null_rec']}"
+        )
+
     conn.close()
+
+
+def _match_goalie(full_name, candidates):
+    """Resolve a RotoWire full name to one box-score goalie appearance row.
+
+    Box scores abbreviate to an initial ("J. Johansson"); RotoWire carries the
+    full name ("Jonas Johansson"). Match on last name + first initial: exact
+    and unambiguous across a whole season's data (2800/2800 on 2023-24), and
+    safe to refuse on a miss - a wrong match would attach another goalie's
+    season to this row, which is worse than a NULL stat column.
+
+    ``candidates`` is a list of ``(player_id, box_name)``. Returns the
+    ``player_id`` or None.
+    """
+    if not full_name:
+        return None
+
+    parts = full_name.split()
+    if len(parts) < 2:
+        return None
+    want_last = parts[-1].lower()
+    want_initial = parts[0][:1].lower()
+
+    matched = [player_id for player_id, box_name in candidates if _box_name_matches(box_name, want_last, want_initial)]
+
+    # Ambiguity (two same-surnamed goalies dressed) is as unresolvable as a
+    # miss; refuse rather than pick one.
+    return matched[0] if len(matched) == 1 else None
+
+
+def _box_name_matches(box_name, want_last, want_initial):
+    """'J. Johansson' against ('johansson', 'j'); handles 'U-P. Luukkonen'."""
+    if not box_name or ". " not in box_name:
+        return False
+    initial, last = box_name.split(". ", 1)
+    # A hyphenated first name ("U-P.") contributes multiple initials; the
+    # first one is the conventional match key against RotoWire's first name.
+    return last.lower() == want_last and initial.split("-")[0][:1].lower() == want_initial
 
 
 def _archive_names(supabase, table, player_ids):
@@ -1152,9 +1456,10 @@ def publish(season, db_path=DB_PATH):
     print(f"tims: {mapped} player entries across {len(tims_by_date)} game date(s)")
 
     # Opponent starting goalies, same live-schema denormalization below. The
-    # goalie stat columns (gaa, save_pct, ...) stay absent from the payload:
-    # they came from same-day club-stats in live, which is current-season-only,
-    # so NULL is the honest historic value.
+    # stat columns are reconstructed from goalie_features rather than left
+    # NULL: the window is strictly-before each date, the same as-of-morning
+    # view a live club-stats scrape captured, so there is no season-end total
+    # standing in for an October game.
     goalies_by_date = {}
     for r in conn.execute(
         "SELECT game_date, team_abbrev, goalie_name, status FROM goalies_daily WHERE season = ?", (season,)
@@ -1166,6 +1471,27 @@ def publish(season, db_path=DB_PATH):
     goalie_teams = sum(len(g) for g in goalies_by_date.values())
     print(f"goalies: {goalie_teams} team entries across {len(goalies_by_date)} game date(s)")
 
+    # RotoWire names the starter; the box score lists him under an initial, so
+    # resolving him to a player_id needs the appearance rows for that date and
+    # club. Only appearances (goals_against IS NOT NULL) are candidates - a
+    # dressed backup has a box-score row but no stats to attach.
+    goalie_roster = {}
+    for r in conn.execute(
+        "SELECT game_date, team_abbrev, player_id, name FROM player_games"
+        " WHERE season = ? AND position = 'G' AND goals_against IS NOT NULL",
+        (season,),
+    ):
+        goalie_roster.setdefault((r["game_date"], r["team_abbrev"]), []).append((r["player_id"], r["name"]))
+
+    # As-of-date stats per appearance, keyed for lookup after the name match.
+    goalie_stats = {}
+    for r in conn.execute(
+        "SELECT player_id, team_abbrev, game_date, gaa, save_pct, record,"
+        " shutouts, games_played FROM goalie_features WHERE season = ?",
+        (season,),
+    ):
+        goalie_stats[(r["player_id"], r["team_abbrev"], r["game_date"])] = r
+
     payload = []
     for r in rows:
         key = (r["player_id"], r["game_date"])
@@ -1175,6 +1501,26 @@ def publish(season, db_path=DB_PATH):
         # starter carries no entry, so the row gets UNKNOWN/False like live.
         goalie = goalies_by_date.get(r["game_date"], {}).get(opponents.get(key) or "")
         goalie_status = (goalie.get("status") or "").upper() if goalie else "UNKNOWN"
+        # Stats follow the RotoWire-named goalie (the identity live joined on),
+        # team-scoped like club-stats itself. A name miss leaves every stat
+        # NULL while identity still ships, matching live's miss behaviour.
+        opp_team = opponents.get(key) if goalie else None
+        nhl_id = None
+        gaa = save_pct = record = shutouts = games_played = None
+        if goalie and opp_team:
+            matched_id = _match_goalie(
+                goalie.get("name"),
+                goalie_roster.get((r["game_date"], opp_team), []),
+            )
+            if matched_id is not None:
+                stats_row = goalie_stats.get((matched_id, opp_team, r["game_date"]))
+                if stats_row is not None:
+                    nhl_id = matched_id
+                    gaa = stats_row["gaa"]
+                    save_pct = stats_row["save_pct"]
+                    record = stats_row["record"]
+                    shutouts = stats_row["shutouts"]
+                    games_played = stats_row["games_played"]
         payload.append(
             {
                 "date": r["game_date"],
@@ -1209,9 +1555,17 @@ def publish(season, db_path=DB_PATH):
                 "pp_unit": r["pp_unit"],
                 "lineup_status": r["lineup_status"],
                 "opp_goalie_name": goalie.get("name") if goalie else None,
-                "opp_goalie_team": opponents.get(key) if goalie else None,
+                "opp_goalie_team": opp_team,
                 "opp_goalie_status": goalie_status,
                 "opp_goalie_confirmed": bool(goalie) and (goalie.get("status") or "").lower() == "confirmed",
+                # Reconstructed as-of-date stats from goalie_features; NULL on
+                # a club debut or an unmatched name, never a fabricated 0.
+                "opp_goalie_nhl_id": nhl_id,
+                "opp_goalie_gaa": gaa,
+                "opp_goalie_save_pct": save_pct,
+                "opp_goalie_record": record,
+                "opp_goalie_shutouts": shutouts,
+                "opp_goalie_games_played": games_played,
             }
         )
 
@@ -1285,6 +1639,11 @@ def publish_team(season, db_path=DB_PATH):
 def main():  # noqa: PLR0911 - one return per CLI mode; a dispatch table would obscure the flow
     parser = argparse.ArgumentParser(description="Local SQLite raw store for NHL per-game data.")
     parser.add_argument("--build", metavar="SEASON", help="Load raw rows for one season from the cache.")
+    parser.add_argument(
+        "--gamelogs",
+        metavar="SEASON",
+        help="Re-merge only the game-log stat families (incl. goalie saves) for one season.",
+    )
     parser.add_argument("--derive", metavar="SEASON", help="Recompute derived features for one season.")
     parser.add_argument(
         "--lineups", metavar="SEASON", help="Recompute player_lineups from the shift-chart cache for one season."
@@ -1312,6 +1671,12 @@ def main():  # noqa: PLR0911 - one return per CLI mode; a dispatch table would o
         compute_derived_team(conn, args.build)
         conn.close()
         print(f"derived features computed for {args.build}")
+        return 0
+
+    if args.gamelogs:
+        conn = connect(Path(args.db))
+        merge_gamelogs(conn, args.gamelogs)
+        conn.close()
         return 0
 
     if args.derive:
