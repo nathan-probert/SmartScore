@@ -26,6 +26,13 @@ os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
 os.environ["AWS_CONFIG_FILE"] = "/dev/null"
 os.environ["AWS_SHARED_CREDENTIALS_FILE"] = "/dev/null"
 
+# Dummy Supabase credentials. create_client is patched above, so config.py
+# imports without a real project - but it still reads these vars, and code
+# that formats SUPABASE_URL into a URL needs a defined value (CI has no .env).
+os.environ["SUPABASE_URL"] = "https://example.supabase.co"
+os.environ["SUPABASE_API_KEY"] = "test-api-key"
+os.environ["SUPABASE_SERVICE_ROLE_KEY"] = "test-service-role-key"
+
 
 @pytest.fixture(scope="session", autouse=True)
 def mock_global_boto3_client():
