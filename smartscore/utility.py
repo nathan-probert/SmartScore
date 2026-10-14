@@ -10,7 +10,7 @@ from postgrest.exceptions import APIError
 from smartscore_info_client.utility import exponential_backoff_request
 
 from config import ENV, SUPABASE_ADMIN_CLIENT, SUPABASE_CLIENT
-from constants import CURRENT_PICK_ACCURACY, SEASON_CUTOFF_MONTH, SEASON_PICK_ACCURACY_PREFIX
+from constants import CURRENT_PICK_ACCURACY, NUM_TIMS_GROUPS, SEASON_CUTOFF_MONTH, SEASON_PICK_ACCURACY_PREFIX
 
 logger = Logger()
 
@@ -43,10 +43,15 @@ def get_tims_players():
         "User-Agent": "Mozilla/5.0",
     }
     response = exponential_backoff_request("https://api.hockeychallengehelper.com/api/picks?", headers=headers)
-    allPlayers = response["playerLists"]
+    allPlayers = response.get("playerLists") or []
+    if len(allPlayers) < NUM_TIMS_GROUPS:
+        raise ValueError(
+            f"Unexpected picks payload: expected {NUM_TIMS_GROUPS} groups, got {len(allPlayers)} "
+            "(picks may be locked now that every game has started)"
+        )
 
     ids = []
-    for groupNum in range(3):
+    for groupNum in range(NUM_TIMS_GROUPS):
         ids.append([player["nhlPlayerId"] for player in allPlayers[groupNum]["players"]])
 
     return ids

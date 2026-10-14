@@ -215,7 +215,9 @@ def handle_get_tims(event, context):
 
     Args:
         event (dict): A dictionary of all player data.
-            - Optional["completed"] (bool): Whether data has already been retrieved.
+            - "status" (str): The run status. On the day's ``last_run`` the
+              picks API may already be locked, so a failed/empty read is
+              published as all-tims-0 instead of failing the execution.
         context (dict): Unused Lambda context.
 
     Returns:
@@ -223,11 +225,11 @@ def handle_get_tims(event, context):
             - "statusCode" (int): HTTP status code.
             - "date" (str): The current date.
             - "players" (list): Player data, now including tims.
-            - "is_initial_run" (bool): Whether this is the first run of the day.
+            - "status" (str): The run status, passed through.
             - "teams"/"goalies" (list, optional): Passed through when present.
     """
     players = event.get("players")
-    players = get_tims(players)
+    players = get_tims(players, allow_empty=event.get("status") == "last_run")
 
     output = {
         "statusCode": 200,

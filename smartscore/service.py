@@ -231,11 +231,22 @@ def make_predictions_teams(players, teams):
     return players
 
 
-def get_tims(players):
+def get_tims(players, allow_empty=False):
     for player in players:
         player["tims"] = 0
 
-    group_ids = get_tims_players()
+    try:
+        group_ids = get_tims_players()
+    except Exception:
+        # On the last run of the day the picks API is expected to be locked or
+        # gone once every game has started; publish everyone at tims=0 so the
+        # frontend flips to its "All games have started" state. Any other run
+        # fails loudly so Step Functions retries it.
+        if not allow_empty:
+            raise
+        logger.warning("tims read failed on the day's last run; publishing all players with tims=0")
+        return players
+
     if not group_ids:
         return players
 
