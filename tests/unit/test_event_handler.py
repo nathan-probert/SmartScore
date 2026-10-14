@@ -5,6 +5,7 @@ from event_handler import (
     handle_emails,
     handle_get_goalies,
     handle_get_injuries,
+    handle_get_tims,
     handle_load_working_set,
     handle_make_predictions,
     handle_parse_teams,
@@ -116,6 +117,28 @@ def test_handle_load_working_set_passes_status_through(mock_load):
     result = handle_load_working_set({"status": "last_run"}, {})
 
     assert result["status"] == "last_run"
+
+
+@patch("event_handler.get_tims")
+def test_handle_get_tims_last_run_tolerates_empty_read(mock_get_tims):
+    """The day's last run must not fail when the picks API is locked."""
+    players = [{"id": 1, "tims": 0}]
+    mock_get_tims.return_value = players
+
+    handle_get_tims({"players": players, "status": "last_run"}, {})
+
+    mock_get_tims.assert_called_once_with(players, allow_empty=True)
+
+
+@patch("event_handler.get_tims")
+def test_handle_get_tims_normal_run_stays_strict(mock_get_tims):
+    """Regular runs still fail loudly on a bad tims read so they retry."""
+    players = [{"id": 1, "tims": 1}]
+    mock_get_tims.return_value = players
+
+    handle_get_tims({"players": players, "status": "normal_run"}, {})
+
+    mock_get_tims.assert_called_once_with(players, allow_empty=False)
 
 
 @patch("event_handler.publish_public_db")

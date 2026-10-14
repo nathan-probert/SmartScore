@@ -7,6 +7,9 @@ DRAFTKINGS_PROVIDER_ID = 2
 # Expected number of players to choose in a game
 NUM_EXPECTED_PLAYERS = 3
 
+# Number of Tim Hortons challenge pick groups (tims 1, 2, 3)
+NUM_TIMS_GROUPS = 3
+
 # Add constant for current pick accuracy
 CURRENT_PICK_ACCURACY = "current_pick_accuracy"
 

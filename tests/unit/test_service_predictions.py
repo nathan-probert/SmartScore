@@ -117,6 +117,25 @@ def test_get_tims_empty_player_list():
     assert result == []
 
 
+def test_get_tims_failure_propagates_by_default():
+    """A failed tims read fails the run so Step Functions retries it."""
+    players = [{"id": 1, "name": "Player 1"}]
+
+    with patch("service.get_tims_players", side_effect=ValueError("expected 3 groups")):
+        with pytest.raises(ValueError, match="expected 3 groups"):
+            get_tims(players)
+
+
+def test_get_tims_failure_tolerated_when_allow_empty():
+    """The day's last run degrades to all-tims-0 so the publish still lands."""
+    players = [{"id": 1, "name": "Player 1"}, {"id": 2, "name": "Player 2"}]
+
+    with patch("service.get_tims_players", side_effect=ValueError("expected 3 groups")):
+        result = get_tims(players, allow_empty=True)
+
+    assert all(player["tims"] == 0 for player in result)
+
+
 @patch("service.get_cur_pick_pct")
 def test_calculate_metrics_success(mock_get_pct):
     """Test calculating metrics with correct number of players."""

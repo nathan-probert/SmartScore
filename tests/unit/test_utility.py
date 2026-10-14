@@ -12,6 +12,7 @@ from utility import (
     exponential_backoff_supabase_request,
     fetch_working_set,
     get_picks_for_date,
+    get_tims_players,
     put_working_set,
 )
 
@@ -83,6 +84,30 @@ def test_fetch_working_set_unwraps_jsonb_payloads(mock_request):
     assert mock_request.call_args_list[0].args == (f"Working-Players-{ENV}",)
     assert mock_request.call_args_list[0].kwargs == {"eq": ("date", "2026-10-11")}
     assert mock_request.call_args_list[1].args == (f"Working-Teams-{ENV}",)
+
+
+@patch("utility.exponential_backoff_request")
+def test_get_tims_players_returns_group_ids(mock_request):
+    """The healthy payload has three populated groups."""
+    mock_request.return_value = {
+        "playerLists": [
+            {"players": [{"nhlPlayerId": 1}, {"nhlPlayerId": 2}]},
+            {"players": [{"nhlPlayerId": 3}]},
+            {"players": [{"nhlPlayerId": 4}]},
+        ]
+    }
+
+    assert get_tims_players() == [[1, 2], [3], [4]]
+
+
+@patch("utility.exponential_backoff_request")
+def test_get_tims_players_rejects_locked_payload(mock_request):
+    """Once every game has started the picks payload loses its groups; fail
+    with a clear error instead of an IndexError deep in the parse."""
+    for payload in ({}, {"playerLists": []}, {"playerLists": [{"players": []}, {"players": []}]}):
+        mock_request.return_value = payload
+        with pytest.raises(ValueError, match="expected 3 groups"):
+            get_tims_players()
 
 
 @patch("smartscore_info_client.utility.requests.get")
