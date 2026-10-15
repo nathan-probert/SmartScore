@@ -15,6 +15,7 @@ Usage::
     python smartscore/scripts/backtrack/run_background.py --name build-2023 --cmd build --season 20232024
     python smartscore/scripts/backtrack/run_background.py --name lineups-2023 --cmd lineups --season 20232024
     python smartscore/scripts/backtrack/run_background.py --name publish-2023 --cmd publish --season 20232024
+    python smartscore/scripts/backtrack/run_background.py --name goalies-2023 --cmd publish-goalies --season 20232024
     python smartscore/scripts/backtrack/run_background.py --name bt-2023 --status
     python smartscore/scripts/backtrack/run_background.py --name bt-2023 --tail 40
     python smartscore/scripts/backtrack/run_background.py --name bt-2023 --stop
@@ -100,6 +101,10 @@ def cmd_start(args):
         # --publish crawls any uncached tims dates (~180 per season) and then
         # upserts tens of thousands of rows into Supabase.
         command = [sys.executable, str(LOCAL_STORE), "--publish", args.season]
+    elif args.cmd == "publish-goalies":
+        # --publish-goalies is pure SQLite reads plus the Supabase upsert; no
+        # network crawl either side.
+        command = [sys.executable, str(LOCAL_STORE), "--publish-goalies", args.season]
     else:
         command = [sys.executable, str(RECONSTRUCT), "--season", args.season]
 
@@ -216,9 +221,9 @@ def main():
     parser.add_argument("--name", required=True, help="Task name; state and log files are named after it.")
     parser.add_argument(
         "--cmd",
-        choices=("reconstruct", "build", "lineups", "publish"),
+        choices=("reconstruct", "build", "lineups", "publish", "publish-goalies"),
         default="reconstruct",
-        help="reconstruct = crawl Supabase; build = local_store --build; lineups; publish.",
+        help="reconstruct = crawl Supabase; build = local_store --build; lineups; publish; publish-goalies.",
     )
     parser.add_argument("--season", default="20232024")
     parser.add_argument("--env", default="dev", help="ENV for the target tables (default dev).")

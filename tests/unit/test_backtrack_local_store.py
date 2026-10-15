@@ -367,6 +367,7 @@ class _FakeArchiveClient:
     def __init__(self, archive_rows):
         self.archive_rows = archive_rows
         self.upserted = []
+        self.upsert_kwargs = []
         self.table_names = []
 
     def table(self, name):
@@ -382,6 +383,7 @@ class _FakeTable:
         return _FakeSelect(self._client)
 
     def upsert(self, batch, **kwargs):
+        self._client.upsert_kwargs.append(kwargs)
         self._client.upserted.extend(batch)
         return _FakeDone()
 
@@ -898,3 +900,71 @@ def test_publish_attaches_goalie_stats_via_name_match(tmp_path, monkeypatch):
     assert row["opp_goalie_games_played"] == 2
     assert row["opp_goalie_name"] == "Ilya Samsonov"
     assert row["opp_goalie_status"] == "CONFIRMED"
+
+
+def test_publish_goalies_ships_team_scoped_stats_and_full_names(tmp_path, monkeypatch):
+    """Goalie rows are their own grain: as-of-date stats, debut NULLs, feed full names."""
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    # Samsonov: two prior TOR appearances, then the game the feed covers.
+    # Doe: a club debut the same night, with no feed row of his own.
+    _insert_goalie(conn, 9001, 90010, "2023-10-08", 2, 25, "60:00", "W", "TOR", name="I. Samsonov")
+    _insert_goalie(conn, 9001, 90011, "2023-10-10", 1, 30, "60:00", "L", "TOR", name="I. Samsonov")
+    _insert_goalie(conn, 9001, 90012, "2023-10-12", 3, 20, "60:00", "L", "TOR", name="I. Samsonov")
+    _insert_goalie(conn, 9002, 90020, "2023-10-12", 1, 20, "60:00", "L", "TOR", name="J. Doe")
+    local_store.compute_goalie_features(conn, "20232024")
+    conn.execute(
+        "INSERT INTO goalies_daily (season, game_date, team_abbrev, goalie_name, status)"
+        " VALUES ('20232024', '2023-10-12', 'TOR', 'Ilya Samsonov', 'Confirmed')"
+    )
+    conn.commit()
+    conn.close()
+
+    client = _FakeArchiveClient([])
+    monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
+
+    written = local_store.publish_goalies("20232024", db_path=tmp_path / "raw.sqlite")
+
+    assert written == 4
+    # Goalie rows go to the goalie table and nowhere else.
+    assert client.table_names == ["Goalie-Snapshots-backtrack-dev"]
+    assert all(k["on_conflict"] == "season,player_id,date" for k in client.upsert_kwargs)
+    rows = {(r["player_id"], r["date"]): r for r in client.upserted}
+    assert all(r["team_abbrev"] == "TOR" and r["team_name"] == local_store.to_place("TOR") for r in client.upserted)
+
+    # Debut: NULL stats, NOT 0 - the club has no games before it. Name is an
+    # identity, resolved once per goalie, so the feed's full spelling rides
+    # every row of his, including dates the feed never covered.
+    debut = rows[(9001, "2023-10-08")]
+    assert debut["gaa"] is None and debut["games_played"] is None and debut["save_pct"] is None
+    assert debut["name"] == "Ilya Samsonov"
+
+    # Entering 2023-10-12: two prior, 3 GA / 120 min = 1.5 GAA, 52 saves / 55 shots.
+    asof = rows[(9001, "2023-10-12")]
+    assert asof["gaa"] == pytest.approx(1.5)
+    assert asof["save_pct"] == pytest.approx(52 / 55)
+    assert asof["record"] == "1-1-0"
+    assert asof["shutouts"] == 0
+    assert asof["games_played"] == 2
+    # The feed resolved to this appearance row, so the full spelling ships.
+    assert asof["name"] == "Ilya Samsonov"
+
+    # The debut the feed IS covering but whose name does not match it keeps the
+    # box-score fallback. A name mismatch must never hand one goalie's history
+    # to a different row subject.
+    doe = rows[(9002, "2023-10-12")]
+    assert doe["gaa"] is None
+    assert doe["name"] == "J. Doe"
+
+
+def test_publish_goalies_without_features_writes_nothing(tmp_path, monkeypatch):
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    conn.commit()
+    conn.close()
+
+    client = _FakeArchiveClient([])
+    monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
+
+    written = local_store.publish_goalies("20232024", db_path=tmp_path / "raw.sqlite")
+
+    assert written == 0
+    assert client.table_names == []

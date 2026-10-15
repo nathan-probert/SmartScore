@@ -96,10 +96,12 @@ backtrack-stats:
 
 # Publish from the raw store - that is what makes it the source of truth.
 # --derive runs first so the SQL, not a stale table, is what ships; it is pure
-# SQLite and takes seconds. Both writes upsert (player rows on (date, player_id),
-# team rows on (season, team_abbrev, game_id)), so re-running is safe.
+# SQLite and takes seconds. All three writes upsert (player rows on
+# (date, player_id), team rows on (season, team_abbrev, game_id), goalie rows on
+# (season, player_id, date)), so re-running is safe.
 backtrack-publish:
 	@echo "Publishing $(SEASON) from the raw store into Supabase"
 	@$(MAKE) backtrack-derive SEASON=$(SEASON)
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish $(SEASON)
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-team $(SEASON)
+	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-goalies $(SEASON)

@@ -50,6 +50,7 @@ Usage::
     uv run python smartscore/scripts/backtrack/local_store.py --feeds 20232024
     uv run python smartscore/scripts/backtrack/local_store.py --publish 20232024
     uv run python smartscore/scripts/backtrack/local_store.py --publish-team 20232024
+    uv run python smartscore/scripts/backtrack/local_store.py --publish-goalies 20232024
     uv run python smartscore/scripts/backtrack/local_store.py --stats
 """
 
@@ -2146,6 +2147,109 @@ def publish_team(season, db_path=DB_PATH):
     return written
 
 
+def publish_goalies(season, db_path=DB_PATH):
+    """Upsert goalie_features into Goalie-Snapshots-backtrack-{ENV}.
+
+    Same shape as publish_team: separate from publish() because the grain
+    differs. A goalie's as-of-date stats are properties of the GOALIE, and the
+    player table no longer carries them denormalised - it stopped with the
+    opp_goalie_* block (20261008_add_player_snapshots_backtrack.sql's DROP
+    retrofit). Joining the player table on (date, opposing team_abbrev) puts
+    the night's goalie next to each pick row.
+
+    ``goalie_features`` is the derived source - the strictly-before, per-club
+    window over raw player_games (see its SCHEMA comment for the verification
+    against club-stats). name prefers the daily starter feed's full spelling,
+    resolved to the appearance row the way publish() used to resolve it;
+    box-score initials are the fallback.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    rows = conn.execute(
+        "SELECT player_id, team_abbrev, game_date, gaa, save_pct, record,"
+        " shutouts, games_played FROM goalie_features WHERE season = ?"
+        " ORDER BY game_date, player_id",
+        (season,),
+    ).fetchall()
+
+    if not rows:
+        print(f"{season}: no goalie features")
+        conn.close()
+        return 0
+
+    env_name, supabase = config()
+    table = f"Goalie-Snapshots-backtrack-{env_name}"
+
+    # Names. Box scores print initials ("I. Samsonov"); the daily starter feed
+    # carries the full spelling ("Ilya Samsonov"), so it is resolved to the
+    # appearance row with the same last-name + initial match publish() used.
+    # A goalie the feed never covered keeps the box-score spelling.
+    box_names = {}
+    for r in conn.execute(
+        "SELECT player_id, name FROM player_games WHERE season = ? AND position = 'G' AND name IS NOT NULL"
+        " ORDER BY game_id",
+        (season,),
+    ):
+        box_names.setdefault(r["player_id"], r["name"])
+
+    appearances = {}
+    for r in conn.execute(
+        "SELECT game_date, team_abbrev, player_id, name FROM player_games"
+        " WHERE season = ? AND position = 'G' AND goals_against IS NOT NULL",
+        (season,),
+    ):
+        appearances.setdefault((r["game_date"], r["team_abbrev"]), []).append((r["player_id"], r["name"]))
+
+    full_names = {}
+    for r in conn.execute(
+        "SELECT game_date, team_abbrev, goalie_name FROM goalies_daily WHERE season = ?", (season,)
+    ):
+        matched = _match_goalie(
+            r["goalie_name"],
+            appearances.get((r["game_date"], r["team_abbrev"]), []),
+        )
+        if matched is not None:
+            full_names.setdefault(matched, r["goalie_name"])
+
+    resolved = sum(1 for p in {r["player_id"] for r in rows} if p in full_names)
+    print(f"goalie names: {resolved}/{len({r['player_id'] for r in rows})} from the starter feed,"
+          " the rest from box-score initials")
+
+    payload = []
+    for r in rows:
+        payload.append(
+            {
+                "season": season,
+                "player_id": r["player_id"],
+                "team_abbrev": r["team_abbrev"],
+                "team_name": to_place(r["team_abbrev"]),
+                "date": r["game_date"],
+                "name": full_names.get(r["player_id"]) or box_names.get(r["player_id"])
+                or f"goalie-{r['player_id']}",
+                # NULL on the club debut, never 0 - see the migration comment.
+                "gaa": r["gaa"],
+                "save_pct": r["save_pct"],
+                "record": r["record"],
+                "shutouts": r["shutouts"],
+                "games_played": r["games_played"],
+            }
+        )
+
+    written = 0
+    batch_size = 500
+
+    for start in range(0, len(payload), batch_size):
+        batch = payload[start : start + batch_size]
+        supabase.table(table).upsert(batch, on_conflict="season,player_id,date", returning="minimal").execute()
+        written += len(batch)
+
+    conn.close()
+    print(f"published {written} goalie row(s) to {table}")
+
+    return written
+
+
 def main():  # noqa: PLR0911 - one return per CLI mode; a dispatch table would obscure the flow
     parser = argparse.ArgumentParser(description="Local SQLite raw store for NHL per-game data.")
     parser.add_argument("--build", metavar="SEASON", help="Load raw rows for one season from the cache.")
@@ -2170,6 +2274,7 @@ def main():  # noqa: PLR0911 - one return per CLI mode; a dispatch table would o
     )
     parser.add_argument("--publish", metavar="SEASON", help="Upsert player features into Supabase.")
     parser.add_argument("--publish-team", metavar="SEASON", help="Upsert team stats into Supabase.")
+    parser.add_argument("--publish-goalies", metavar="SEASON", help="Upsert goalie stats into Supabase.")
     parser.add_argument("--stats", action="store_true", help="Summarise what is stored.")
     parser.add_argument("--db", default=str(DB_PATH))
     args = parser.parse_args()
@@ -2230,6 +2335,10 @@ def main():  # noqa: PLR0911 - one return per CLI mode; a dispatch table would o
 
     if args.publish_team:
         publish_team(args.publish_team, db_path=Path(args.db))
+        return 0
+
+    if args.publish_goalies:
+        publish_goalies(args.publish_goalies, db_path=Path(args.db))
         return 0
 
     parser.print_help()
