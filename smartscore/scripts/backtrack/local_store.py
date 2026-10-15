@@ -1912,9 +1912,9 @@ def publish(season, db_path=DB_PATH):
                l.lineup_unit, l.lineup_position_group, l.pp_unit, l.lineup_status
         FROM player_games pg
         -- Goalies are excluded, matching reconstruct.py. They have no
-        -- meaningful gpg and the live archive never held them (their numbers
-        -- live in opp_goalie_* instead). Position comes from the box score's
-        -- stat block, so this is the roster's own classification.
+        -- meaningful gpg and their as-of-date stats live in goalie_features,
+        -- published to Goalie-Snapshots-backtrack. Position comes from the box
+        -- score's stat block, so this is the roster's own classification.
         JOIN derived_features d
           ON d.player_id = pg.player_id AND d.game_date = pg.game_date AND d.season = pg.season
         LEFT JOIN player_lineups l
@@ -1943,10 +1943,6 @@ def publish(season, db_path=DB_PATH):
         (r["player_id"], r["game_date"]): r["team_abbrev"]
         for r in conn.execute("SELECT player_id, game_date, team_abbrev FROM player_games")
     }
-    opponents = {
-        (r["player_id"], r["game_date"]): r["opponent_abbrev"]
-        for r in conn.execute("SELECT player_id, game_date, opponent_abbrev FROM player_games")
-    }
     homes = {
         (r["player_id"], r["game_date"]): r["home"]
         for r in conn.execute("SELECT player_id, game_date, home FROM player_games")
@@ -1966,72 +1962,9 @@ def publish(season, db_path=DB_PATH):
     mapped = sum(len(groups) for groups in tims_by_date.values())
     print(f"tims: {mapped} player entries across {len(tims_by_date)} game date(s)")
 
-    # Opponent starting goalies, same live-schema denormalization below. The
-    # stat columns are reconstructed from goalie_features rather than left
-    # NULL: the window is strictly-before each date, the same as-of-morning
-    # view a live club-stats scrape captured, so there is no season-end total
-    # standing in for an October game.
-    goalies_by_date = {}
-    for r in conn.execute(
-        "SELECT game_date, team_abbrev, goalie_name, status FROM goalies_daily WHERE season = ?", (season,)
-    ):
-        goalies_by_date.setdefault(r["game_date"], {})[r["team_abbrev"]] = {
-            "name": r["goalie_name"],
-            "status": r["status"],
-        }
-    goalie_teams = sum(len(g) for g in goalies_by_date.values())
-    print(f"goalies: {goalie_teams} team entries across {len(goalies_by_date)} game date(s)")
-
-    # RotoWire names the starter; the box score lists him under an initial, so
-    # resolving him to a player_id needs the appearance rows for that date and
-    # club. Only appearances (goals_against IS NOT NULL) are candidates - a
-    # dressed backup has a box-score row but no stats to attach.
-    goalie_roster = {}
-    for r in conn.execute(
-        "SELECT game_date, team_abbrev, player_id, name FROM player_games"
-        " WHERE season = ? AND position = 'G' AND goals_against IS NOT NULL",
-        (season,),
-    ):
-        goalie_roster.setdefault((r["game_date"], r["team_abbrev"]), []).append((r["player_id"], r["name"]))
-
-    # As-of-date stats per appearance, keyed for lookup after the name match.
-    goalie_stats = {}
-    for r in conn.execute(
-        "SELECT player_id, team_abbrev, game_date, gaa, save_pct, record,"
-        " shutouts, games_played FROM goalie_features WHERE season = ?",
-        (season,),
-    ):
-        goalie_stats[(r["player_id"], r["team_abbrev"], r["game_date"])] = r
-
     payload = []
     for r in rows:
         key = (r["player_id"], r["game_date"])
-        # Opponent starter, denormalized per the live schema: status is
-        # upper-cased and confirmed is a separate boolean, the same mapping
-        # service.denormalize_players_for_db applies. A team with no listed
-        # starter carries no entry, so the row gets UNKNOWN/False like live.
-        goalie = goalies_by_date.get(r["game_date"], {}).get(opponents.get(key) or "")
-        goalie_status = (goalie.get("status") or "").upper() if goalie else "UNKNOWN"
-        # Stats follow the RotoWire-named goalie (the identity live joined on),
-        # team-scoped like club-stats itself. A name miss leaves every stat
-        # NULL while identity still ships, matching live's miss behaviour.
-        opp_team = opponents.get(key) if goalie else None
-        nhl_id = None
-        gaa = save_pct = record = shutouts = games_played = None
-        if goalie and opp_team:
-            matched_id = _match_goalie(
-                goalie.get("name"),
-                goalie_roster.get((r["game_date"], opp_team), []),
-            )
-            if matched_id is not None:
-                stats_row = goalie_stats.get((matched_id, opp_team, r["game_date"]))
-                if stats_row is not None:
-                    nhl_id = matched_id
-                    gaa = stats_row["gaa"]
-                    save_pct = stats_row["save_pct"]
-                    record = stats_row["record"]
-                    shutouts = stats_row["shutouts"]
-                    games_played = stats_row["games_played"]
         payload.append(
             {
                 "date": r["game_date"],
@@ -2065,18 +1998,6 @@ def publish(season, db_path=DB_PATH):
                 "lineup_position_group": r["lineup_position_group"],
                 "pp_unit": r["pp_unit"],
                 "lineup_status": r["lineup_status"],
-                "opp_goalie_name": goalie.get("name") if goalie else None,
-                "opp_goalie_team": opp_team,
-                "opp_goalie_status": goalie_status,
-                "opp_goalie_confirmed": bool(goalie) and (goalie.get("status") or "").lower() == "confirmed",
-                # Reconstructed as-of-date stats from goalie_features; NULL on
-                # a club debut or an unmatched name, never a fabricated 0.
-                "opp_goalie_nhl_id": nhl_id,
-                "opp_goalie_gaa": gaa,
-                "opp_goalie_save_pct": save_pct,
-                "opp_goalie_record": record,
-                "opp_goalie_shutouts": shutouts,
-                "opp_goalie_games_played": games_played,
             }
         )
 
@@ -2202,9 +2123,7 @@ def publish_goalies(season, db_path=DB_PATH):
         appearances.setdefault((r["game_date"], r["team_abbrev"]), []).append((r["player_id"], r["name"]))
 
     full_names = {}
-    for r in conn.execute(
-        "SELECT game_date, team_abbrev, goalie_name FROM goalies_daily WHERE season = ?", (season,)
-    ):
+    for r in conn.execute("SELECT game_date, team_abbrev, goalie_name FROM goalies_daily WHERE season = ?", (season,)):
         matched = _match_goalie(
             r["goalie_name"],
             appearances.get((r["game_date"], r["team_abbrev"]), []),
@@ -2213,8 +2132,10 @@ def publish_goalies(season, db_path=DB_PATH):
             full_names.setdefault(matched, r["goalie_name"])
 
     resolved = sum(1 for p in {r["player_id"] for r in rows} if p in full_names)
-    print(f"goalie names: {resolved}/{len({r['player_id'] for r in rows})} from the starter feed,"
-          " the rest from box-score initials")
+    print(
+        f"goalie names: {resolved}/{len({r['player_id'] for r in rows})} from the starter feed,"
+        " the rest from box-score initials"
+    )
 
     payload = []
     for r in rows:
@@ -2225,8 +2146,7 @@ def publish_goalies(season, db_path=DB_PATH):
                 "team_abbrev": r["team_abbrev"],
                 "team_name": to_place(r["team_abbrev"]),
                 "date": r["game_date"],
-                "name": full_names.get(r["player_id"]) or box_names.get(r["player_id"])
-                or f"goalie-{r['player_id']}",
+                "name": full_names.get(r["player_id"]) or box_names.get(r["player_id"]) or f"goalie-{r['player_id']}",
                 # NULL on the club debut, never 0 - see the migration comment.
                 "gaa": r["gaa"],
                 "save_pct": r["save_pct"],

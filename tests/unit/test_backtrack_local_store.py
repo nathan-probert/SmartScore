@@ -414,7 +414,10 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
     local_store.compute_derived(conn, "20232024")
     # Feed rows seeded the way build/--feeds would leave them: one player in
     # tims group 2, and TOR's starter Samsonov (Confirmed) on the fixture's
-    # date. BOS has no goalie entry, which only matters for the other side.
+    # date. BOS has no goalie entry. The goalie feed no longer reaches the
+    # player payload - goalie as-of-date stats have their own table
+    # (Goalie-Snapshots-backtrack, see publish_goalies) - so these rows only
+    # guard that publish reads tims from the feed tables and nothing else.
     conn.execute(
         "INSERT INTO tims_daily (season, game_date, player_id, group_id, scored)"
         " VALUES ('20232024', '2023-10-10', 201, 2, 1)"
@@ -458,25 +461,10 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
     assert all("lineup_unit" in r and "pp_unit" in r and "lineup_status" in r for r in client.upserted)
     # Training label from the fixture's goals column: 201 scored, 202 did not.
     assert {r["player_id"]: r["scored"] for r in client.upserted} == {201: 1, 202: 0}
-    # Opponent starter denormalized per the live schema: identity, upper-cased
-    # status, separate confirmed boolean. Stat keys are present on every payload
-    # row; this fixture has no goalie appearance rows, so the values are NULL.
-    assert all(
-        r["opp_goalie_name"] == "Ilya Samsonov"
-        and r["opp_goalie_team"] == "TOR"
-        and r["opp_goalie_status"] == "CONFIRMED"
-        and r["opp_goalie_confirmed"] is True
-        for r in client.upserted
-    )
-    assert all(
-        r["opp_goalie_gaa"] is None
-        and r["opp_goalie_save_pct"] is None
-        and r["opp_goalie_record"] is None
-        and r["opp_goalie_shutouts"] is None
-        and r["opp_goalie_games_played"] is None
-        and r["opp_goalie_nhl_id"] is None
-        for r in client.upserted
-    )
+    # No opp_goalie_* keys: the block moved to Goalie-Snapshots-backtrack, and
+    # the payload must never name a column the table stopped declaring
+    # (PostgREST would reject the whole batch).
+    assert not any(k.startswith("opp_goalie_") for r in client.upserted for k in r)
 
 
 def _shift(player_id, team_id, start, end, period=1):
@@ -868,38 +856,6 @@ def test_match_goalie_resolves_full_name_to_box_initial():
     assert local_store._match_goalie("", candidates) is None  # noqa: SLF001
     # Ambiguity: two candidates, refuse rather than guess.
     assert local_store._match_goalie("Jonas Johansson", [(100, "J. Johansson"), (102, "J. Johansson")]) is None  # noqa: SLF001
-
-
-def test_publish_attaches_goalie_stats_via_name_match(tmp_path, monkeypatch):
-    conn = local_store.connect(tmp_path / "raw.sqlite")
-    # Skater facing TOR on 2023-10-12.
-    _insert(conn, 201, 8002, "2023-10-12", 1, team="BOS", tgf=3, name="B. Burns", opponent="TOR")
-    # TOR's goalie Samsonov: two prior appearances, then the game being picked.
-    _insert_goalie(conn, 9001, 90010, "2023-10-08", 2, 25, "60:00", "W", "TOR", name="I. Samsonov")
-    _insert_goalie(conn, 9001, 90011, "2023-10-10", 1, 30, "60:00", "L", "TOR", name="I. Samsonov")
-    _insert_goalie(conn, 9001, 90012, "2023-10-12", 3, 20, "60:00", "L", "TOR", name="I. Samsonov")
-    local_store.compute_derived(conn, "20232024")
-    conn.execute(
-        "INSERT INTO goalies_daily (season, game_date, team_abbrev, goalie_name, status)"
-        " VALUES ('20232024', '2023-10-12', 'TOR', 'Ilya Samsonov', 'Confirmed')"
-    )
-    conn.commit()
-    conn.close()
-
-    client = _FakeArchiveClient([])
-    monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
-    local_store.publish("20232024", db_path=tmp_path / "raw.sqlite")
-
-    (row,) = client.upserted
-    # As of 2023-10-12, entering that game: two prior, 3 GA / 120 min = 1.5 GAA.
-    assert row["opp_goalie_nhl_id"] == 9001
-    assert row["opp_goalie_gaa"] == pytest.approx(1.5)
-    assert row["opp_goalie_save_pct"] == pytest.approx(52 / 55)
-    assert row["opp_goalie_record"] == "1-1-0"
-    assert row["opp_goalie_shutouts"] == 0
-    assert row["opp_goalie_games_played"] == 2
-    assert row["opp_goalie_name"] == "Ilya Samsonov"
-    assert row["opp_goalie_status"] == "CONFIRMED"
 
 
 def test_publish_goalies_ships_team_scoped_stats_and_full_names(tmp_path, monkeypatch):

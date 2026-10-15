@@ -50,12 +50,19 @@ The game-log feed carries per-game goals, assists, points, shots, PIM, PP/SH
 goals and points, OT goals, GWG, TOI, shifts, and the home/road flag. All of those
 are accumulated here.
 
-It does **not** carry ``opp_goalie_*``, ``lineup_*``, ``pp_unit``, or
+It does **not** carry ``lineup_*``, ``pp_unit``, or
 ``injury_status``, so none of them are written here. ``local_store.publish``
-fills the first three groups on its own pass over the same table - shift charts
-for the lineup block, cached game logs and the goalie feeds for ``opp_goalie_*``
-- so those columns ship filled; ``injury_*`` has no reconstructed source and
-stays null. Null there means "not reconstructed", never "not applicable".
+fills the first two groups on its own pass over the same table - shift charts
+for the lineup block - so those columns ship filled; ``injury_*`` has no
+reconstructed source and stays null. Null there means "not reconstructed", never
+"not applicable".
+
+The opponent-goalie block is not here either, and deliberately never was: a
+goalie's as-of-date stats are properties of the GOALIE, so they live in
+``Goalie-Snapshots-backtrack-{ENV}`` at their own grain
+(20261015_add_goalie_snapshots_backtrack.sql), joined to a pick row on
+(date, opposing team_abbrev) rather than repeated across ~21 skater rows per
+team-date.
 
 Usage::
 
@@ -262,7 +269,9 @@ def discover_players(games, delay_seconds=DEFAULT_DELAY_SECONDS):
       per-game context the box score is authoritative for.
     * ``goalies`` - the subset of ``players`` the box scores classify as position
       "G". Excluded from the snapshot: goalies have no meaningful gpg, and the
-      archive never held them (their numbers live in ``opp_goalie_*`` instead).
+      archive never held them; their as-of-date stats are the goalie table's
+      own grain (``Goalie-Snapshots-backtrack-{ENV}``, local_store's
+      goalie_features).
 
     The box score is the source of truth for team and home/road, not the player's
     own game log. The game log omits ``teamAbbrev`` in some rows - ``ARI`` was

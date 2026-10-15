@@ -55,27 +55,30 @@
 -- That is the intended trade - SQLite is the source of truth.
 --
 -- COLUMN SET
--- The columns below are exactly Player-Snapshots-{ENV}'s, so this table is a
--- drop-in replacement and anything reading the archive reads this unchanged. Today
--- date/player_id/name/team_name/home/gpg/five_gpg/ppg are populated (ppg added by
--- 20261009_add_ppg_player_snapshots_backtrack.sql). The rest are
--- declared so the shape matches, and are filled by later passes:
+-- The columns below are Player-Snapshots-{ENV}'s, MINUS the opp_goalie_* block:
+-- a goalie's as-of-date stats are properties of the GOALIE, and they live in
+-- Goalie-Snapshots-backtrack-{ENV} (20261015_add_goalie_snapshots_backtrack.sql)
+-- at their own grain instead of repeating one number across ~21 skater rows per
+-- team-date, the same move Team-Stats-backtrack made for team rates. Join both
+-- lookup tables on (date, opposing team_abbrev); reading a pick row still needs
+-- nothing but this table for the player-side features.
 --
---   * hgpg, hppg  - 3-year windows per smartscore_info_client's get_hgpg(years=3),
---                   which needs seasonTotals from the landing payload. NOT
---                   reconstructable from one season of game logs.
+-- Today date/player_id/name/team_name/home/gpg/five_gpg/ppg/hgpg/hppg are
+-- populated (ppg added by 20261009_add_ppg_player_snapshots_backtrack.sql, the
+-- 3-year windows by local_store.compute_historic). The others:
+--
 --   * tgpg, otga, otshga - team attributes, one value per team-game, denormalised
---                   onto ~21 player rows per team-date in the archive. Their
---                   definitions are established and they are computed - at their
---                   honest grain - in Team-Stats-backtrack-{ENV} (see
+--                   onto ~21 player rows per team-date in the archive. Computed at
+--                   their honest grain in Team-Stats-backtrack-{ENV} (see
 --                   20261008_add_team_stats_backtrack.sql); left null HERE by
 --                   design so one team number is not repeated across player rows.
---   * injury_*, tims, opp_goalie_*, lineup_*, pp_unit
---                   - not in the game-log feed at all. They come from the injury,
---                     lineup and goalie endpoints. The live archive remains their
---                     source until those passes exist.
---   * scored       - derivable from the game itself (did the player score in it)
---                     but not written yet; left null rather than half-populated.
+--   * injury_*, tims, lineup_*, pp_unit
+--                   - tims comes from the challenge-helper feed, lineup_*/pp_unit
+--                     from the shift charts, both already filled by publish().
+--                     injury_* is the game-log feed's one real absence: no
+--                     reconstructed source exists yet, so those stay null.
+--   * scored       - the training label (did the player score in the game), read
+--                     off the box score. Filled by publish().
 --
 -- Null here means "not reconstructed yet", never "not applicable".
 --
@@ -109,20 +112,7 @@ CREATE TABLE IF NOT EXISTS "Player-Snapshots-backtrack-__ENV__" (
     -- Tims' team projection.
     "tims" INTEGER,
 
-    -- Opposing goalie. Not in the game-log feed; goalies are excluded from this
-    -- table as players, so this describes the opponent, not a row subject.
-    "opp_goalie_name" TEXT,
-    "opp_goalie_team" TEXT,
-    "opp_goalie_status" TEXT,
-    "opp_goalie_confirmed" BOOLEAN,
-    "opp_goalie_nhl_id" BIGINT,
-    "opp_goalie_gaa" DOUBLE PRECISION,
-    "opp_goalie_save_pct" DOUBLE PRECISION,
-    "opp_goalie_record" TEXT,
-    "opp_goalie_shutouts" INTEGER,
-    "opp_goalie_games_played" INTEGER,
-
-    -- Lineup. Not in the game-log feed.
+    -- Lineup. Reconstructed from shift charts.
     "lineup_unit" TEXT,
     "lineup_position_group" TEXT,
     "pp_unit" TEXT,
@@ -141,3 +131,20 @@ CREATE INDEX IF NOT EXISTS "Player-Snapshots-backtrack-__ENV___player_idx"
 
 -- Same reasoning as the live archive: the training set is not publicly readable.
 ALTER TABLE "Player-Snapshots-backtrack-__ENV__" ENABLE ROW LEVEL SECURITY;
+
+-- The opponent-goalie block moved to Goalie-Snapshots-backtrack-{ENV}, where one
+-- row per goalie appearance beats one number repeated across ~21 skater rows per
+-- team-date. These DROPs retrofit an environment whose CREATE ran before the
+-- move; on a fresh table the columns above are never created and the statements
+-- are no-ops. publish() stopped sending the keys in the same change (PostgREST
+-- rejects a batch naming a column the table does not declare).
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_name";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_team";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_status";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_confirmed";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_nhl_id";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_gaa";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_save_pct";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_record";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_shutouts";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_games_played";
