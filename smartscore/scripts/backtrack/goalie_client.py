@@ -78,33 +78,41 @@ def fetch_goalies(date_str, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE
     return payload
 
 
-def goalies_map(season, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DIR):
-    """``{game_date: {team_abbr: {"name", "status"}}}`` for a season's games.
+def parse_goalies(payload):
+    """One Rotowire payload -> ``{team_abbr: {"name", "status"}}``.
 
     Teams without a listed starter that date are simply absent, mirroring the
     live product, which writes status UNKNOWN when the table has no row.
+
+    Shared by goalies_map (the fetch path) and local_store's re-parse of the
+    committed goalies_raw payloads.
     """
+    by_team = {}
+
+    for game in payload:
+        if not isinstance(game, dict):
+            continue
+        for side in ("home", "visit"):
+            team = normalize_team_abbr(game.get(f"{side}team"))
+            name = (game.get(f"{side}Player") or "").strip()
+            if not team or not name:
+                continue
+            by_team[team] = {
+                "name": name,
+                "status": (game.get(f"{side}Status") or "").strip(),
+            }
+
+    return by_team
+
+
+def goalies_map(season, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DIR):
+    """``{game_date: {team_abbr: {"name", "status"}}}`` for a season's games."""
     games = season_games(season, delay_seconds=delay_seconds, cache_dir=cache_dir)
     dates = sorted({game["date"] for game in games if game.get("date")})
 
     result = {}
     for date_str in dates:
         payload = fetch_goalies(date_str, delay_seconds=delay_seconds, cache_dir=cache_dir)
-        by_team = {}
-
-        for game in payload:
-            if not isinstance(game, dict):
-                continue
-            for side in ("home", "visit"):
-                team = normalize_team_abbr(game.get(f"{side}team"))
-                name = (game.get(f"{side}Player") or "").strip()
-                if not team or not name:
-                    continue
-                by_team[team] = {
-                    "name": name,
-                    "status": (game.get(f"{side}Status") or "").strip(),
-                }
-
-        result[date_str] = by_team
+        result[date_str] = parse_goalies(payload)
 
     return result

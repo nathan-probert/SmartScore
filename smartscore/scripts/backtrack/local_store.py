@@ -44,6 +44,7 @@ endpoint never carries this field" are different facts and worth telling apart.
 
 Usage::
 
+    uv run python smartscore/scripts/backtrack/local_store.py --ingest-cache
     uv run python smartscore/scripts/backtrack/local_store.py --build 20232024
     uv run python smartscore/scripts/backtrack/local_store.py --derive 20232024
     uv run python smartscore/scripts/backtrack/local_store.py --feeds 20232024
@@ -53,17 +54,20 @@ Usage::
 """
 
 import argparse
+import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from goalie_client import goalies_map  # noqa: E402
+from goalie_client import fetch_goalies, parse_goalies  # noqa: E402
 from lineup_reconstruct import reconstruct_game  # noqa: E402
 from nhl_client import (  # noqa: E402
     DEFAULT_DELAY_SECONDS,
     PLAYOFFS,
+    REGULAR_SEASON,
     fetch_boxscore,
     fetch_game_log,
     fetch_shiftcharts,
@@ -71,7 +75,7 @@ from nhl_client import (  # noqa: E402
 )
 from reconstruct import config  # noqa: E402 - lazy Supabase client, only needed by --publish
 from team_map import to_place  # noqa: E402
-from tims_client import tims_map  # noqa: E402
+from tims_client import fetch_history, parse_history  # noqa: E402
 
 DB_PATH = Path(__file__).resolve().parents[3] / "data" / "raw_nhl.sqlite"
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
@@ -382,6 +386,112 @@ CREATE TABLE IF NOT EXISTS goalie_features (
 
 CREATE INDEX IF NOT EXISTS goalie_features_team_date_idx
     ON goalie_features (season, team_abbrev, game_date);
+
+-- RAW API PAYLOADS, ONE ROW PER CACHED RESPONSE
+-- ---------------------------------------------
+-- The tables above are the *parsed* form of the feeds; these hold what the
+-- endpoints actually answered, verbatim, as the JSON document in a TEXT
+-- column. The JSON cache on disk is gitignored, so these rows are the only
+-- committed copy of the original responses: everything downstream - player_games,
+-- tims_daily, goalies_daily, and via those the derived tables - can be rebuilt
+-- from SQL alone after a fresh clone, with no re-crawl.
+--
+-- Re-parsing rather than re-fetching is the point. A field rename or a merge
+-- fix becomes DELETE + re-parse of a payload that is already on disk, instead
+-- of twenty minutes of throttled API traffic per season.
+--
+-- Every table carries season because dump_store's per-season export filters on
+-- ``WHERE season = ?``. schedule and game logs name their season in the cache
+-- file; box scores and shifts derive it from the game id, whose first four
+-- digits are the season's start year (2023020442 -> 20232024).
+CREATE TABLE IF NOT EXISTS boxscores_raw (
+    game_id INTEGER NOT NULL PRIMARY KEY,
+    season  TEXT    NOT NULL,
+    -- The fetch's list of normalised appearance records, exactly as cached.
+    payload TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS boxscores_raw_season_idx
+    ON boxscores_raw (season);
+
+-- Cached per (player, season, game_type); game_type is the API's own id, not a
+-- label - 2 regular season, 3 playoffs (nhl_client.REGULAR_SEASON / PLAYOFFS).
+CREATE TABLE IF NOT EXISTS gamelogs_raw (
+    player_id INTEGER NOT NULL,
+    season    TEXT    NOT NULL,
+    game_type INTEGER NOT NULL,
+    payload   TEXT    NOT NULL,
+    PRIMARY KEY (player_id, season, game_type)
+);
+
+CREATE INDEX IF NOT EXISTS gamelogs_raw_season_idx
+    ON gamelogs_raw (season);
+
+-- The seven-day schedule windows season_games walks to discover game ids and
+-- dates. Without these a fresh clone cannot even enumerate a season's games
+-- offline, so every date-based feed would fall back to the network.
+CREATE TABLE IF NOT EXISTS schedule_raw (
+    season  TEXT NOT NULL PRIMARY KEY,
+    payload TEXT NOT NULL
+);
+
+-- One date's Rotowire projected goalies, the raw payload goalies_daily parses.
+-- Keyed by date alone: a date belongs to exactly one season.
+CREATE TABLE IF NOT EXISTS goalies_raw (
+    game_date TEXT NOT NULL PRIMARY KEY,
+    season    TEXT NOT NULL,
+    payload   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS goalies_raw_season_idx
+    ON goalies_raw (season);
+
+-- One date's challenge pick groups, the raw payload tims_daily parses.
+CREATE TABLE IF NOT EXISTS tims_raw (
+    game_date TEXT NOT NULL PRIMARY KEY,
+    season    TEXT NOT NULL,
+    payload   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS tims_raw_season_idx
+    ON tims_raw (season);
+
+-- Shift charts, normalised to the fields lineup_reconstruct reads.
+--
+-- WHY NOT THE WHOLE PAYLOAD
+-- -------------------------
+-- The untruncated feed is 2 GB of cache across 6,993 games - names, shot
+-- counts, durations - while the reconstruction reads six fields. Storing those
+-- keeps the committed dump around 45 MB gzipped for shifts instead of a
+-- review-hostile blob, and --lineups still rebuilds with no network.
+--
+-- Times stay as the API's M:SS text rather than seconds: that is the shape
+-- reconstruct_game's _to_seconds parses, and converting here would either
+-- change its input or duplicate its parser. `period` is kept because the OT
+-- logic keys on it (a period fed by only one team contributes no defensive
+-- weight - see lineup_reconstruct), and shift_number for auditing the source.
+--
+-- The key is lineup_reconstruct's own dedupe identity - repeated
+-- (player, period, start, end, team) records are ONE shift - so a payload that
+-- repeats a shift collapses onto a row instead of failing the insert. Anything
+-- missing playerId/teamId/startTime/endTime cannot be reconstructed from at
+-- all and is skipped at ingest rather than written as a NULL-keyed row.
+CREATE TABLE IF NOT EXISTS shifts (
+    game_id     INTEGER NOT NULL,
+    season      TEXT    NOT NULL,
+    player_id   INTEGER NOT NULL,
+    team_id     INTEGER NOT NULL,
+    period      INTEGER NOT NULL,
+    shift_number INTEGER,
+    start_time  TEXT    NOT NULL,
+    end_time    TEXT    NOT NULL,
+    PRIMARY KEY (game_id, player_id, period, start_time, end_time, team_id)
+);
+
+-- A season's export and --lineups both scan shifts by season/game; at ~1M rows
+-- per season the full scan is the only expensive one in the dump path.
+CREATE INDEX IF NOT EXISTS shifts_season_idx
+    ON shifts (season);
 """
 
 
@@ -562,30 +672,63 @@ def build(season, db_path=DB_PATH, delay_seconds=DEFAULT_DELAY_SECONDS):
     conn = connect(db_path)
     games = season_games(season, delay_seconds=delay_seconds)
     game_season = {g["id"]: season for g in games}
+
+    # The schedule walk enumerated this season; its result is the only record
+    # of the season's game ids and dates, so it goes into schedule_raw too -
+    # a fresh clone without any walk would otherwise have to re-crawl the
+    # schedule endpoint before it could rebuild anything.
+    conn.execute(
+        "INSERT INTO schedule_raw (season, payload) VALUES (?, ?)"
+        " ON CONFLICT(season) DO UPDATE SET payload = excluded.payload",
+        (season, json.dumps(games)),
+    )
+
     written = 0
+    shift_skipped = 0
 
     for game in games:
         records = fetch_boxscore(game["id"], cache_dir=CACHE_DIR)
         # Shift charts alongside the box score: same per-game grain, and a
         # cold run fetches them here so the lineup pass below is cache-only.
-        fetch_shiftcharts(game["id"], delay_seconds=delay_seconds, cache_dir=CACHE_DIR)
+        shifts = fetch_shiftcharts(game["id"], delay_seconds=delay_seconds, cache_dir=CACHE_DIR)
+
+        game_row_season = game_season.get(game["id"], season)
+
+        # Every payload a fetch returned is written to the raw tables, the
+        # same rows --ingest-cache produces from the cache files (same helper,
+        # same json.dumps text), so a build finishes dump-complete on its own
+        # instead of needing a cache walk afterwards. Their commits ride on
+        # _upsert below, which commits per game.
+        shift_rows, skipped = _shift_rows(game["id"], game_row_season, shifts)
+        shift_skipped += skipped
+        conn.execute(
+            "INSERT INTO boxscores_raw (game_id, season, payload) VALUES (?, ?, ?)"
+            " ON CONFLICT(game_id) DO UPDATE SET season = excluded.season, payload = excluded.payload",
+            (game["id"], game_row_season, json.dumps(records)),
+        )
+        conn.executemany(_SHIFT_INSERT, shift_rows)
 
         rows = []
         for record in records:
             row = _merge_boxscore(record)
-            row["season"] = game_season.get(game["id"], season)
+            row["season"] = game_row_season
             rows.append(row)
 
         written += _upsert(conn, rows)
 
     print(f"box scores -> {written} row(s) for {season}")
+    if shift_skipped:
+        print(f"shifts -> {shift_skipped} record(s) skipped (no playerId/team/period/interval)")
 
     log_written = merge_gamelogs(conn, season, delay_seconds=delay_seconds)
 
-    lineup_written = compute_lineups(conn, season, delay_seconds=delay_seconds)
+    lineup_written = compute_lineups(conn, season)
     print(f"lineups -> {lineup_written} row(s) reconstructed for {season}")
 
-    feed_written = ingest_challenge_feeds(conn, season, delay_seconds=delay_seconds)
+    # The challenge feeds parse only committed SQL, so the payloads land in
+    # their raw tables before --feeds' parse pass reads them.
+    fetch_challenge_feeds(conn, season, games, delay_seconds=delay_seconds)
+    feed_written = ingest_challenge_feeds(conn, season)
     print(f"feeds -> {feed_written} row(s) ingested for {season}")
 
     conn.close()
@@ -628,6 +771,15 @@ def merge_gamelogs(conn, season, delay_seconds=DEFAULT_DELAY_SECONDS):
 
     for index, player_id in enumerate(player_ids, start=1):
         game_log = fetch_game_log(player_id, season, delay_seconds=delay_seconds)
+        # Persist the payload in the cache file's own shape, so a later
+        # re-parse via --ingest-cache or a dump load sees exactly what the
+        # player's log endpoint answered - including its emptiness, which is
+        # itself data ("no games that season"). Commits ride on _upsert below.
+        conn.execute(
+            "INSERT INTO gamelogs_raw (player_id, season, game_type, payload) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(player_id, season, game_type) DO UPDATE SET payload = excluded.payload",
+            (player_id, season, REGULAR_SEASON, json.dumps({"gameLog": game_log})),
+        )
 
         rows = []
         for game in game_log:
@@ -636,7 +788,13 @@ def merge_gamelogs(conn, season, delay_seconds=DEFAULT_DELAY_SECONDS):
             rows.append(row)
 
         if player_id in playoff_ids:
-            for game in fetch_game_log(player_id, season, game_type=PLAYOFFS, delay_seconds=delay_seconds):
+            playoff_log = fetch_game_log(player_id, season, game_type=PLAYOFFS, delay_seconds=delay_seconds)
+            conn.execute(
+                "INSERT INTO gamelogs_raw (player_id, season, game_type, payload) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(player_id, season, game_type) DO UPDATE SET payload = excluded.payload",
+                (player_id, season, PLAYOFFS, json.dumps({"gameLog": playoff_log})),
+            )
+            for game in playoff_log:
                 row = _merge_gamelog(game, season)
                 row["player_id"] = player_id
                 rows.append(row)
@@ -650,27 +808,295 @@ def merge_gamelogs(conn, season, delay_seconds=DEFAULT_DELAY_SECONDS):
     return log_written
 
 
-def compute_lineups(conn, season, delay_seconds=DEFAULT_DELAY_SECONDS):
-    """Fill player_lineups for one season from the shift-chart cache.
+# Cache file names, one pattern per feed. The clients each know their own name
+# but nothing knows all of them at once, and this walk has to - it is what turns
+# an already-crawled cache into the committed raw tables.
+_BOXSCORE_NAME = re.compile(r"^boxscore-(\d+)\.json$")
+_SHIFT_NAME = re.compile(r"^shiftcharts-(\d+)\.json$")
+_SCHEDULE_NAME = re.compile(r"^schedule-(\d{8})\.json$")
+_TIMS_NAME = re.compile(r"^tims-(\d{4}-\d{2}-\d{2})\.json$")
+_GOALIE_NAME = re.compile(r"^goalies-(\d{4}-\d{2}-\d{2})\.json$")
+# The one feed without a prefix: {player_id}-{season}-{game_type}.json.
+_GAMELOG_NAME = re.compile(r"^(\d+)-(\d{8})-(\d+)\.json$")
 
-    Reads every game the raw store has rows for. fetch_shiftcharts answers
-    from disk once a build has crawled it, so this is pure local computation
-    on a warm cache - rerunnable after a reconstruction fix without touching
-    the network.
+# ON CONFLICT DO NOTHING rather than an update: the key is lineup_reconstruct's
+# own identity for a shift, so a repeat is the same shift twice, not a change.
+_SHIFT_INSERT = (
+    "INSERT INTO shifts (game_id, season, player_id, team_id, period,"
+    " shift_number, start_time, end_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    " ON CONFLICT DO NOTHING"
+)
+
+
+def _shift_rows(game_id, season, payload):
+    """One shift-chart payload -> ``(param tuples for _SHIFT_INSERT, skipped)``.
+
+    A record without playerId/teamId/period/startTime/endTime cannot be
+    reconstructed from at all - the sweep needs an interval, a period and an
+    owner - so it is dropped here rather than written as a NULL-keyed row.
+    Shared by --ingest-cache (walking cached files) and --build (feeding what a
+    fetch just returned), so both produce identical rows.
     """
-    conn.execute(
-        "DELETE FROM player_lineups WHERE game_id IN (SELECT DISTINCT game_id FROM player_games WHERE season = ?)",
-        (season,),
-    )
+    rows = []
+    skipped = 0
 
+    for shift in payload:
+        if not isinstance(shift, dict):
+            skipped += 1
+            continue
+        player_id = shift.get("playerId")
+        team_id = shift.get("teamId")
+        period = shift.get("period")
+        start_time = shift.get("startTime")
+        end_time = shift.get("endTime")
+        if player_id is None or team_id is None or period is None or not start_time or not end_time:
+            skipped += 1
+            continue
+        rows.append((game_id, season, player_id, team_id, period, shift.get("shiftNumber"), start_time, end_time))
+
+    return rows, skipped
+
+
+def _season_from_game_id(game_id):
+    """'2023020442' -> '20232024': the first four digits are the start year."""
+    start = int(str(game_id)[:4])
+    return f"{start}{start + 1:04d}"
+
+
+def _season_from_date(date_str):
+    """Season id for a game date: the league breaks in July, not January.
+
+    2023-10-10 and 2024-04-15 are both 20232024, while 2024-07-01 would be
+    20242025 - so the boundary is the month, not the year.
+    """
+    year = int(date_str[:4])
+    month = int(date_str[5:7])
+    return f"{year}{year + 1:04d}" if month >= 7 else f"{year - 1:04d}{year:04d}"
+
+
+def _read_payload(path):
+    """``(text, parsed)`` for a cache file, ``(None, None)`` if it is unreadable.
+
+    The text is kept verbatim rather than re-serialised, so the stored payload is
+    byte-for-byte what the fetch wrote; parsing only serves to reject a truncated
+    file before it can poison a re-parse.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None, None
+
+    try:
+        return text, json.loads(text)
+    except json.JSONDecodeError:
+        return None, None
+
+
+def ingest_cache(conn, cache_dir=CACHE_DIR):
+    """Fill the raw payload tables from every file under ``cache_dir``.
+
+    The backfill for an existing machine: the cache holds 23k already-fetched
+    responses, and this writes them into the tables the dump commits - zero
+    network, because nothing here asks the API for anything.
+
+    Rerunnable rather than one-shot. Payload tables upsert on their key and
+    shifts collapse on their dedupe identity, so an interrupted run is resumed
+    by running it again. Returns ``{table: rows written}`` plus a skipped count
+    for files that could not be read or matched.
+    """
+    counts = {"boxscores_raw": 0, "gamelogs_raw": 0, "schedule_raw": 0, "goalies_raw": 0, "tims_raw": 0, "shifts": 0}
+    skipped = 0
+    cache_dir = Path(cache_dir)
+
+    if not cache_dir.is_dir():
+        print(f"no cache directory at {cache_dir}")
+        return counts
+
+    # schedule - one file per season, the game-date source for everything below.
+    rows = []
+    for path in sorted(cache_dir.glob("schedule-*.json")):
+        match = _SCHEDULE_NAME.match(path.name)
+        text, _ = _read_payload(path)
+        if match is None or text is None:
+            skipped += 1
+            continue
+        rows.append((match.group(1), text))
+    if rows:
+        conn.executemany(
+            "INSERT INTO schedule_raw (season, payload) VALUES (?, ?)"
+            " ON CONFLICT(season) DO UPDATE SET payload = excluded.payload",
+            rows,
+        )
+        conn.commit()
+        counts["schedule_raw"] = len(rows)
+
+    # box scores - one file per game, season derived from the game id.
+    rows = []
+    for path in sorted(cache_dir.glob("boxscore-*.json")):
+        match = _BOXSCORE_NAME.match(path.name)
+        text, _ = _read_payload(path)
+        if match is None or text is None:
+            skipped += 1
+            continue
+        game_id = int(match.group(1))
+        rows.append((game_id, _season_from_game_id(game_id), text))
+    if rows:
+        conn.executemany(
+            "INSERT INTO boxscores_raw (game_id, season, payload) VALUES (?, ?, ?)"
+            " ON CONFLICT(game_id) DO UPDATE SET season = excluded.season, payload = excluded.payload",
+            rows,
+        )
+        conn.commit()
+        counts["boxscores_raw"] = len(rows)
+
+    # game logs - one file per (player, season, game_type); all three are the name.
+    rows = []
+    for path in sorted(cache_dir.glob("*.json")):
+        match = _GAMELOG_NAME.match(path.name)
+        if match is None:
+            continue
+        text, _ = _read_payload(path)
+        if text is None:
+            skipped += 1
+            continue
+        rows.append((int(match.group(1)), match.group(2), int(match.group(3)), text))
+    if rows:
+        conn.executemany(
+            "INSERT INTO gamelogs_raw (player_id, season, game_type, payload) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(player_id, season, game_type)"
+            " DO UPDATE SET payload = excluded.payload",
+            rows,
+        )
+        conn.commit()
+        counts["gamelogs_raw"] = len(rows)
+
+    # Rotowire goalies and the challenge's groups - one file per game date.
+    for pattern, table in ((_GOALIE_NAME, "goalies_raw"), (_TIMS_NAME, "tims_raw")):
+        rows = []
+        prefix = table.removesuffix("_raw") + "-"
+        for path in sorted(cache_dir.glob(f"{prefix}*.json")):
+            match = pattern.match(path.name)
+            text, _ = _read_payload(path)
+            if match is None or text is None:
+                skipped += 1
+                continue
+            date_str = match.group(1)
+            rows.append((date_str, _season_from_date(date_str), text))
+        if rows:
+            conn.executemany(
+                f"INSERT INTO {table} (game_date, season, payload) VALUES (?, ?, ?)"  # noqa: S608
+                " ON CONFLICT(game_date) DO UPDATE SET season = excluded.season, payload = excluded.payload",
+                rows,
+            )
+            conn.commit()
+            counts[table] = len(rows)
+
+    # Shift charts - the only feed stored parsed rather than verbatim: 2 GB of
+    # source collapses to the six fields reconstruct_game reads (see the SCHEMA
+    # comment on shifts), and this is the pass that does the collapsing.
+    rows = []
+    shift_files = sorted(cache_dir.glob("shiftcharts-*.json"))
+    for index, path in enumerate(shift_files, start=1):
+        match = _SHIFT_NAME.match(path.name)
+        text, payload = _read_payload(path)
+        if match is None or text is None or not isinstance(payload, list):
+            skipped += 1
+            continue
+
+        game_id = int(match.group(1))
+        season = _season_from_game_id(game_id)
+
+        feed_rows, feed_skipped = _shift_rows(game_id, season, payload)
+        skipped += feed_skipped
+        rows.extend(feed_rows)
+
+        # Flush in blocks: a full cache is ~5M shift rows and holding them all
+        # would be the only memory spike in the run.
+        if len(rows) >= 50000:
+            conn.executemany(_SHIFT_INSERT, rows)
+            conn.commit()
+            rows = []
+
+        if index % 1000 == 0:
+            print(f"  shifts: {index}/{len(shift_files)} game(s)", flush=True)
+
+    if rows:
+        conn.executemany(_SHIFT_INSERT, rows)
+        conn.commit()
+
+    # shifts inserts with ON CONFLICT DO NOTHING, so rows written this pass is
+    # not len(rows) - the table's own count is the honest figure to report.
+    counts["shifts"] = conn.execute("SELECT COUNT(*) FROM shifts").fetchone()[0]
+
+    for table, n in counts.items():
+        print(f"{table}: {n} row(s)")
+    if skipped:
+        print(f"skipped {skipped} file(s)/record(s) that were unreadable or unmatchable")
+
+    return counts
+
+
+def compute_lineups(conn, season):
+    """Fill player_lineups for one season from the shifts table.
+
+    reconstruct_game reads exactly the six fields the shift-chart feed
+    carries, and those now live as rows in shifts (written by --build /
+    --ingest-cache), so this pass is pure SQL plus computation: no cache
+    directory, no network, no idle-delay arithmetic. Rerunnable after a
+    reconstruction fix - a completed game's shifts never change, only the
+    assignments derived from them.
+
+    Raises when the season has games but the shifts table answers nothing for
+    them: that is a store loaded from a pre-shifts dump or a backfill that
+    never ran, and silently shipping no lineups would read like a season that
+    genuinely has none.
+    """
     game_ids = [
         r[0]
         for r in conn.execute("SELECT DISTINCT game_id FROM player_games WHERE season = ? ORDER BY game_id", (season,))
     ]
 
+    if (
+        game_ids
+        and not conn.execute(
+            "SELECT 1 FROM shifts WHERE game_id IN"
+            " (SELECT DISTINCT game_id FROM player_games WHERE season = ?) LIMIT 1",
+            (season,),
+        ).fetchone()
+    ):
+        raise RuntimeError(
+            f"{season}: {len(game_ids)} game(s) in player_games but the shifts table is empty -"
+            " backfill with local_store --ingest-cache, or load dumps current enough to carry shifts"
+        )
+
+    conn.execute(
+        "DELETE FROM player_lineups WHERE game_id IN (SELECT DISTINCT game_id FROM player_games WHERE season = ?)",
+        (season,),
+    )
+
     written = 0
     for game_id in game_ids:
-        shifts = fetch_shiftcharts(game_id, delay_seconds=delay_seconds, cache_dir=CACHE_DIR)
+        # Row dicts in the feed's own key spellings, so reconstruct_game and
+        # _normalize_shifts see exactly the shape fetch_shiftcharts used to
+        # return. Input order is irrelevant to the sweep - events are re-sorted
+        # by (time, sign) internally - this ORDER BY only makes runs
+        # reproducible. start_time as M:SS text sorts non-chronologically at
+        # 10:00 vs 2:00, which is fine: nothing consumes that text order.
+        shifts = [
+            {
+                "playerId": r["player_id"],
+                "teamId": r["team_id"],
+                "period": r["period"],
+                "shiftNumber": r["shift_number"],
+                "startTime": r["start_time"],
+                "endTime": r["end_time"],
+            }
+            for r in conn.execute(
+                "SELECT player_id, team_id, period, shift_number, start_time, end_time"
+                " FROM shifts WHERE game_id = ? ORDER BY period, start_time, player_id",
+                (game_id,),
+            )
+        ]
         if not shifts:
             continue
 
@@ -710,38 +1136,122 @@ def compute_lineups(conn, season, delay_seconds=DEFAULT_DELAY_SECONDS):
     return written
 
 
-def ingest_challenge_feeds(conn, season, delay_seconds=DEFAULT_DELAY_SECONDS):
-    """Fill tims_daily and goalies_daily for one season from the helper APIs.
+def fetch_challenge_feeds(conn, season, games, delay_seconds=DEFAULT_DELAY_SECONDS):
+    """Fetch tims/goalies payloads for every game date missing from the raw tables.
 
-    Reads through tims_map/goalies_map, which answer from the JSON cache once a
-    build has crawled it, so a re-ingest on a warm cache is pure local SQL.
+    ingest_challenge_feeds parses only committed SQL, so build has to put the
+    payloads in tims_raw / goalies_raw first. A date already in either table -
+    because a previous build ran, or --ingest-cache walked the cache - is not
+    requested again: these are the two slowest feeds in a cold build (the
+    same date hit twice by different hosts, each with its own throttle).
+
+    Both fetches call their client's own error conventions (challenge history
+    answers 404 -> empty payload stored; Rotowire answers an empty list or
+    raises on a shape change), so the raw tables end up the complete
+    as-fetched record. Commits at the end, true to the callers' pattern of one
+    commit per stage.
+    """
+    dates = sorted({game["date"] for game in games if game.get("date")})
+
+    have_tims = {r[0] for r in conn.execute("SELECT game_date FROM tims_raw WHERE season = ?", (season,))}
+    tims_fetched = 0
+    for date_str in dates:
+        if date_str in have_tims:
+            continue
+        payload = fetch_history(date_str, delay_seconds=delay_seconds)
+        conn.execute(
+            "INSERT INTO tims_raw (game_date, season, payload) VALUES (?, ?, ?)"
+            " ON CONFLICT(game_date) DO UPDATE SET season = excluded.season, payload = excluded.payload",
+            (date_str, season, json.dumps(payload)),
+        )
+        tims_fetched += 1
+
+    have_goalies = {r[0] for r in conn.execute("SELECT game_date FROM goalies_raw WHERE season = ?", (season,))}
+    goalies_fetched = 0
+    for date_str in dates:
+        if date_str in have_goalies:
+            continue
+        payload = fetch_goalies(date_str, delay_seconds=delay_seconds)
+        conn.execute(
+            "INSERT INTO goalies_raw (game_date, season, payload) VALUES (?, ?, ?)"
+            " ON CONFLICT(game_date) DO UPDATE SET season = excluded.season, payload = excluded.payload",
+            (date_str, season, json.dumps(payload)),
+        )
+        goalies_fetched += 1
+
+    conn.commit()
+    print(f"challenge feeds -> {tims_fetched} tims + {goalies_fetched} goalies date payload(s) fetched for {season}")
+    return tims_fetched, goalies_fetched
+
+
+def ingest_challenge_feeds(conn, season):
+    """Fill tims_daily and goalies_daily for one season from the raw payloads.
+
+    tims_raw / goalies_raw hold one committed row per game date the challenge
+    feeds answered (written by --build / --ingest-cache); this re-parses those
+    SQL payloads through tims_client.parse_history and
+    goalie_client.parse_goalies rather than calling the helper APIs or walking
+    the JSON cache. Every date a season's games cover was fetched, so the
+    season filter below sees the same date set the schedule walk used to.
+
     Rebuild semantics match compute_lineups: the season's rows are deleted and
     re-inserted, so a source-shape change can be re-ingested without leftovers.
+    Raises when the season has games but neither raw table has rows for it -
+    that is a backfill that never ran or pre-raw dumps, and reads like a
+    season with no challenge data.
+
+    Standalone (--feeds) as well as inside build; publish reads these tables.
     """
     conn.execute("DELETE FROM tims_daily WHERE season = ?", (season,))
     conn.execute("DELETE FROM goalies_daily WHERE season = ?", (season,))
 
+    for raw_table, message in (
+        ("tims_raw", "tims"),
+        ("goalies_raw", "goalies"),
+    ):
+        has_games = conn.execute(
+            "SELECT 1 FROM player_games WHERE season = ? LIMIT 1",
+            (season,),
+        ).fetchone()
+        has_raw = conn.execute(
+            f"SELECT 1 FROM {raw_table} WHERE season = ? LIMIT 1",  # noqa: S608 - constant identifier
+            (season,),
+        ).fetchone()
+
+        if has_games and not has_raw:
+            raise RuntimeError(
+                f"{season}: player_games has rows but {raw_table} has none - backfill with"
+                " local_store --ingest-cache, or load dumps current enough to carry raw payloads"
+            )
+
     written = 0
 
-    for date_str, players in tims_map(season, delay_seconds=delay_seconds).items():
+    for row in conn.execute("SELECT game_date, payload FROM tims_raw WHERE season = ?", (season,)):
+        players = parse_history(json.loads(row["payload"]))
+        rows = [
+            (season, row["game_date"], player_id, entry["group"], entry["scored"])
+            for player_id, entry in players.items()
+        ]
         conn.executemany(
             "INSERT INTO tims_daily (season, game_date, player_id, group_id, scored)"
             " VALUES (?, ?, ?, ?, ?)"
             " ON CONFLICT(game_date, player_id) DO UPDATE SET"
             " group_id = excluded.group_id, scored = excluded.scored",
-            [(season, date_str, player_id, entry["group"], entry["scored"]) for player_id, entry in players.items()],
+            rows,
         )
-        written += len(players)
+        written += len(rows)
 
-    for date_str, teams in goalies_map(season, delay_seconds=delay_seconds).items():
+    for row in conn.execute("SELECT game_date, payload FROM goalies_raw WHERE season = ?", (season,)):
+        teams = parse_goalies(json.loads(row["payload"]))
+        rows = [(season, row["game_date"], team, info["name"], info["status"]) for team, info in teams.items()]
         conn.executemany(
             "INSERT INTO goalies_daily (season, game_date, team_abbrev, goalie_name, status)"
             " VALUES (?, ?, ?, ?, ?)"
             " ON CONFLICT(game_date, team_abbrev) DO UPDATE SET"
             " goalie_name = excluded.goalie_name, status = excluded.status",
-            [(season, date_str, team, info["name"], info["status"]) for team, info in teams.items()],
+            rows,
         )
-        written += len(teams)
+        written += len(rows)
 
     conn.commit()
     return written
@@ -1640,16 +2150,23 @@ def main():  # noqa: PLR0911 - one return per CLI mode; a dispatch table would o
     parser = argparse.ArgumentParser(description="Local SQLite raw store for NHL per-game data.")
     parser.add_argument("--build", metavar="SEASON", help="Load raw rows for one season from the cache.")
     parser.add_argument(
+        "--ingest-cache",
+        action="store_true",
+        help="Import every cached feed file into the raw payload tables (no network).",
+    )
+    parser.add_argument(
         "--gamelogs",
         metavar="SEASON",
         help="Re-merge only the game-log stat families (incl. goalie saves) for one season.",
     )
     parser.add_argument("--derive", metavar="SEASON", help="Recompute derived features for one season.")
     parser.add_argument(
-        "--lineups", metavar="SEASON", help="Recompute player_lineups from the shift-chart cache for one season."
+        "--lineups", metavar="SEASON", help="Recompute player_lineups from the shifts table for one season."
     )
     parser.add_argument(
-        "--feeds", metavar="SEASON", help="Re-ingest tims_daily and goalies_daily from the JSON caches."
+        "--feeds",
+        metavar="SEASON",
+        help="Re-ingest tims_daily and goalies_daily from the tims_raw/goalies_raw payloads.",
     )
     parser.add_argument("--publish", metavar="SEASON", help="Upsert player features into Supabase.")
     parser.add_argument("--publish-team", metavar="SEASON", help="Upsert team stats into Supabase.")
@@ -1659,6 +2176,12 @@ def main():  # noqa: PLR0911 - one return per CLI mode; a dispatch table would o
 
     if args.stats:
         stats(Path(args.db))
+        return 0
+
+    if args.ingest_cache:
+        conn = connect(Path(args.db))
+        ingest_cache(conn)
+        conn.close()
         return 0
 
     if args.build:

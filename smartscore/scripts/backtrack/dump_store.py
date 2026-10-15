@@ -34,10 +34,34 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DB_PATH = REPO_ROOT / "data" / "raw_nhl.sqlite"
 DUMP_DIR = REPO_ROOT / "data" / "dumps"
 
-# Tables holding per-season derived output. Included in the dump rather than
-# recomputed on load: they are cheap to regenerate but shipping them means a loaded
-# database is immediately queryable instead of needing a --derive pass.
-_ALL_TABLES = ("player_games", "derived_features", "derived_team_stats", "tims_daily", "goalies_daily")
+# Tables committed to the dump: the parsed staging rows and the raw payloads
+# they are parsed from. Deliberately NOT derived_features, derived_team_stats,
+# goalie_features or player_lineups - those are recomputed from these rows by
+# local_store --derive / --lineups, so a formula change is a re-derive rather
+# than a rewrite of every dump, and a derived table's diff in review is noise
+# rather than an audit trail of what the API said.
+#
+# Every entry must carry a season column: _iter_season_lines filters each table
+# on WHERE season = ?.
+_ALL_TABLES = (
+    # Parsed staging rows.
+    "player_games",
+    "tims_daily",
+    "goalies_daily",
+    # Raw payloads - the committed copy of what the endpoints answered.
+    "boxscores_raw",
+    "gamelogs_raw",
+    "schedule_raw",
+    "goalies_raw",
+    "tims_raw",
+    "shifts",
+)
+
+# Not exported, but cleared by --load: they are rebuilt from the rows above, and
+# leaving a previous database's values behind would let a publish ship numbers
+# computed from data the load just replaced. Empty is a loud failure at publish
+# time; stale is a silent wrong answer.
+_DERIVED_TABLES = ("derived_features", "derived_team_stats", "goalie_features", "player_lineups")
 
 
 def seasons_in_db(db_path=DB_PATH):
@@ -160,7 +184,9 @@ def load(db_path=DB_PATH, dump_dir=DUMP_DIR, clear=True):
     if clear:
         # Truncate, not drop: schema and indexes come from SCHEMA and are shared
         # across seasons, so a load replaces rows rather than recreating tables.
-        for table in _ALL_TABLES:
+        # Derived tables are cleared alongside the dumped ones - see
+        # _DERIVED_TABLES.
+        for table in (*_ALL_TABLES, *_DERIVED_TABLES):
             conn.execute(f"DELETE FROM {table}")  # noqa: S608
         conn.commit()
 

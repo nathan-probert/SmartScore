@@ -59,31 +59,39 @@ def fetch_history(date_str, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE
     return payload
 
 
-def tims_map(season, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DIR):
-    """``{game_date: {player_id: {"group", "scored"}}}`` for a season's games.
+def parse_history(payload):
+    """One history payload -> ``{player_id: {"group", "scored"}}``.
 
     ``group`` is the challenge's pick group (1-3) and ``scored`` the helper's
     own grading of whether that player scored that night - kept alongside the
     group so the local store can persist both from one walk of the payloads.
+
+    Shared by tims_map (the fetch path) and local_store's re-parse of the
+    committed tims_raw payloads, so a parse fix needs exactly one edit.
     """
+    groups = {}
+
+    for group in payload.get("playerLists") or []:
+        group_id = group.get("id")
+        for player in group.get("players") or []:
+            player_id = player.get("nhlPlayerId")
+            if player_id and group_id:
+                groups[player_id] = {
+                    "group": group_id,
+                    "scored": player.get("scored"),
+                }
+
+    return groups
+
+
+def tims_map(season, delay_seconds=DEFAULT_DELAY_SECONDS, cache_dir=CACHE_DIR):
+    """``{game_date: {player_id: {"group", "scored"}}}`` for a season's games."""
     games = season_games(season, delay_seconds=delay_seconds, cache_dir=cache_dir)
     dates = sorted({game["date"] for game in games if game.get("date")})
 
     result = {}
     for date_str in dates:
         payload = fetch_history(date_str, delay_seconds=delay_seconds, cache_dir=cache_dir)
-        groups = {}
-
-        for group in payload.get("playerLists") or []:
-            group_id = group.get("id")
-            for player in group.get("players") or []:
-                player_id = player.get("nhlPlayerId")
-                if player_id and group_id:
-                    groups[player_id] = {
-                        "group": group_id,
-                        "scored": player.get("scored"),
-                    }
-
-        result[date_str] = groups
+        result[date_str] = parse_history(payload)
 
     return result

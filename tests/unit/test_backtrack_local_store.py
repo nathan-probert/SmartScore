@@ -1,5 +1,6 @@
 """local_store window SQL: strictly-before gpg/five_gpg/ppg, team otga/otshga, publish names."""
 
+import json
 from types import SimpleNamespace
 
 import local_store
@@ -179,19 +180,25 @@ def test_build_merges_playoff_game_logs(tmp_path, monkeypatch):
     monkeypatch.setattr(local_store, "season_games", fake_games)
     monkeypatch.setattr(local_store, "fetch_boxscore", fake_boxscore)
     monkeypatch.setattr(local_store, "fetch_game_log", fake_log)
-    # No shift data in this fixture: the lineup pass runs but finds nothing.
-    monkeypatch.setattr(local_store, "fetch_shiftcharts", lambda game_id, **kwargs: [])
-    # The feed ingest runs at the end of build; stub both maps so it never
-    # reaches the network, with just enough data to prove the tables fill.
+    # At least one shift record: compute_lineups raises when a season has games
+    # but the shifts table answers nothing for it. The one-sided roster
+    # reconstructs no line unit - the point being tested here is the log merge.
     monkeypatch.setattr(
         local_store,
-        "tims_map",
-        lambda season, **kwargs: {"2024-04-20": {301: {"group": 1, "scored": True}}},
+        "fetch_shiftcharts",
+        lambda game_id, **kwargs: [_shift(301, 6, "00:00", "05:00")],
+    )
+    # Both feeds are fetched into their raw payload tables during build and
+    # parsed back out of SQL, so the stubs answer in payload shapes.
+    monkeypatch.setattr(
+        local_store,
+        "fetch_history",
+        lambda date_str, **kwargs: {"playerLists": [{"id": 1, "players": [{"nhlPlayerId": 301, "scored": True}]}]},
     )
     monkeypatch.setattr(
         local_store,
-        "goalies_map",
-        lambda season, **kwargs: {"2024-04-20": {"BOS": {"name": "J. Swayman", "status": "Confirmed"}}},
+        "fetch_goalies",
+        lambda date_str, **kwargs: [{"hometeam": "BOS", "homePlayer": "J. Swayman", "homeStatus": "Confirmed"}],
     )
 
     local_store.build("20232024", db_path=tmp_path / "raw.sqlite")
@@ -210,21 +217,40 @@ def test_build_merges_playoff_game_logs(tmp_path, monkeypatch):
     assert tims_row["group_id"] == 1 and tims_row["scored"] == 1
     goalie_row = conn.execute("SELECT * FROM goalies_daily WHERE team_abbrev = 'BOS'").fetchone()
     assert goalie_row["goalie_name"] == "J. Swayman" and goalie_row["status"] == "Confirmed"
+    # Everything the fetches returned also landed in the raw payload tables -
+    # a build leaves the store dump-complete on its own.
+    assert conn.execute("SELECT COUNT(*) FROM schedule_raw").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM boxscores_raw").fetchone()[0] == 1
+    # Regular-season plus playoff log, stored in the cache file's own shape.
+    glog_types = [r[0] for r in conn.execute("SELECT game_type FROM gamelogs_raw ORDER BY game_type")]
+    assert glog_types == [2, 3]
+    assert (
+        json.loads(conn.execute("SELECT payload FROM gamelogs_raw WHERE game_type = 3").fetchone()[0])["gameLog"][0][
+            "gameId"
+        ]
+        == 2023030401
+    )
+    assert conn.execute("SELECT COUNT(*) FROM tims_raw").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM goalies_raw").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM shifts").fetchone()[0] == 1
     conn.close()
 
 
-def test_ingest_challenge_feeds_rebuilds_the_season_rows(tmp_path, monkeypatch):
+def test_ingest_challenge_feeds_rebuilds_the_season_rows(tmp_path):
+    """The parse pass reads committed tims_raw/goalies_raw payloads, not the APIs."""
     conn = local_store.connect(tmp_path / "raw.sqlite")
-    monkeypatch.setattr(
-        local_store,
-        "tims_map",
-        lambda season, **kwargs: {"2023-10-10": {201: {"group": 2, "scored": False}}},
+
+    # One committed payload per feed - the rows build/--ingest-cache would have
+    # written from a fetch or a cache walk.
+    conn.execute(
+        "INSERT INTO tims_raw (game_date, season, payload) VALUES ('2023-10-10', '20232024', ?)",
+        (json.dumps({"playerLists": [{"id": 2, "players": [{"nhlPlayerId": 201, "scored": False}]}]}),),
     )
-    monkeypatch.setattr(
-        local_store,
-        "goalies_map",
-        lambda season, **kwargs: {"2023-10-10": {"TOR": {"name": "I. Samsonov", "status": "Confirmed"}}},
+    conn.execute(
+        "INSERT INTO goalies_raw (game_date, season, payload) VALUES ('2023-10-10', '20232024', ?)",
+        (json.dumps([{"hometeam": "TOR", "homePlayer": "I. Samsonov", "homeStatus": "Confirmed"}]),),
     )
+    conn.commit()
 
     local_store.ingest_challenge_feeds(conn, "20232024")
     # A second run is a delete-and-reinsert, not a duplicate.
@@ -242,12 +268,14 @@ def test_ingest_challenge_feeds_rebuilds_the_season_rows(tmp_path, monkeypatch):
     assert goalie_rows[0]["status"] == "Confirmed"
 
     # Another season's rows survive a rebuild of this one: the delete is
-    # scoped by season, so backfilled seasons cannot clobber each other.
+    # scoped by season, and with the raw payloads gone the season simply has
+    # no rows - which is the empty-season state, not an error.
     conn.execute(
         "INSERT INTO tims_daily (season, game_date, player_id, group_id) VALUES ('20222023', '2023-01-01', 999, 1)"
     )
     conn.commit()
-    monkeypatch.setattr(local_store, "tims_map", lambda season, **kwargs: {})
+    conn.execute("DELETE FROM tims_raw WHERE season = '20232024'")
+    conn.commit()
     local_store.ingest_challenge_feeds(conn, "20232024")
 
     assert conn.execute("SELECT COUNT(*) FROM tims_daily WHERE season = '20222023'").fetchone()[0] == 1
@@ -508,7 +536,14 @@ def test_compute_lineups_reconstructs_lines_and_pp_units(tmp_path, monkeypatch):
     for player_id, position in positions.items():
         _insert(conn, player_id, 7001, "2023-10-10", 0, team="BOS" if player_id < 100 else "TOR", position=position)
 
-    monkeypatch.setattr(local_store, "fetch_shiftcharts", lambda game_id, **kwargs: shifts)
+    # The synthetic shifts go through the same payload->rows helper the cache
+    # walk and build both use, then into the table compute_lineups reads - no
+    # fetch stub needed, the SQL is the source.
+    shift_rows, skipped = local_store._shift_rows(7001, "20232024", shifts)
+    assert skipped == 0
+    conn.executemany(local_store._SHIFT_INSERT, shift_rows)
+    conn.commit()
+
     local_store.compute_lineups(conn, "20232024")
 
     rows = {r["player_id"]: r for r in conn.execute("SELECT * FROM player_lineups")}
@@ -530,6 +565,78 @@ def test_compute_lineups_reconstructs_lines_and_pp_units(tmp_path, monkeypatch):
     # Every matched skater is ACTUAL, position-grouped by role.
     assert rows[1]["lineup_status"] == "ACTUAL" and rows[1]["lineup_position_group"] == "F"
     assert rows[7]["lineup_position_group"] == "D"
+
+
+def test_compute_lineups_raises_when_the_shifts_table_is_empty(tmp_path):
+    """A season with games but no shift rows is a backfill gap, not a quiet no-op."""
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    _insert(conn, 201, 8001, "2023-10-10", 1)
+
+    with pytest.raises(RuntimeError, match="shifts table is empty"):
+        local_store.compute_lineups(conn, "20232024")
+    conn.close()
+
+
+def test_ingest_cache_fills_the_raw_payload_tables(tmp_path):
+    """Cache files -> raw payloads, verbatim, season derived, rerunnable."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+
+    records = [{"player_id": 301, "game_id": 2023020001, "name": "P. Layer", "position": "C"}]
+    (cache / "boxscore-2023020001.json").write_text(json.dumps(records), encoding="utf-8")
+    (cache / "schedule-20232024.json").write_text('[{"id": 2023020001, "date": "2023-10-11"}]', encoding="utf-8")
+    # A game log in the payload shape the clients cache, named as they name it.
+    (cache / "301-20232024-2.json").write_text(json.dumps({"gameLog": [{"gameId": 2023020001}]}), encoding="utf-8")
+    (cache / "goalies-2023-10-11.json").write_text(
+        json.dumps([{"hometeam": "TOR", "homePlayer": "I. Samsonov", "homeStatus": "Confirmed"}]), encoding="utf-8"
+    )
+    (cache / "tims-2023-10-11.json").write_text(
+        json.dumps({"playerLists": [{"id": 3, "players": [{"nhlPlayerId": 301, "scored": True}]}]}), encoding="utf-8"
+    )
+    shifts = [_shift(301, 10, "00:00", "00:45"), _shift(301, 10, "00:45", "01:30", period=2)]
+    (cache / "shiftcharts-2023020001.json").write_text(json.dumps(shifts), encoding="utf-8")
+
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    counts = local_store.ingest_cache(conn, cache)
+
+    assert counts["boxscores_raw"] == 1 and counts["gamelogs_raw"] == 1
+    assert counts["schedule_raw"] == 1 and counts["tims_raw"] == 1 and counts["goalies_raw"] == 1
+    assert counts["shifts"] == 2
+
+    # Payloads are the file text verbatim; game id -> season for box scores.
+    row = conn.execute("SELECT season, payload FROM boxscores_raw WHERE game_id = 2023020001").fetchone()
+    assert row["season"] == "20232024"
+    assert row["payload"] == json.dumps(records)
+
+    # Date -> season straddles July, not January.
+    dates = [r[0] for r in conn.execute("SELECT game_date FROM goalies_raw")]
+    assert dates == ["2023-10-11"]
+    assert conn.execute("SELECT season FROM goalies_raw").fetchone()[0] == "20232024"
+
+    # Rerunning the walk upserts rather than duplicates.
+    before = dict(counts)
+    local_store.ingest_cache(conn, cache)
+    assert conn.execute("SELECT COUNT(*) FROM shifts").fetchone()[0] == before["shifts"]
+    assert conn.execute("SELECT COUNT(*) FROM boxscores_raw").fetchone()[0] == before["boxscores_raw"]
+    conn.close()
+
+
+def test_ingest_cache_skips_shift_records_that_cannot_reconstruct(tmp_path):
+    """A shift missing playerId/team/period/interval is dropped, not NULL-keyed."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    payload = [
+        _shift(301, 10, "00:00", "00:45"),
+        {"playerId": 301},  # no team/period/interval
+        "corrupted-string-record",
+    ]
+    (cache / "shiftcharts-2023020001.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    conn = local_store.connect(tmp_path / "raw.sqlite")
+    local_store.ingest_cache(conn, cache)
+
+    assert conn.execute("SELECT COUNT(*) FROM shifts").fetchone()[0] == 1
+    conn.close()
 
 
 def _insert_goalie(  # noqa: PLR0913, PLR0917 - helper mirrors the table's shape; every extra has a default
