@@ -1,0 +1,58 @@
+name: backtrack-publish
+
+# Publishes the reconstructed season into the backtrack tables from the raw
+# store, so a run never depends on a local checkout holding .env credentials -
+# the same SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY the deploy workflow uses.
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Which ENV's tables to publish to (dev first; prod once reads consume these tables)
+        default: dev
+        type: choice
+        options:
+          - dev
+          - prod
+      season:
+        description: Season to publish (e.g. 20232024)
+        default: 20232024
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      ENV: ${{ inputs.env }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Rebuild the raw store from the committed dumps
+        run: uv run python smartscore/scripts/backtrack/dump_store.py --load
+
+      - name: Recompute derived features, team stats, goalie stats and lineups
+        run: |
+          uv run python smartscore/scripts/backtrack/local_store.py --derive ${{ inputs.season }}
+          uv run python smartscore/scripts/backtrack/local_store.py --lineups ${{ inputs.season }}
+
+      - name: Publish player rows
+        run: uv run python smartscore/scripts/backtrack/local_store.py --publish ${{ inputs.season }}
+
+      - name: Publish team rows
+        run: uv run python smartscore/scripts/backtrack/local_store.py --publish-team ${{ inputs.season }}
+
+      - name: Publish goalie rows
+        run: uv run python smartscore/scripts/backtrack/local_store.py --publish-goalies ${{ inputs.season }}
+
+      # Diff against the archive AFTER the publish lands, so the comparison
+      # table here is against the exact rows Supabase now holds - not
+      # against the local store only. A gpg agreement below ~99% is the
+      # tripwire: earlier verification was 15,640/15,667 (99.83%) on 2023-24.
+      - name: Validate against the archive
+        run: uv run python smartscore/scripts/backtrack/validate.py --env ${{ inputs.env }} --season ${{ inputs.season }}
