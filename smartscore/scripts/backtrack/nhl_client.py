@@ -60,7 +60,12 @@ BASE_RETRY_DELAY_SECONDS = 1
 # a full four-season run is ~10k requests, so there is no reason to push it.
 DEFAULT_DELAY_SECONDS = 0.34
 
-CACHE_DIR = Path(__file__).parent / "cache"
+# The HTTP cache lives OUTSIDE the smartscore subtree, under data/cache at the
+# repo root - the same mechanism that keeps data/dumps out of the Lambda zip.
+# Inside smartscore/ any cache would ride "cp -r smartscore/*" at deploy time
+# and only the deploy script's "rm -rf output/scripts" prunes it; outside, it
+# is structurally unreachable from a runtime package.
+CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "cache"
 
 # Last-request timestamp for the throttle, held in a one-element list rather than
 # a module global so _throttle stays a plain function (ruff PLW0603).

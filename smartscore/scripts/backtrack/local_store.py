@@ -66,6 +66,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from goalie_client import fetch_goalies, parse_goalies  # noqa: E402
 from lineup_reconstruct import reconstruct_game  # noqa: E402
 from nhl_client import (  # noqa: E402
+    CACHE_DIR,
     DEFAULT_DELAY_SECONDS,
     PLAYOFFS,
     REGULAR_SEASON,
@@ -79,7 +80,10 @@ from team_map import to_place  # noqa: E402
 from tims_client import fetch_history, parse_history  # noqa: E402
 
 DB_PATH = Path(__file__).resolve().parents[3] / "data" / "raw_nhl.sqlite"
-CACHE_DIR = Path(__file__).resolve().parent / "cache"
+# CACHE_DIR is re-exported from nhl_client - the HTTP cache lives outside the
+# smartscore subtree at the repo root (data/cache), so it can never ride the
+# Lambda zip. Kept as a module attribute because --ingest-cache/--build default
+# to it and tests read it.
 
 # Which endpoint contributed which field, recorded per row. Kept as named constants
 # because the lists are the payload contract: if the NHL adds or drops a field,

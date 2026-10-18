@@ -33,11 +33,16 @@ data/*.sqlite-shm
 # PID files and logs from run_background.py - machine state, not source.
 data/bg/
 
-# HTTP payload cache under the backtrack scripts. Re-fetchable in ~5 minutes and
-# redundant with data/dumps/, which is the versioned source of truth.
-smartscore/scripts/backtrack/cache/
+# HTTP payload cache at the repo root. Re-fetchable by a crawl and redundant
+# with data/dumps/, which is the versioned source of truth. Lives outside the
+# smartscore subtree so a deploy-time copy can never stage it into the Lambda
+# zip (see nhl_client.CACHE_DIR).
+data/cache/
 
 # Scratch output from ad-hoc foreground runs. The tracked runner writes its own
 # logs to data/bg/ instead, which is already ignored above.
 data/*.log
 data/*.err
+
+# HTTP crawl cache - large, rebuilt from any crawl; never shipped anywhere.
+data/cache/
