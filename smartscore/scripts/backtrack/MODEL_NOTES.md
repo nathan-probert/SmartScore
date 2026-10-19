@@ -369,18 +369,17 @@ groups, not one lucky slate. Same-run baselines: hgpg 28.047%
 **HGB vs hgpg 406-342, p = 0.0212; HGB vs gpg 468-355, p = 9.2e-05** — the
 first config in this file to beat *both* baselines at p < 0.05.
 
-Seed robustness (`--seed 0,1,2,3`, same config):
+Seed robustness (`--seed 0` and the default `--seed 42`, same config):
 
 | seed | hits / 3159 | acc | per-fold std |
 |---|---:|---:|---:|
 | 0 | 961 | 30.421% | 2.54* |
-| 1 | TBD | TBD | TBD |
-| 2 | TBD | TBD | TBD |
-| 3 | TBD | TBD | TBD |
 | 42 (default) | 950 | 30.073% | 2.40 |
 
 \* seed-0 per-fold figures come from the experiment harness, which uses the
-same fold shuffle as the CLI `--seed 0`.
+same fold shuffle as the CLI `--seed 0`. A wider seed sweep was abandoned:
+other swarm jobs saturated the 6-core box and one fold took 30+ minutes, so
+only the two completed seeds are reported rather than a starved run.
 
 Verdict: **promoted**. The shot/TOI block is now part of `NUMERIC_FEATURES`;
 `--model hgb --seed 42` remains the default and clears 30.0% pooled OOF.
