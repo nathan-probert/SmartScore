@@ -1,5 +1,34 @@
 # SmartScore Model Notes
 
+## FINAL RESULT — corrected, leak-free (2026-10-19)
+
+- **Default:** fixed equal-weight rank ensemble `hgb+logreg+lgbm`
+  (`--model ensemble`). Mean **29.71%** pooled OOF across seeds 0/1/3
+  (29.92 / 29.41 / 29.82; std **0.28**), vs hgpg **28.05%** and straight GPG
+  **26.50%**.
+- **≥30% is invalid:** the only ≥30% result was LGBM **30.36%** using
+  `lineup_unit`/`pp_unit` from the same game's shift chart. Those columns are
+  removed; corrected LGBM is **29.06%**.
+- **Reproduce:**
+  ```bash
+  cd SmartScore-backtrack
+  for s in 0 1 3; do
+    OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
+      smartscore/scripts/backtrack/model.py --env dev --model ensemble \
+      --seed "$s" --split kfold --splits 5 --train-subset all
+  done
+  ```
+- **Deployment caveat:** projected lineups and confirmed starting goalies are
+  legitimately available pre-game and may recover part of the ~1.3pp gap
+  between corrected LGBM (29.06%) and the leaky 30.36%, but this cannot be
+  verified from the historical archive.
+- **Audit:** `docs/backtrack_model_audit.md` (+ `docs/backtrack_audit.py`,
+  `docs/backtrack_ablation.py`). Rejected/negative: V3a lambdarank, V3b
+  calendar/schedule, V3c blends, V3e LGBM as default, V3f LGBM+baseline
+  blends, V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged
+  lineup replacements, injury filter (fields empty). V4 shot/TOI features
+  are retained.
+
 Working log for the goal-probability model built on the backtracked archive.
 Purpose: record what was tried, what worked, what broke, and the data gotchas,
 so nothing gets re-derived twice. Update it every session.
@@ -26,6 +55,10 @@ so nothing gets re-derived twice. Update it every session.
    Supabase. A name join leaves 14,685 rows (3.4%) unresolvable. The club per
    player per game must come from `player_games` in raw_nhl.sqlite (it has
    `team_abbrev`/`opponent_abbrev` per `player_id` per `game_date`).
+   Follow-up: 22,176 of the 474,721 `player_games` rows carry a NULL
+   `opponent_abbrev` (the first player rows of each game's block). Every one
+   of the 11,870 games has exactly two distinct clubs, so repair the opponent
+   from the other club in the same `game_id` before grouping by opponent.
 2. **CSV round-trip types.** `pd.read_csv` parses season `20232024` as int64
    while the DB carries TEXT (and `player_games.season` is INTEGER). Cast
    season to string on every frame before any merge.
@@ -609,6 +642,62 @@ picks, **0** landed on a player with non-null injury status. The injury fields
 are never populated on the backtrack archive, so a pre-game injury filter or
 feature has no signal and is **not worth testing**.
 
+### V3h — player-vs-opponent history features (reverted)
+
+Hypothesis: a player's record against the specific opponent may add pre-game
+signal beyond season-to-date / historic GPG. Four features, all built from
+`player_games` and strictly prior games:
+
+- `opp_gpg_2y` — player goals / games vs this opponent over the current
+  season-to-date plus the immediately preceding season (all prior meetings if
+  fewer), NaN if none.
+- `opp_gpg_career` — same over every prior meeting with that opponent.
+- `opp_goals_last3` — goals in the player's last up-to-3 prior meetings.
+- `team_vs_opp_gpg_2y` — club `team_goals_for` per game vs this opponent over
+  the same current + previous season window (every club appearance, not only
+  this player's).
+
+Built by sorting `player_games` per `(player_id, opp)` (and per
+`(club, opp)` at club grain) and using `cumcount` / shifted cumulative sums,
+so the current game never enters its own feature. The 2-year window uses the
+raw `season` label, not calendar date (the 2019-20 season runs into Sep 2020).
+Joined on `(date, player_id)` and `(date, club)`.
+
+Validation: 427,240 rows before and after the join; no duplicate/suffixed
+columns; exactly the four new columns. Coverage of 427,240 rows:
+`opp_gpg_2y` 360,763, `opp_gpg_career` 380,497, `opp_goals_last3` 380,497,
+`team_vs_opp_gpg_2y` 395,421. Hand-checked Draisaitl vs NSH on 2021-11-03
+(`opp_goals_last3=8` = 2+2+4 from the three prior meetings) and random
+samples against independent recomputation (300/300 career, 150/150 player
+2-year, 200/200 club 2-year).
+
+Protocol: date-blocked k=5, `--train-subset all`, LGBM 400 trees, n_jobs=2,
+seeds 1 and 3, 3,159 pooled picks. The baseline was rerun in the same worktree
+and reproduced V3e exactly (seed 1 957 hits, seed 3 934).
+
+| seed | baseline hits / acc | V3h hits / acc | Δ | McNemar (base-only / V3h-only) |
+|---|---:|---:|---:|---:|
+| 1 | 957 / 30.294% | 938 / 29.693% | **-0.601pp** | 151-132, p=0.285 |
+| 3 | 934 / 29.566% | 940 / 29.756% | **+0.190pp** | 145-151, p=0.771 |
+| mean | — / 29.930% | — / 29.725% | **-0.206pp** | — |
+| pooled seeds (descriptive) | 1,891 / 6,318 29.930% | 1,878 / 6,318 29.725% | -0.206pp | 296-283, p=0.618 |
+
+Held-out AUC moved only +0.0002 (seed 1, 0.6946→0.6948) and +0.0006 (seed 3,
+0.6944→0.6950). Per-fold seed 1 lost in 4 of 5 folds
+(-0.8/-0.8/-0.6/-1.5/+0.8pp); seed 3 was mixed (+0.1/-0.9/+0.8/+1.1/-0.2pp).
+Only 283-296 of 3,159 picks changed per seed.
+
+LGBM gain importance (mean over folds, share of total; the two seeds agree to
+2 d.p.): `opp_gpg_career` 1.06% (rank 12), `team_vs_opp_gpg_2y` 1.03% (13),
+`opp_gpg_2y` 0.50% (22), `opp_goals_last3` 0.22% (29). They rank well below
+gpg/hgpg and near ppg/otga, i.e. the model uses them only weakly.
+
+Verdict: **reverted**. The gain is not consistent (seed 1 -0.60pp, seed 3
+was +0.19pp; mean -0.21pp) and neither seed's McNemar is close to significant
+(p=0.28, 0.77). Head-to-head history looks largely absorbed by the existing
+season rates plus opponent team/goalie context. No `--opp-history` flag or
+feature code retained; notes only.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -651,6 +740,10 @@ feature has no signal and is **not worth testing**.
   calibration or group-specific interactions are the obvious next lever.
 - V3b/V4 calendar/schedule/goalie features (day_of_season, month,
   rel_goalie_strength, schedule_density) did not help; do not re-add.
+- V3h player-vs-opponent history (opp_gpg_2y / opp_gpg_career /
+  opp_goals_last3 / team_vs_opp_gpg_2y) did not help (-0.60pp seed 1,
+  +0.19pp seed 3) and was reverted. Do not re-try these four as-is;
+  head-to-head form is evidently covered by the existing rates.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
 - Update this file after every experiment: config used, split mode, pooled
