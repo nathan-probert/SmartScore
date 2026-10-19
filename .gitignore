@@ -46,3 +46,6 @@ data/*.err
 
 # HTTP crawl cache - large, rebuilt from any crawl; never shipped anywhere.
 data/cache/
+
+# Model training caches, re-fetched from Supabase (see model.py).
+data/ml/

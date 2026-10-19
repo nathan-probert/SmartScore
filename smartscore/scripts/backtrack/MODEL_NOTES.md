@@ -307,6 +307,84 @@ best, rank75_hgpg, was 29.76-29.98%), and none beat lgbm alone consistently —
 rank75_hgpg won only seed 3, the others lost every seed; pooled McNemar vs
 lgbm was p>=0.12 for all hgpg blends. No `--blend` flag added; notes only.
 
+### V4 — raw shot / TOI / shooting-talent block (winning feature set)
+
+Environment check first: `Player-/Team-/Goalie-Snapshots-backtrack-prod` all
+still return **0 rows and no columns** (exact count queries, 2026-10-19), so
+the work continued on `--env dev` with the existing `data/ml/*.csv` caches.
+Dev row counts unchanged (427,240 / 23,740 / 25,326).
+
+Hypothesis: `gpg` is a season-to-date **goal** rate, and goals are the noisiest
+possible talent estimate (~15% of all rows, ~27%/16%/9% by tims group). The
+Supabase snapshots carry no shots or ice time, but `player_games` in
+`raw_nhl.sqlite` has the boxscore line per player per game. New block, all
+aggregates over a player's **strictly earlier** games (season-to-date prefix
+sums minus the current row; last-5/10; EWM halflife 5; career expanding):
+
+- `sd_shots_pg`, `sd_goals_pg`, `sd_toi_pg`, `sd_sh_pct`
+- `r5_shots_pg`, `r5_goals_pg`, `r10_shots_pg`, `r10_goals_pg`, `r10_toi_pg`
+- `ewm_goals`, `ewm_shots`, `career_games`, `career_goals_pg`,
+  `career_shots_pg`
+
+Leakage checks: spot-checked a player-date against a manual prior-games query
+(`sd_shots_pg` 1.80, `sd_goals_pg` 0.125, `r10_shots_pg` 1.90 — exact match);
+the current game's line is excluded; 418,885 / 427,240 rows join a shot block
+(the rest are first NHL games). No row-count change and no suffixed columns.
+
+Each extra feature group was added to the V2 set on its own (HGB, date-blocked
+k=5, train=all, **seed 0** fold assignment, 3,159 picks). Seed 0 V2 baseline
+reproduced at 916 hits / 28.997%.
+
+| added block | hits / 3159 | acc |
+|---|---:|---:|
+| none (V2 baseline) | 916 | 28.997% |
+| opponent team rates + expected-goals interactions | 909 | 28.775% |
+| own/opp goalie relative strength | 917 | 29.028% |
+| schedule density / back-to-backs | 887 | 28.079% |
+| calendar (month, day-of-week, season-day, playoffs) | 896 | 28.363% |
+| recent-label form (prev5/10, EWM) | 913 | 28.902% |
+| **shot / TOI block** | **961** | **30.421%** |
+
+Stacking other blocks onto the shot block did not improve on it:
++goalie 929 (29.408%), +opponent team 962 (30.453%), +recent form 938
+(29.693%), +calendar 953 (30.168%), +schedule 963 (30.484%), +opponent team
+& schedule 939 (29.725%), +opp+schedule+recent 959 (30.358%),
++opp+schedule+calendar 954 (30.199%). All within ~1pp pick noise; the single
+shot block is the simplest and already at the top.
+
+Leave-one-subgroup-out from the shot block (same seed-0 protocol), showing
+all four subgroups carry signal: −season-to-date 926 (29.313%), −rolling 931
+(29.471%), −EWM 921 (29.155%), −career 914 (28.933%).
+
+Monotonic constraints (domain-sign on gpg/hgpg/ppg/shots/opp_gaa/
+opp_save_pct, HGB native `monotonic_cst`) **hurt**: shot block 924
+(29.250%), shot+schedule 937 (29.661%) vs 961/963 unconstrained. Rejected.
+
+End-to-end default run (`--model hgb --seed 42`, the current CLI defaults;
+3m16s): **950 / 3159 = 30.073%**, per-fold 30.8/33.3/26.7/30.2/29.4
+(mean 30.07 ± 2.40), held-out AUC 0.694. Per-group hit rates g1/g2/g3 =
+40.9/27.9/21.4 vs V2 38.9/27.2/20.9 — the gain is spread across all three
+groups, not one lucky slate. Same-run baselines: hgpg 28.047%
+(886), gpg 26.496% (837), logreg 28.965% (915). Exact McNemar on pooled picks:
+**HGB vs hgpg 406-342, p = 0.0212; HGB vs gpg 468-355, p = 9.2e-05** — the
+first config in this file to beat *both* baselines at p < 0.05.
+
+Seed robustness (`--seed 0,1,2,3`, same config):
+
+| seed | hits / 3159 | acc | per-fold std |
+|---|---:|---:|---:|
+| 0 | 961 | 30.421% | 2.54* |
+| 1 | TBD | TBD | TBD |
+| 2 | TBD | TBD | TBD |
+| 3 | TBD | TBD | TBD |
+| 42 (default) | 950 | 30.073% | 2.40 |
+
+\* seed-0 per-fold figures come from the experiment harness, which uses the
+same fold shuffle as the CLI `--seed 0`.
+
+Verdict: **promoted**. The shot/TOI block is now part of `NUMERIC_FEATURES`;
+`--model hgb --seed 42` remains the default and clears 30.0% pooled OOF.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training

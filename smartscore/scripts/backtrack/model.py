@@ -112,6 +112,23 @@ LIVE_WEIGHTS = {
 # Backtest mode: train before the 2024-25 season, test 2024-25 and 2025-26.
 TEST_START = "2024-08-01"
 
+SHOT_FEATURES = [
+    "sd_shots_pg",
+    "sd_goals_pg",
+    "sd_toi_pg",
+    "sd_sh_pct",
+    "r5_shots_pg",
+    "r5_goals_pg",
+    "r10_shots_pg",
+    "r10_goals_pg",
+    "r10_toi_pg",
+    "ewm_goals",
+    "ewm_shots",
+    "career_games",
+    "career_goals_pg",
+    "career_shots_pg",
+]
+
 NUMERIC_FEATURES = [
     "gpg",
     "five_gpg",
@@ -140,7 +157,7 @@ NUMERIC_FEATURES = [
     "days_since_game",
     "club_rest_days",
     "opp_rest_days",
-]
+] + SHOT_FEATURES
 
 CATEGORICAL_FEATURES = ["lineup_unit", "lineup_position_group", "pp_unit", "tims"]
 
@@ -318,6 +335,74 @@ def _since_last_goal(history):
     return pd.Series(out, index=history.index)
 
 
+def shot_features():
+    """Prior-games-only shot / TOI / shooting-talent block from the raw store.
+
+    Supabase player snapshots carry goals and points but not shots or ice
+    time, and goals alone are a noisy talent estimate (~15% of rows score).
+    ``player_games`` has the boxscore line per player per game, so every
+    column here is an aggregate over that player's *strictly earlier* games:
+    season-to-date (prefix sums minus the current row), last-5/10, exponentially
+    weighted, and career-to-date. The current game's own line is never part of
+    any feature, which keeps the block pre-game and fold-safe.
+    """
+    con = sqlite3.connect(f"file:{RAW_DB}?mode=ro", uri=True)
+    games = pd.read_sql_query(
+        "SELECT player_id, game_date AS date, season, goals, shots, toi FROM player_games",
+        con,
+    )
+    con.close()
+    games["date"] = games["date"].astype(str)
+    games["season"] = games["season"].astype("Int64").astype(str)
+    games = games.sort_values(["player_id", "date", "season"]).reset_index(drop=True)
+    games["shots"] = pd.to_numeric(games["shots"], errors="coerce")
+    games["goals"] = pd.to_numeric(games["goals"], errors="coerce")
+    games["toi_min"] = games["toi"].apply(
+        lambda value: (
+            int(str(value).split(":")[0]) + int(str(value).split(":")[1]) / 60
+            if isinstance(value, str) and ":" in value
+            else np.nan
+        )
+    )
+
+    season_group = games.groupby(["player_id", "season"], sort=False)
+    prior_games = season_group.cumcount()
+    goals_before = season_group["goals"].cumsum() - games["goals"]
+    shots_before = season_group["shots"].cumsum() - games["shots"]
+    toi_before = season_group["toi_min"].cumsum() - games["toi_min"]
+    games["sd_goals_pg"] = goals_before / prior_games.replace(0, np.nan)
+    games["sd_shots_pg"] = shots_before / prior_games.replace(0, np.nan)
+    games["sd_toi_pg"] = toi_before / prior_games.replace(0, np.nan)
+    games["sd_sh_pct"] = goals_before / shots_before.replace(0, np.nan)
+
+    player_group = games.groupby("player_id", sort=False)
+    for window in (5, 10):
+        games[f"r{window}_shots_pg"] = player_group["shots"].transform(
+            lambda series: series.shift(1).rolling(window, min_periods=1).mean()
+        )
+        games[f"r{window}_goals_pg"] = player_group["goals"].transform(
+            lambda series: series.shift(1).rolling(window, min_periods=1).mean()
+        )
+    games["r10_toi_pg"] = player_group["toi_min"].transform(
+        lambda series: series.shift(1).rolling(10, min_periods=1).mean()
+    )
+    games["ewm_goals"] = player_group["goals"].transform(
+        lambda series: series.shift(1).ewm(halflife=5, min_periods=1).mean()
+    )
+    games["ewm_shots"] = player_group["shots"].transform(
+        lambda series: series.shift(1).ewm(halflife=5, min_periods=1).mean()
+    )
+    games["career_games"] = player_group.cumcount()
+    games["career_goals_pg"] = player_group["goals"].transform(
+        lambda series: series.shift(1).expanding().mean()
+    )
+    games["career_shots_pg"] = player_group["shots"].transform(
+        lambda series: series.shift(1).expanding().mean()
+    )
+    cols = ["date", "player_id"] + SHOT_FEATURES
+    return games[cols]
+
+
 def add_derived(frame, teams):
     """V2 features layered onto the joined frame. Everything stays pre-game.
 
@@ -328,6 +413,9 @@ def add_derived(frame, teams):
     * prevN_goals / games_since_goal - past scored labels shifted one row per
                      player, strictly earlier games only.
     * days_since_game (per player), club_rest_days / opp_rest_days (per club)
+    * shot-* / rN_* / ewm_* / career_* - prior-games-only shot, TOI and
+                     shooting-talent block from the raw boxscore store (see
+                     shot_features); never includes the current game's line.
     """
     frame = frame.sort_values(["player_id", "date"]).reset_index(drop=True)
     player = frame.groupby("player_id", sort=False)
@@ -366,6 +454,14 @@ def add_derived(frame, teams):
     frame = frame.merge(
         opp_rest,
         on=["date", "opp"],
+        how="left",
+        validate="many_to_one",
+    )
+
+    # Prior-games-only shot / TOI / shooting block from the raw boxscore layer.
+    frame = frame.merge(
+        shot_features(),
+        on=["date", "player_id"],
         how="left",
         validate="many_to_one",
     )
@@ -779,6 +875,7 @@ def main():
         "rows with hgpg": f"{frame['hgpg'].notna().sum():,}",
         "rows with rank features": f"{frame['rank_gpg'].notna().sum():,}",
         "rows with clubs joined": f"{frame['club'].notna().sum():,}",
+        "rows with shot features": f"{frame['sd_shots_pg'].notna().sum():,}",
         "rows in tims groups": f"{(frame['tims'].isin([1, 2, 3])).sum():,}",
     }
 
