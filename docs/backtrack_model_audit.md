@@ -58,8 +58,8 @@ Secondary lookahead: the opponent-goalie block is deduped from *actual appearanc
 (`games_played`), so the identity of the goalie is post-game even though every rate
 value is prior. 1,584 of 23,740 team-dates have two appearances; single-appearance
 dates use whoever actually played rather than a morning projection. The values are
-pre-game; only the choice of goalie benefits from knowing who played. Not quantified
-separately.
+pre-game; only the choice of goalie benefits from knowing who played. Quantified in the
+follow-up below: removing the block does not hurt, so this lookahead is immaterial.
 
 `lineup_unit` was also the top permutation-importance feature in the V3b HGB model
 (AUC drop .042 vs hgpg .017), consistent with the ablation below. The `model.py`
@@ -145,6 +145,33 @@ second = second method's wins):
    161 team-dates (3,199 challenge rows, 3.46%) lose opponent-goalie features they could
    have had. This only makes the model's inputs poorer, not leakier.
 
+## Follow-up: opponent-goalie identity ablation
+
+Same LGBM k-fold (seed 0, k=5, train=all, `timeout 300`), dropping `lineup_unit`,
+`pp_unit` **and** the seven `opp_*` goalie features (`opp_gaa`, `opp_save_pct`,
+`opp_shutouts`, `opp_games_played`, `opp_wins`, `opp_losses`, `opp_otl`).
+`lineup_position_group` / `tims` stay; `opp_rest_days` stays (team rest, pre-game).
+
+| variant | hits / 3159 | acc | AUC |
+|---|---:|---:|---:|
+| full LGBM | 959 | 30.358% | 0.6947 |
+| no lineup | 892 | 28.237% | 0.6878 |
+| no lineup + no opp goalie | **902** | **28.553%** | 0.6869 |
+| hgpg | 886 | 28.047% | — |
+
+McNemar exact (wins–losses, same 3,159 groups):
+
+- no-goalie vs hgpg: 286–270, **p=0.525 (tie)**.
+- no-goalie vs no-lineup: 179–169, **p=0.630 (tie)**.
+- no-goalie vs full LGBM: 232–289, p=0.014 (lineup model still better).
+
+Removing the opponent-goalie block does not hurt (it slightly helps, within noise), so
+the actual-appearance identity lookahead is not inflating the headline. No proxy is
+needed for this evaluation. For a strictly pre-game deployment, replace it with the
+morning projected starter (or, without projections, the previous game's starter /
+most starts as-of the prior date) and attach that goalie's prior rates. The lineup
+leak remains the material one.
+
 ## Reproduce
 
 ```bash
@@ -157,4 +184,5 @@ OMP_NUM_THREADS=2 timeout 420 uv run --no-sync python \
   --train-subset all --model lgbm --seed 0 --model-file /tmp/opencode/audit_lgbm_oof.csv
 
 OMP_NUM_THREADS=2 uv run --no-sync python docs/backtrack_ablation.py
+OMP_NUM_THREADS=2 timeout 300 uv run --no-sync python docs/backtrack_ablation.py --drop-goalie
 ```
