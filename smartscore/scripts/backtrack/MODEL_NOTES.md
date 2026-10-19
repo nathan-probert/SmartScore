@@ -460,6 +460,39 @@ LGBM and shows no cross-family gain; its 30.4% seed-0 headline is still an
 unverified harness number. Keep the code, but do not rely on the V4 promotion
 until a clean HGB seed-0 run is completed.
 
+### V5 — pick voting and recency-weighted LGBM (notes only)
+
+**A. Pick voting.** Seed-0 files (`oof_v2_baseline_repro.csv`,
+`oof_v3d_lgbm.csv`, `oof_v3d_et.csv`) share identical fold columns across all
+92,440 rows, so A1 comparisons are paired.
+
+- A1 majority vote over hgb+logreg+lgbm+extratrees+live (tie-break mean rank):
+  **929/3159 = 29.408%**, per-fold std 1.562, folds 31.1/28.6/29.9/30.3/27.1.
+  vs hgpg 249-206, p=0.049; vs lgbm-alone 148-178, p=0.108. LGBM alone
+  remains higher at 959/3159 = 30.358%.
+- A2 vote over the three LGBM seeds 1-3: **938/3159 = 29.693%**, std 2.865
+  using seed-1 fold labels, folds 33.3/29.4/26.4/31.7/27.6. vs hgpg 331-279,
+  p=0.039. vs lgbm seed 1/2/3: 88-107 p=0.197, 68-80 p=0.366, 101-97 p=0.831.
+  The three seeds use different fold partitions, so A2's vote-vs-lgbm
+  comparisons are not paired; only the hgpg comparison is cleanly paired.
+
+**B. Recency-weighted LGBM** (V4 features, seeds 1/3, `OMP_NUM_THREADS=2`,
+`LGBM_N_JOBS=2`, 89-103s each):
+
+| seed | weight | hits / 3159 | acc | per-fold std | Δ vs unweighted | McNemar |
+|---|---|---:|---:|---:|---:|---|
+| 1 | none | 959 | 30.358% | 3.101 | — | — |
+| 1 | linear | 944 | 29.883% | 2.398 | -0.475pp | 135-150, p=0.407 |
+| 1 | half | 934 | 29.566% | 2.983 | -0.791pp | 224-249, p=0.270 |
+| 3 | none | 926 | 29.313% | 1.178 | — | — |
+| 3 | linear | 954 | 30.199% | 0.948 | +0.886pp | 150-122, p=0.101 |
+| 3 | half | 917 | 29.028% | 2.115 | -0.285pp | 221-230, p=0.706 |
+
+Verdict: **no variant won consistently**. Linear is mixed (loses seed 1,
+wins seed 3), half loses both. The `--recency-weight` code was reverted;
+default remains `none`. Pick voting also lost to LGBM alone. No code changes
+committed.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
