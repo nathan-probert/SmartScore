@@ -10,6 +10,10 @@ two post-game columns, and reruns the exact date-blocked fold evaluation.
 `opp_losses`, `opp_otl`). Those rate values are pre-game, but the identity of
 the goalie is chosen from actual appearances, so the block is not fully pre-game.
 
+On pre-V4 commits the default (no-lineup) run reproduced 892/3159. On the V6
+branch `DATASET_FEATURES` already excludes the two columns, so the default run
+reproduces the 42-feature corrected baseline instead (916/3159 at seed 3).
+
 Usage:
     OMP_NUM_THREADS=2 uv run --no-sync python docs/backtrack_ablation.py
     OMP_NUM_THREADS=2 uv run --no-sync python docs/backtrack_ablation.py --drop-goalie

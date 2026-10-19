@@ -1,5 +1,8 @@
 # Backtrack model evaluation audit
 
+> **Post-V6 addendum (current branch):** commit 8b077e7 removes `lineup_unit`/`pp_unit`.
+> The V6 section at the end supersedes the pre-V6 verdicts below for the current code.
+
 Date: 2026-10-19 · Worktree `/home/nathan/code/SmartScore-audit` · branch `audit-eval`
 (base `backtrack-recon` @ 758d275). Audit scripts: `docs/backtrack_audit.py` (standalone
 baselines + fold check) and `docs/backtrack_ablation.py` (lineup ablation).
@@ -186,3 +189,83 @@ OMP_NUM_THREADS=2 timeout 420 uv run --no-sync python \
 OMP_NUM_THREADS=2 uv run --no-sync python docs/backtrack_ablation.py
 OMP_NUM_THREADS=2 timeout 300 uv run --no-sync python docs/backtrack_ablation.py --drop-goalie
 ```
+
+## V6 corrected pipeline (8b077e7)
+
+Rebased `audit-eval` onto `backtrack-recon` @ 8b077e7. `DATASET_FEATURES` is now 42
+features; `lineup_unit` and `pp_unit` are absent, `lineup_position_group` and `tims`
+remain categoricals. The earlier 892/902 ablations predate V4's shot block: that was a
+28-feature set and is not comparable to the 42-feature V6 baseline.
+
+### Feature date basis
+
+| feature(s) | basis |
+|---|---|
+| `gpg`, `ppg`, `five_gpg` | prior-only; current-season games strictly before the row (`five_gpg` last ≤5) |
+| `hgpg`, `hppg` | prior-only; current season before + two complete prior seasons |
+| `tgpg`, `otga`, `otshga` | prior-only; team/opponent games strictly before |
+| `home` | current-date pre-game venue flag |
+| `opp_gaa`, `opp_save_pct`, `opp_shutouts`, `opp_games_played`, `opp_wins`, `opp_losses`, `opp_otl` | prior-only values (chosen goalie's season-to-date, strictly before); row chosen from actual appearances (caveat below) |
+| `rank_gpg`, `rank_hgpg`, `rank_five_gpg`, `rank_ppg` | current-date pre-game; percentile within `(date, tims)` of that date's pre-game rates |
+| `prev2_goals`, `prev3_goals`, `games_since_goal` | prior-only labels |
+| `days_since_game` | prior-only |
+| `club_rest_days`, `opp_rest_days` | prior-only club appearance dates |
+| `sd_shots_pg`, `sd_goals_pg`, `sd_toi_pg`, `sd_sh_pct` | prior-only; current season before |
+| `r5_shots_pg`, `r5_goals_pg`, `r10_shots_pg`, `r10_goals_pg`, `r10_toi_pg` | prior-only; last 5/10 games |
+| `ewm_goals`, `ewm_shots` | prior-only; EWM halflife 5 |
+| `career_games`, `career_goals_pg`, `career_shots_pg` | prior-only; all prior games |
+| `lineup_position_group` | static; F/D from box-score position (pre-game roster role) |
+| `tims` | current-date pre-game challenge group |
+
+Verification: all 14 shot features recomputed independently from `player_games` with
+shift/prefix windows — 0 mismatches over 427,240 rows (max abs diff 0). `lineup_position_group`
+matches the raw box-score F/D mapping on 425,140 rows, 0 mismatches (2,100 nulls);
+it is not shift-derived. `opp_*` rate values recompute exactly from the goalie's prior
+appearances (0 mismatches); the only residual same-game dependence is *which* actual
+goalie row is selected (1,584 team-dates have two appearances). The post-audit ablation
+showed removing that block does not hurt (892 → 902, p=0.63), so it does not inflate the
+headline.
+
+**Verdict: PASS on feature values** — no remaining feature contains same-game events,
+labels, or current-game rates. One immaterial caveat: opponent-goalie identity is chosen
+from actual appearances, not a morning projection.
+
+### Corrected LGBM reproduction
+
+Fresh run: `--model lgbm --seed 3`, k=5, train=all, `OMP_NUM_THREADS=2`, `timeout 420`
+→ exit 0 in ~75s. **916/3159 = 28.997%**, per-fold 29.1/28.3/29.5/27.3/30.8%, AUC
+0.6922. The OOF is bit-identical to the saved `data/ml/oof_v6_baseline_seed3.csv`
+(lgbm max abs diff 0.0; identical folds). Fold check: 1,053 dates held out exactly once,
+seed-3 blocks reproduced, 0 train/holdout overlap.
+
+Saved files:
+
+| file | feature set | seed 3 hits / acc |
+|---|---|---:|
+| `oof_v6_baseline_seed{1,2,3}.csv` | current V6 corrected set, 42 features | 916 / 28.997% |
+| `oof_v6_lgbm_seed{1,2,3}.csv` | corrected + six lagged line/PP features, 48 features | 910 / 28.807% |
+
+The `*_lgbm_*` files use the temporary lagged block (`last_lineup_unit`,
+`last_pp_unit`, `mode_lineup_unit_5`, `mode_pp_unit_5`, `line_stability_5`,
+`pp_share_5`); it was reverted and is not reproducible from current `model.py`.
+Three-seed means: corrected **29.081%** (928/912/916), lagged **29.176%**
+(929/926/910).
+
+McNemar vs hgpg (corrected baseline):
+
+| seed | corrected wins–losses | p |
+|---|---|---:|
+| 1 | 341–299 | 0.105 |
+| 2 | 322–296 | 0.315 |
+| 3 | 325–295 | 0.244 |
+| pooled | **988–890** | **0.0252** |
+
+Caveat: the pooled test treats three runs over the same 3,159 groups as independent;
+they are not (seeds reuse the same outcomes/slates), so the pooled p overstates the
+evidence. Note: the `MODEL_NOTES.md` McNemar line (336–293 / 331–291 / 319–295; pooled
+986–879, p=0.0141) matches the **lagged** files, not the corrected baseline — the
+corrected baseline is 988–890, p=0.0252.
+
+**Final verdict: PASS for the leakage correction; corrected LGBM 916/3159 = 28.997%,
+pooled McNemar vs hgpg 988–890 (p=0.025), but per-seed p=0.10/0.31/0.24 and the seeds
+reuse the same groups — the ~+1.0pp edge is weak/suggestive, not established.**
