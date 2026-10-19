@@ -231,6 +231,32 @@ vs ensemble). Best was z-score hgb+logreg+live at 29.60% (+0.32pp), but its
 paired McNemar vs the ensemble was p=0.61. Keep the existing ensemble; no
 `--blend` option added.
 
+### V3d — model-family diversity
+
+Added `--model {hgb,lgbm,extratrees}` (default hgb unchanged). `lgbm` is
+`LGBMClassifier` binary (400 trees, lr 0.03, 31 leaves); `extratrees` is
+`ExtraTreesClassifier` (400 trees, min_samples_leaf=20, n_jobs=-1), with
+categoricals as ordinal codes and numeric NaNs left native. Logreg, ranker,
+`daily_picks` and `score_picks` paths are unchanged.
+
+Full date-blocked k=5, train=all, 3,159 pooled picks. Runtime: lgbm **97s**,
+extratrees **346s** (both under the 420s cap; AUC 0.6947/0.6933 vs HGB 0.6903).
+
+| variant | hits / 3159 | acc | mean ± std | Δ vs ens | McNemar vs hgpg | McNemar vs ens |
+|---|---:|---:|---:|---:|---|---|
+| current ensemble rank hgb+logreg | 925 | 29.281% | 29.278 ± 2.386 | — | 290-251, p=0.102 | — |
+| lgbm single | 959 | 30.358% | 30.356 ± 1.719 | +1.076 | 354-281, p=0.0042 | 237-203, p=0.116 |
+| extratrees single | 938 | 29.693% | 29.691 ± 2.162 | +0.412 | 323-271, p=0.036 | 269-256, p=0.601 |
+| rank hgb+logreg+lgbm | 941 | 29.788% | 29.786 ± 2.059 | +0.506 | 306-251, p=0.022 | 107-91, p=0.286 |
+| rank hgb+logreg+extratrees | 931 | 29.471% | 29.470 ± 2.309 | +0.190 | 269-224, p=0.047 | 112-106, p=0.735 |
+| rank all four | 946 | 29.946% | 29.944 ± 2.122 | +0.665 | 293-233, p=0.010 | 120-99, p=0.176 |
+| best three (logreg+lgbm+extratrees) | 940 | 29.756% | 29.754 ± 1.966 | +0.475 | 274-220, p=0.017 | 177-162, p=0.447 |
+
+Verdict: **defaults unchanged**. LGBM is the best single model (+1.08pp), but
+its paired McNemar vs the current ensemble is p=0.116, missing the p<0.10 bar;
+every ensemble also missed it. LGBM is worth a follow-up (more folds/seeds),
+not a default switch yet.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -253,8 +279,10 @@ paired McNemar vs the ensemble was p=0.61. Keep the existing ensemble; no
 - Try pushing past ~29%: monotonic constraints on gpg/hgpg; Tuesday-style
   ablation of weak features (lineup_* and pp_unit) to see whether they add
   anything beyond hgpg. (Within-day ranking was tried in V3a: 26.3%, worse.)
-- Feature ideas not yet in: season-day-of-season index, goalie-strength
-  relative term (opp_gaa vs own_gaa), schedule density, month effects.
+- LGBM was the best single model in V3d (30.36%, p=0.116 vs the ensemble);
+  rerun it on a second seed/fold split before switching the default.
+- V3b calendar/schedule/goalie features (day_of_season, month,
+  rel_goalie_strength, schedule_density) did not help and were reverted.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
 - Update this file after every experiment: config used, split mode, pooled

@@ -62,7 +62,7 @@ USAGE
     cd SmartScore-backtrack
     uv run python smartscore/scripts/backtrack/model.py --env dev \
         [--refresh] [--split kfold|seasons] [--splits 5] \
-        [--train-subset challenge|all] [--ranker none|lambdarank] [--model-file PATH]
+        [--train-subset challenge|all] [--model hgb|lgbm|extratrees] [--ranker none|lambdarank] [--model-file PATH]
 
 Defaults: kfold k=5, train-subset all (strongest under CV; see MODEL_NOTES.md).
 
@@ -461,6 +461,49 @@ def fit_hgb(train, test):
     return prob
 
 
+def fit_lgbm(train, test):
+    """LightGBM binary classifier on the same feature encoding as HGB."""
+    from lightgbm import LGBMClassifier
+
+    x_train, x_test = categorise(train, test)
+    # LightGBM reads pandas category codes; align test categories to train.
+    for col in CATEGORICAL_FEATURES:
+        x_test[col] = x_test[col].cat.set_categories(x_train[col].cat.categories)
+    model = LGBMClassifier(
+        objective="binary",
+        n_estimators=400,
+        learning_rate=0.03,
+        num_leaves=31,
+        min_child_samples=50,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=0,
+        n_jobs=4,
+        verbose=-1,
+    )
+    model.fit(x_train, train["scored"].astype(int))
+    return pd.Series(model.predict_proba(x_test)[:, 1], index=test.index)
+
+
+def fit_extratrees(train, test):
+    """ExtraTrees on the same features, with categoricals as ordinal codes."""
+    from sklearn.ensemble import ExtraTreesClassifier
+
+    x_train, x_test = categorise(train, test)
+    for col in CATEGORICAL_FEATURES:
+        x_test[col] = x_test[col].cat.set_categories(x_train[col].cat.categories)
+        x_train[col] = x_train[col].cat.codes.astype(float)
+        x_test[col] = x_test[col].cat.codes.astype(float)
+    model = ExtraTreesClassifier(
+        n_estimators=400,
+        min_samples_leaf=20,
+        n_jobs=-1,
+        random_state=0,
+    )
+    model.fit(x_train, train["scored"].astype(int))
+    return pd.Series(model.predict_proba(x_test)[:, 1], index=test.index)
+
+
 def fit_logreg(train, test):
     model = make_pipeline(
         SimpleImputer(strategy="median"),
@@ -585,7 +628,8 @@ def run_folds(frame, args):
         blocks = fold_blocks(challenge_dates, args.splits)
 
     stats = []
-    method_order = ["gpg", "hgpg", "live", "hgb", "logreg"]
+    point_name = args.model
+    method_order = ["gpg", "hgpg", "live", point_name, "logreg"]
     if args.ranker != "none":
         method_order.append("ranker")
     method_order.append("random")
@@ -617,10 +661,11 @@ def run_folds(frame, args):
         sim["live"] = live_score(test, train)
         pooled["live"].append(daily_picks(sim, "live"))
 
-        prob_hgb = fit_hgb(train, test)
-        sim["hgb"] = prob_hgb.fillna(0).values
-        pooled["hgb"].append(daily_picks(sim, "hgb"))
-        aucs.append(roc_auc_score(test["scored"].astype(int), prob_hgb))
+        fit_pointwise = {"hgb": fit_hgb, "lgbm": fit_lgbm, "extratrees": fit_extratrees}[point_name]
+        prob_point = fit_pointwise(train, test)
+        sim[point_name] = prob_point.fillna(0).values
+        pooled[point_name].append(daily_picks(sim, point_name))
+        aucs.append(roc_auc_score(test["scored"].astype(int), prob_point))
 
         prob_logreg = fit_logreg(train, test)
         sim["logreg"] = prob_logreg.fillna(0).values
@@ -633,7 +678,8 @@ def run_folds(frame, args):
 
         for method, picks in pooled.items():
             stats.append({"fold": number, "method": method, **score_picks(picks[-1], method)})
-        out_cols = PICK_FILE_COLUMNS + (["ranker"] if args.ranker != "none" else []) + ["random"]
+        out_cols = [point_name if col == "hgb" else col for col in PICK_FILE_COLUMNS]
+        out_cols += (["ranker"] if args.ranker != "none" else []) + ["random"]
         out_rows.append(sim[out_cols].assign(fold=number))
         print(f"  fold {number}: {len(sim):,} sim rows across {test['date'].nunique()} dates", flush=True)
 
@@ -698,6 +744,12 @@ def main():
         default="all",
         help="train on every scored row ('all', default - stronger under CV) or only tims-group rows "
         "('challenge', distribution-matched but weaker)",
+    )
+    parser.add_argument(
+        "--model",
+        choices=["hgb", "lgbm", "extratrees"],
+        default="hgb",
+        help="pointwise model: HistGradientBoosting (default), LightGBM, or ExtraTrees.",
     )
     parser.add_argument(
         "--ranker",
