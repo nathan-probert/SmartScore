@@ -159,7 +159,7 @@ NUMERIC_FEATURES = [
     "opp_rest_days",
 ] + SHOT_FEATURES
 
-CATEGORICAL_FEATURES = ["lineup_unit", "lineup_position_group", "pp_unit", "tims"]
+CATEGORICAL_FEATURES = ["lineup_position_group", "tims"]
 
 DATASET_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 

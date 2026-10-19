@@ -493,6 +493,70 @@ wins seed 3), half loses both. The `--recency-weight` code was reverted;
 default remains `none`. Pick voting also lost to LGBM alone. No code changes
 committed.
 
+### V6 — leakage correction: current-game line/PP labels removed
+
+**Confirmed leak:** `DATASET_FEATURES` contained `lineup_unit`, `pp_unit` and
+`lineup_position_group`. `lineup_unit`/`pp_unit` are built by
+`lineup_reconstruct.reconstruct_game` from the **same game's shift chart**
+(completed-game shifts), so they are lookahead. `lineup_position_group` is
+F/D from the box-score `positions` mapping (static roster position), not a
+shift chart, and is retained. All V2-V5 headline numbers that used
+`lineup_unit`/`pp_unit` are therefore invalid as deployment estimates.
+
+**Lagged replacements (tested, then reverted):** `last_lineup_unit`,
+`last_pp_unit`, `mode_lineup_unit_5`, `mode_pp_unit_5`, `line_stability_5`,
+`pp_share_5`, computed per player sorted by date from rows `[i-5, i)` only;
+NaN before the first game.
+
+Leakage proof: 10 distinct players with a lineup change all had
+`last_lineup_unit` equal to the previous game's unit, never the current one:
+
+| player | date | prev | current | lag |
+|---|---|---|---|---|
+| 8448208 | 2017-10-14 | F3 | F1 | F3 |
+| 8464989 | 2017-10-14 | F4 | F3 | F4 |
+| 8465009 | 2017-10-09 | D2 | D3 | D2 |
+| 8466138 | 2017-10-07 | F2 | F1 | F2 |
+| 8466139 | 2017-10-09 | F3 | F2 | F3 |
+| 8466251 | 2017-10-09 | F3 | F4 | F3 |
+| 8467370 | 2018-03-06 | F4 | F3 | F4 |
+| 8467400 | 2017-10-13 | D2 | D1 | D2 |
+| 8467407 | 2018-03-11 | F3 | F2 | F3 |
+| 8467875 | 2017-10-10 | F3 | F2 | F3 |
+
+The same 10/10 check passed for `last_pp_unit`. The lagged code does no SQL:
+it only shifts/slices the already-joined frame. The raw queries are
+`club_map` (selects `game_id` but has no current-game predicate) and
+`shot_features` (no `game_id` column at all).
+
+LGBM, date-blocked k=5, train=all, seeds 1-3, `OMP_NUM_THREADS=2`,
+`LGBM_N_JOBS=2`, 93-103s each:
+
+| seed | corrected baseline (no current lineup/PP) | + lagged features | delta |
+|---|---:|---:|---:|
+| 1 | 928/3159 = 29.376% | 929/3159 = 29.408% | +0.032pp |
+| 2 | 912/3159 = 28.870% | 926/3159 = 29.313% | +0.443pp |
+| 3 | 916/3159 = 28.997% | 910/3159 = 28.807% | -0.190pp |
+| mean | 29.081% (std 0.264) | 29.176% (std 0.323) | **+0.095pp** |
+
+McNemar vs hgpg: 336-293 p=0.094, 331-291 p=0.118, 319-295 p=0.353; pooled
+986-879 p=0.0141. Lagged vs corrected baseline: 166-165 p=1.0, 148-134
+p=0.439, 140-146 p=0.768; pooled 454-445 p=0.790.
+
+Lagged-column importances (fold-1 LGBM gain rank among 48 features;
+permutation AUC drop): mode_lineup_unit_5 #2 (95,095; 0.0053),
+last_lineup_unit #3 (30,011; -0.0001), pp_share_5 #13 (6,785; 0.0014),
+last_pp_unit #15 (5,862; 0.0033), mode_pp_unit_5 #24 (3,206; 0.0008),
+line_stability_5 #39 (1,071; 0.0004).
+
+Verdict: lagged features are leak-free but recover only **+0.095pp** on
+average (< +0.5pp) and are mixed by seed, so they were **reverted**. The
+mandatory correction is kept: `lineup_unit` and `pp_unit` are removed from
+`DATASET_FEATURES`; only `lineup_position_group` and `tims` remain as
+categoricals. The corrected LGBM reference is **29.08%** mean (audit seed-0
+corrected baseline 892/3159 = 28.237%). Prior HGB/LGBM headlines that used
+current-game lineups are invalid; a corrected HGB run is still needed.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -517,17 +581,19 @@ committed.
 
 ## Next steps
 
-- V4 open question: LGBM on the V4 set is neutral (seeds 1/3: +0.06/-0.25pp
-  vs pre-V4). Run HGB seed 0 cleanly over 5 folds to verify the 30.421%
-  harness headline; if it does not hold, reconsider the V4 promotion.
-- V4 HGB is cleanly verified only at seed 42 (950/3159 = 30.073%); seeds
-  1/2/3 remain TBD. Do not cite the seed-0 961/3159 until it is rerun.
-- Ablate the weak categoricals (lineup_unit, pp_unit) from the V4 set.
-- Group 3 remains the weak spot (V4 21.4% vs g1 40.9 / g2 27.9); per-group
+- **V6 correction:** `lineup_unit`/`pp_unit` are same-game shift-chart
+  lookahead and are removed from all models. Prior HGB/LGBM headlines that
+  used them (V2-V5; V4 HGB 30.073/30.421, LGBM 30.36) are invalid as
+  deployment estimates.
+- Re-run corrected HGB (no `lineup_unit`/`pp_unit`) over 5 folds. The
+  corrected LGBM reference is 29.08% mean over seeds 1-3 (28.24% at seed 0).
+- Lagged lineup/PP replacements were leak-free but added only +0.095pp and
+  were reverted; do not re-add without a new idea.
+- Group 3 remains the weak spot (corrected LGBM g3 ~20%); per-group
   calibration or group-specific interactions are the obvious next lever.
-- LGBM: V3e seeds 1-3 mean 29.98% (seed 3 29.57), k-fold edge over hgpg is
-  consistent (pooled p=2.5e-05) but it loses to hgpg on the seasons split.
-  Default stays hgb. V3f fixed LGBM+hgpg/gpg blends did not beat LGBM alone.
+- LGBM: corrected seeds 1-3 mean 29.08% (std 0.26); k-fold edge over hgpg
+  was significant pre-correction, re-check after the fix. Default stays hgb
+  pending a corrected HGB run.
 - V3b/V4 calendar/schedule/goalie features (day_of_season, month,
   rel_goalie_strength, schedule_density) did not help; do not re-add.
 - Every new feature must be justified as pre-game from the joins; if it
