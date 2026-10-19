@@ -62,7 +62,7 @@ USAGE
     cd SmartScore-backtrack
     uv run python smartscore/scripts/backtrack/model.py --env dev \
         [--refresh] [--split kfold|seasons] [--splits 5] \
-        [--train-subset challenge|all] [--model hgb|lgbm|extratrees] [--seed N] [--ranker none|lambdarank] [--model-file PATH]
+        [--train-subset challenge|all] [--model hgb|lgbm|extratrees] [--lgbm-config a|b|c] [--seed N] [--ranker none|lambdarank] [--model-file PATH]
 
 Defaults: kfold k=5, train-subset all (strongest under CV; see MODEL_NOTES.md).
 
@@ -539,6 +539,19 @@ def live_score(frame, train_frame):
     return score
 
 
+LGBM_CONFIGS = {
+    "a": dict(n_estimators=400, learning_rate=0.03, num_leaves=31, min_child_samples=50),
+    "b": dict(
+        n_estimators=600,
+        learning_rate=0.02,
+        num_leaves=15,
+        min_child_samples=50,
+        reg_lambda=5.0,
+    ),
+    "c": dict(n_estimators=800, learning_rate=0.02, num_leaves=63, min_child_samples=20),
+}
+
+
 def fit_hgb(train, test):
     x_train, x_test = categorise(train, test)
     model = HistGradientBoostingClassifier(
@@ -557,7 +570,7 @@ def fit_hgb(train, test):
     return prob
 
 
-def fit_lgbm(train, test):
+def fit_lgbm(train, test, config="a"):
     """LightGBM binary classifier on the same feature encoding as HGB."""
     from lightgbm import LGBMClassifier
 
@@ -567,15 +580,12 @@ def fit_lgbm(train, test):
         x_test[col] = x_test[col].cat.set_categories(x_train[col].cat.categories)
     model = LGBMClassifier(
         objective="binary",
-        n_estimators=400,
-        learning_rate=0.03,
-        num_leaves=31,
-        min_child_samples=50,
         subsample=0.8,
         colsample_bytree=0.8,
         random_state=0,
         n_jobs=4,
         verbose=-1,
+        **LGBM_CONFIGS[config],
     )
     model.fit(x_train, train["scored"].astype(int))
     return pd.Series(model.predict_proba(x_test)[:, 1], index=test.index)
@@ -758,7 +768,10 @@ def run_folds(frame, args):
         pooled["live"].append(daily_picks(sim, "live"))
 
         fit_pointwise = {"hgb": fit_hgb, "lgbm": fit_lgbm, "extratrees": fit_extratrees}[point_name]
-        prob_point = fit_pointwise(train, test)
+        if point_name == "lgbm":
+            prob_point = fit_lgbm(train, test, args.lgbm_config)
+        else:
+            prob_point = fit_pointwise(train, test)
         sim[point_name] = prob_point.fillna(0).values
         pooled[point_name].append(daily_picks(sim, point_name))
         aucs.append(roc_auc_score(test["scored"].astype(int), prob_point))
@@ -852,6 +865,13 @@ def main():
         choices=["hgb", "lgbm", "extratrees"],
         default="hgb",
         help="pointwise model: HistGradientBoosting (default), LightGBM, or ExtraTrees.",
+    )
+    parser.add_argument(
+        "--lgbm-config",
+        choices=["a", "b", "c"],
+        default="a",
+        help="LightGBM config when --model lgbm: a=400/0.03/31 (default), "
+        "b=600/0.02/15/reg5, c=800/0.02/63.",
     )
     parser.add_argument(
         "--ranker",

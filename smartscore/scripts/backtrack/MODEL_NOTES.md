@@ -394,6 +394,38 @@ across eras.
 Verdict: **promoted**. The shot/TOI block is now part of `NUMERIC_FEATURES`;
 `--model hgb --seed 42` remains the default and clears 30.0% pooled OOF.
 
+### V3g — seed bagging and LGBM config sweep
+
+Housekeeping: the dangling V4 changes were a complete shot/TOI feature block
+(from `player_games`: `sd_*`, `r5_*`/`r10_*`, `ewm_*`, `career_*`, 14
+features added to `NUMERIC_FEATURES`) plus V4 notes. Committed them to branch
+`v4-shot-features` (`08e92e7`); concurrently another worker landed V4 on
+`backtrack-recon` with follow-up commits through `beaee74`, so V4 is now the
+current codebase and nothing is dangling. `data/ml/` remains an untracked
+cache.
+
+Seed bagging (saved OOFs): z-score each seed's `lgbm` within `(date, tims)`,
+average the three, one pick pass. **945 / 3159 = 29.915%**; per-fold std
+2.932 using seed-1 fold labels (1.495/1.563 under seed-2/3 labels, which are
+an arbitrary partition for a bag); McNemar vs hgpg **328-269, p=0.0175**.
+Bagging does not beat lgbm-alone mean (29.978%).
+
+New `--lgbm-config {a,b,c}` (a=400/0.03/31 default; b=600/0.02/15/reg5;
+c=800/0.02/63). Seeds 1 and 3, date-blocked k=5, train=all, 200s cap each.
+These runs used the pre-V4 V2 feature worktree so they match the V3e
+references; re-run on the now-current V4 features before promoting a config.
+
+| config | seed 1 | seed 3 |
+|---|---:|---:|
+| a (reference) | 30.294% (957) | 29.566% (934) |
+| b | timeout at 200s | timeout at 200s |
+| c | 29.725% (939) | timeout at 200s (2/5 folds done) |
+
+The b timeouts completed no folds; c seed 1 finished in 190s but is -0.569pp
+vs a, so it cannot meet the +0.5pp-on-both-seeds bar. The other heavy jobs on
+the host (V4 final HGB, audit LGBM, V3h) are the likely cause. No config
+qualified, so seed 2 was not run and the default stays **a / hgb**.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
