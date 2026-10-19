@@ -381,6 +381,16 @@ same fold shuffle as the CLI `--seed 0`. A wider seed sweep was abandoned:
 other swarm jobs saturated the 6-core box and one fold took 30+ minutes, so
 only the two completed seeds are reported rather than a starved run.
 
+Secondary chronological split (`--split seasons`, train < 2024-08-01, test
+2024-25 + 2025-26, 1,305 picks, one fit): HGB **390 = 29.885%**, hgpg
+**396 = 30.345%**, gpg 376 = 28.812%, live 376/1288 = 29.193%. McNemar
+HGB vs hgpg 153-159 (p = 0.78), HGB vs gpg 190-176 (p = 0.50) — statistically
+a tie, with HGB a hair below hgpg. The shot block therefore does **not** beat
+hgpg on the deployment-shaped split (same pattern V3e found for LGBM); the
+>30% headline is a date-blocked k-fold result, not a chronological one. The
+k-fold edge over both baselines is significant, but do not claim it transfers
+across eras.
+
 Verdict: **promoted**. The shot/TOI block is now part of `NUMERIC_FEATURES`;
 `--model hgb --seed 42` remains the default and clears 30.0% pooled OOF.
 
@@ -400,18 +410,27 @@ Verdict: **promoted**. The shot/TOI block is now part of `NUMERIC_FEATURES`;
    missing rank rows are NaN for tims=0 (fine; HGB handles NaN).
 5. Big merged-frame dirty-column risk: every merge introduces suffixed
    columns; verify the column set after each join when features move.
+6. **Shot volume was the only new block that mattered.** Goals are a noisy
+   talent signal; prior-games shots/TOI from the raw boxscore store moved
+   HGB from 29.0% to 30.1-30.4% and beat both baselines (k-fold). Calendar,
+   schedule density, goalie-relative and opponent-team blocks were flat or
+   negative on top of V2/V3. Monotonic constraints hurt.
 
 ## Next steps
 
-- Try pushing past ~29%: monotonic constraints on gpg/hgpg; Tuesday-style
-  ablation of weak features (lineup_* and pp_unit) to see whether they add
-  anything beyond hgpg. (Within-day ranking was tried in V3a: 26.3%, worse.)
+- V4 shot/TOI block is the current winner (`--model hgb --seed 42`: 30.073%).
+  Two untested follow-ups: ablate the weak categoricals (lineup_unit,
+  pp_unit) from the V4 set, and run LGBM (V3d/V3g configs) on the V4 feature
+  set instead of the V2 set.
+- Seeds: V4 was verified on seed 0 (30.421%) and seed 42 (30.073%). Re-run
+  1/2/3 when the box is not shared; a fold takes minutes under contention.
+- Group 3 remains the weak spot (V4 21.4% vs g1 40.9 / g2 27.9); per-group
+  calibration or group-specific interactions are the obvious next lever.
 - LGBM: V3e seeds 1-3 mean 29.98% (seed 3 29.57), k-fold edge over hgpg is
   consistent (pooled p=2.5e-05) but it loses to hgpg on the seasons split.
-  Default stays hgb. V3f fixed LGBM+hgpg/gpg blends did not beat LGBM alone;
-  next try regularisation / feature tuning.
-- V3b calendar/schedule/goalie features (day_of_season, month,
-  rel_goalie_strength, schedule_density) did not help and were reverted.
+  Default stays hgb. V3f fixed LGBM+hgpg/gpg blends did not beat LGBM alone.
+- V3b/V4 calendar/schedule/goalie features (day_of_season, month,
+  rel_goalie_strength, schedule_density) did not help; do not re-add.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
 - Update this file after every experiment: config used, split mode, pooled
