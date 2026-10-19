@@ -584,6 +584,31 @@ hgb+logreg+lgbm). Caveat: the paired McNemar is p=0.127 on the reconstructed
 OOF (p=0.088 end-to-end, where one tie makes 946 vs the printed 945 picks), so
 the edge is directional rather than decisive.
 
+### V6c — ensemble multi-seed and injury audit
+
+End-to-end default ensemble (`--model ensemble`, k=5, train=all,
+`OMP_NUM_THREADS=2`, 256s/seed):
+
+| seed | hits / 3159 | acc | per-fold std | vs hgpg | vs same-seed corrected LGBM |
+|---|---:|---:|---:|---|---|
+| 0 | 945 | 29.915% | 2.395 | 338-278, p=0.017 | 139-111, p=0.088 |
+| 1 | 929 | 29.408% | 2.827 | 319-276, p=0.085 | 122-121, p=1.0 |
+| 3 | 942 | 29.820% | 0.633 | 314-259, p=0.024 | 134-109, p=0.124 |
+| **mean** | — | **29.714 ± 0.277** | — | — | — |
+
+Same-seed corrected LGBM: seed 0 918 (29.060%), seed 1 928 (29.376%),
+seed 3 916 (28.997%). Ensemble deltas: +0.855, +0.032, +0.823pp; mean
++0.570pp. The edge is not uniform — seed 1 is a tie — so treat the ensemble
+as directionally better, not a guaranteed per-seed win. OOF re-picks differ
+from the printed totals by one tie on seeds 0/3 (946/941 vs 945/942).
+
+**Injury audit** (92,440 challenge rows): `injury_status` non-null **0**,
+distinct **0**; `injury_desc` non-null **0**, distinct **0**. Overall scored
+rate 17.256%, with no status breakdown possible. Of the 3,159 seed-0 ensemble
+picks, **0** landed on a player with non-null injury status. The injury fields
+are never populated on the backtrack archive, so a pre-game injury filter or
+feature has no signal and is **not worth testing**.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -615,8 +640,11 @@ the edge is directional rather than decisive.
 - Corrected seed-0 headline: HGB 29.028%, logreg 29.060%, LGBM 29.060%,
   rank ensemble 29.851%; default is now `--model ensemble`
   (hgb+logreg+lgbm mean percentile rank).
-- Ensemble vs corrected LGBM is +0.79pp but McNemar p=0.13 (end-to-end
-  p=0.088); rerun seeds 1-3 and the seasons split before external claims.
+- Ensemble seeds 0/1/3 mean 29.714 ± 0.277; +0.570pp vs mean corrected
+  LGBM but seed 1 is a tie (29.408 vs 29.376). Run the seasons split before
+  external claims.
+- Injury fields are 100% null on the 92,440 challenge rows; no filter/feature
+  is worth testing.
 - Lagged lineup/PP replacements were leak-free but added only +0.095pp and
   were reverted; do not re-add without a new idea.
 - Group 3 remains the weak spot (corrected LGBM g3 ~20%); per-group
