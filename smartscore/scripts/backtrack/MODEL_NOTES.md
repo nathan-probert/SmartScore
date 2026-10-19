@@ -257,6 +257,32 @@ its paired McNemar vs the current ensemble is p=0.116, missing the p<0.10 bar;
 every ensemble also missed it. LGBM is worth a follow-up (more folds/seeds),
 not a default switch yet.
 
+### V3e — LGBM seed robustness
+
+Added `--seed` (default 42) to control the date-shuffle in `fold_blocks`.
+V2-V3d used the old hard-coded seed 0; pass `--seed 0` to reproduce those
+fold assignments. LGBM, date-blocked k=5, train=all, 3,159 picks/seed:
+
+| seed | LGBM hits / 3159 | acc | per-fold std | vs hgpg | McNemar p |
+|---|---:|---:|---:|---|---:|
+| 1 | 957 | 30.294% | 3.348 | +2.247pp | 349-278, p=0.0051 |
+| 2 | 950 | 30.073% | 2.793 | +2.026pp | 342-278, p=0.0113 |
+| 3 | 934 | 29.566% | 1.446 | +1.519pp | 334-286, p=0.059 |
+| **mean (1-3)** | — | **29.978%** | seed std **0.373** | — | — |
+
+McNemar vs hgpg pooled over the three seed runs: **1025-842, p=2.5e-05**
+(n=1,867 discordant picks). Seed 0 (V3d) was 959/3159 30.358%, 354-281,
+p=0.0042.
+
+Seasons split (`--split seasons`, one fit, 1,305 picks): LGBM **394/1305
+30.192%**, hgpg **396/1305 30.345%**, gpg 376/1305 28.812%. LGBM does **not**
+beat hgpg on the chronological split.
+
+Verdict: **default stays hgb**. The multi-seed mean is 29.98% (<30.0) and seed
+3 dipped to 29.57%; LGBM beats hgpg consistently in k-fold (all three seeds
+positive, pooled p<0.001) but loses to hgpg on the seasons split. Tune
+regularisation / try an LGBM+hgpg blend before promoting it.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -279,8 +305,9 @@ not a default switch yet.
 - Try pushing past ~29%: monotonic constraints on gpg/hgpg; Tuesday-style
   ablation of weak features (lineup_* and pp_unit) to see whether they add
   anything beyond hgpg. (Within-day ranking was tried in V3a: 26.3%, worse.)
-- LGBM was the best single model in V3d (30.36%, p=0.116 vs the ensemble);
-  rerun it on a second seed/fold split before switching the default.
+- LGBM: V3e seeds 1-3 mean 29.98% (seed 3 29.57), k-fold edge over hgpg is
+  consistent (pooled p=2.5e-05) but it loses to hgpg on the seasons split.
+  Default stays hgb; next try regularisation or an LGBM+hgpg blend.
 - V3b calendar/schedule/goalie features (day_of_season, month,
   rel_goalie_strength, schedule_density) did not help and were reverted.
 - Every new feature must be justified as pre-game from the joins; if it

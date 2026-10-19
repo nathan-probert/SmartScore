@@ -62,7 +62,7 @@ USAGE
     cd SmartScore-backtrack
     uv run python smartscore/scripts/backtrack/model.py --env dev \
         [--refresh] [--split kfold|seasons] [--splits 5] \
-        [--train-subset challenge|all] [--model hgb|lgbm|extratrees] [--ranker none|lambdarank] [--model-file PATH]
+        [--train-subset challenge|all] [--model hgb|lgbm|extratrees] [--seed N] [--ranker none|lambdarank] [--model-file PATH]
 
 Defaults: kfold k=5, train-subset all (strongest under CV; see MODEL_NOTES.md).
 
@@ -609,10 +609,10 @@ def fit_ranker(train, test, kind):
     return pd.Series(model.predict(x_test), index=test.index)
 
 
-def fold_blocks(dates, splits_count):
+def fold_blocks(dates, splits_count, seed):
     """Shuffled, contiguous date blocks - one block per fold's test side."""
     dates = np.array(sorted(dates))
-    detector = np.random.default_rng(0)
+    detector = np.random.default_rng(seed)
     detector.shuffle(dates)
     return np.array_split(dates, splits_count)
 
@@ -625,7 +625,7 @@ def run_folds(frame, args):
         blocks = [frame.loc[frame["date"] >= TEST_START, "date"].unique()]
     else:
         challenge_dates = frame.loc[challenge, "date"].unique()
-        blocks = fold_blocks(challenge_dates, args.splits)
+        blocks = fold_blocks(challenge_dates, args.splits, args.seed)
 
     stats = []
     point_name = args.model
@@ -738,6 +738,12 @@ def main():
     )
     parser.add_argument("--split", choices=["kfold", "seasons"], default="kfold", help="evaluation split")
     parser.add_argument("--splits", type=int, default=5, help="number of k-fold blocks (kfold mode)")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="date-shuffle seed for kfold (default 42; V3d and earlier used 0)",
+    )
     parser.add_argument(
         "--train-subset",
         choices=["challenge", "all"],
