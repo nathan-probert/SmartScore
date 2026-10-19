@@ -583,7 +583,7 @@ def fit_lgbm(train, test, config="a"):
         subsample=0.8,
         colsample_bytree=0.8,
         random_state=0,
-        n_jobs=4,
+        n_jobs=int(os.environ.get("LGBM_N_JOBS", 4)),
         verbose=-1,
         **LGBM_CONFIGS[config],
     )

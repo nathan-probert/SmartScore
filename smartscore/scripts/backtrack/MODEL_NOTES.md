@@ -426,6 +426,40 @@ vs a, so it cannot meet the +0.5pp-on-both-seeds bar. The other heavy jobs on
 the host (V4 final HGB, audit LGBM, V3h) are the likely cause. No config
 qualified, so seed 2 was not run and the default stays **a / hgb**.
 
+### V4 results — clean LGBM check (2026-10-19)
+
+V4 = 14 prior-games-only shot/TOI/talent features (`sd_*`, `r5_*`/`r10_*`,
+`ewm_*`, `career_*`) from `player_games`; carried by `08e92e7` on branch
+`v4-shot-features` and merged/followed up on `backtrack-recon` through
+`beaee74`.
+
+LGBM, date-blocked k=5, train=all, `OMP_NUM_THREADS=2`, `LGBM_N_JOBS=2`:
+each seed completed in 100s with `--seed` 1/3.
+
+| seed | V3e pre-V4 | V4 | delta | McNemar V4 vs V3e |
+|---|---:|---:|---:|---|
+| 1 | 957/3159 = 30.294% | 959/3159 = 30.358% | +0.063pp | 220-218, p=0.962 |
+| 3 | 934/3159 = 29.566% | 926/3159 = 29.313% | -0.253pp | 207-215, p=0.733 |
+| pooled | — | — | — | 427-433, p=0.865 |
+
+AUC rose slightly (0.6964/0.6968 vs 0.6946/0.6944), but picks did not: seed 1
+was positive by 0.06pp, seed 3 negative. Per the stop rule, seed 2 and HGB
+seed 0 were **not** run.
+
+Fold-1 LGBM gain importance for the shot block (rank among 47 features):
+career_goals_pg #2 (151,047), ewm_shots #4, sd_shots_pg #5, r10_toi_pg #6,
+sd_toi_pg #7, career_shots_pg #9, career_games #14, ewm_goals #18, sd_sh_pct
+#20, r10_shots_pg #21, sd_goals_pg #24, r5_shots_pg #31, r10_goals_pg #39,
+r5_goals_pg #40. Permutation AUC drops were small: career_goals_pg 0.0089,
+ewm_shots 0.0020, all others <=0.0015.
+
+Existing V4 accuracy runs: HGB seed 42 = 950/3159 30.073%
+(`/tmp/opencode/v4_final.log`), seasons 390/1305 29.885%; the HGB seed-0 run
+is incomplete (2/5 folds). Verdict: V4 is heavily used but does not improve
+LGBM and shows no cross-family gain; its 30.4% seed-0 headline is still an
+unverified harness number. Keep the code, but do not rely on the V4 promotion
+until a clean HGB seed-0 run is completed.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -450,12 +484,12 @@ qualified, so seed 2 was not run and the default stays **a / hgb**.
 
 ## Next steps
 
-- V4 shot/TOI block is the current winner (`--model hgb --seed 42`: 30.073%).
-  Two untested follow-ups: ablate the weak categoricals (lineup_unit,
-  pp_unit) from the V4 set, and run LGBM (V3d/V3g configs) on the V4 feature
-  set instead of the V2 set.
-- Seeds: V4 was verified on seed 0 (30.421%) and seed 42 (30.073%). Re-run
-  1/2/3 when the box is not shared; a fold takes minutes under contention.
+- V4 open question: LGBM on the V4 set is neutral (seeds 1/3: +0.06/-0.25pp
+  vs pre-V4). Run HGB seed 0 cleanly over 5 folds to verify the 30.421%
+  harness headline; if it does not hold, reconsider the V4 promotion.
+- V4 HGB is cleanly verified only at seed 42 (950/3159 = 30.073%); seeds
+  1/2/3 remain TBD. Do not cite the seed-0 961/3159 until it is rerun.
+- Ablate the weak categoricals (lineup_unit, pp_unit) from the V4 set.
 - Group 3 remains the weak spot (V4 21.4% vs g1 40.9 / g2 27.9); per-group
   calibration or group-specific interactions are the obvious next lever.
 - LGBM: V3e seeds 1-3 mean 29.98% (seed 3 29.57), k-fold edge over hgpg is
