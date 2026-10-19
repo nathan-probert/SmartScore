@@ -204,6 +204,33 @@ negative (schedule_density -0.0008, month -0.00084, rel_goalie_strength
 Verdict: **reverted**. No metric improved and the new features contributed
 little or negatively; keep the V2 feature set as the baseline.
 
+### V3c — post-processing / blends on saved OOF scores (notes only)
+
+Source: `data/ml/oof_v2_baseline_repro.csv` (92,440 OOF rows, 3,159 challenge
+picks); no retraining. Pick rule unchanged: argmax within `(date, tims)`, hit
+iff `scored=1`. Rank blends use the percentile rank within `(date, tims)`;
+z-score blends standardise within `(date, tims)`; the logit blend uses the
+HGB/logreg probabilities (ranges 0.009-0.73 and 0.003-0.97, clipped 1e-6).
+Missing `live` ranks/z-scores were filled neutral (0.5 / 0); 1,228 of 92,440
+rows lack `live`. No adaptive/tuned weights were used.
+
+| variant | hits / 3159 | acc | mean ± std | Δ vs ens | McNemar vs hgpg | McNemar vs ens |
+|---|---:|---:|---:|---:|---|---|
+| ensemble rank hgb+logreg | 925 | 29.281% | 29.278 ± 2.386 | — | 290-251, p=0.102 | — |
+| rank hgb+logreg+live | 896 | 28.363% | 28.362 ± 2.243 | -0.918 | 216-206, p=0.661 | 112-141, p=0.078 |
+| rank hgb+live | 907 | 28.712% | 28.708 ± 2.723 | -0.570 | 272-251, p=0.382 | 126-144, p=0.301 |
+| rank logreg+live | 882 | 27.920% | 27.920 ± 0.609 | -1.361 | 162-166, p=0.869 | 215-258, p=0.053 |
+| z-score hgb+logreg | 930 | 29.440% | 29.440 ± 2.042 | +0.158 | 257-213, p=0.047 | 126-121, p=0.799 |
+| z-score hgb+logreg+live | 935 | 29.598% | 29.598 ± 1.302 | +0.317 | 211-162, p=0.013 | 164-154, p=0.614 |
+| logit-avg hgb+logreg | 930 | 29.440% | 29.439 ± 1.857 | +0.158 | 260-216, p=0.049 | 127-122, p=0.800 |
+| rank hgb+logreg+live+gpg | 892 | 28.237% | 28.235 ± 1.711 | -1.045 | 249-243, p=0.822 | 164-197, p=0.092 |
+| rank hgb+logreg+live+gpg+hgpg | 904 | 28.617% | 28.615 ± 1.596 | -0.665 | 207-189, p=0.393 | 179-200, p=0.304 |
+
+Verdict: **no variant qualified** (needed >= +0.5pp vs ensemble and p<0.10
+vs ensemble). Best was z-score hgb+logreg+live at 29.60% (+0.32pp), but its
+paired McNemar vs the ensemble was p=0.61. Keep the existing ensemble; no
+`--blend` option added.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
