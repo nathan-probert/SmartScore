@@ -62,7 +62,7 @@ USAGE
     cd SmartScore-backtrack
     uv run python smartscore/scripts/backtrack/model.py --env dev \
         [--refresh] [--split kfold|seasons] [--splits 5] \
-        [--train-subset challenge|all] [--model hgb|lgbm|extratrees] [--lgbm-config a|b|c] [--seed N] [--ranker none|lambdarank] [--model-file PATH]
+        [--train-subset challenge|all] [--model ensemble|hgb|lgbm|extratrees] [--lgbm-config a|b|c] [--seed N] [--ranker none|lambdarank] [--model-file PATH]
 
 Defaults: kfold k=5, train-subset all (strongest under CV; see MODEL_NOTES.md).
 
@@ -735,7 +735,10 @@ def run_folds(frame, args):
 
     stats = []
     point_name = args.model
-    method_order = ["gpg", "hgpg", "live", point_name, "logreg"]
+    if point_name == "ensemble":
+        method_order = ["gpg", "hgpg", "live", "hgb", "logreg", "lgbm", "ensemble"]
+    else:
+        method_order = ["gpg", "hgpg", "live", point_name, "logreg"]
     if args.ranker != "none":
         method_order.append("ranker")
     method_order.append("random")
@@ -767,18 +770,31 @@ def run_folds(frame, args):
         sim["live"] = live_score(test, train)
         pooled["live"].append(daily_picks(sim, "live"))
 
-        fit_pointwise = {"hgb": fit_hgb, "lgbm": fit_lgbm, "extratrees": fit_extratrees}[point_name]
-        if point_name == "lgbm":
-            prob_point = fit_lgbm(train, test, args.lgbm_config)
+        if point_name == "ensemble":
+            prob_hgb = fit_hgb(train, test)
+            sim["hgb"] = prob_hgb.fillna(0).values
+            prob_lgbm = fit_lgbm(train, test, args.lgbm_config)
+            sim["lgbm"] = prob_lgbm.fillna(0).values
+            prob_logreg = fit_logreg(train, test)
+            sim["logreg"] = prob_logreg.fillna(0).values
+            ranks = sim.groupby(["date", "tims"])[["hgb", "lgbm", "logreg"]].rank(pct=True)
+            sim["ensemble"] = ranks.mean(axis=1)
+            for method in ("hgb", "logreg", "lgbm", "ensemble"):
+                pooled[method].append(daily_picks(sim, method))
+            aucs.append(roc_auc_score(test["scored"].astype(int), sim["ensemble"]))
         else:
-            prob_point = fit_pointwise(train, test)
-        sim[point_name] = prob_point.fillna(0).values
-        pooled[point_name].append(daily_picks(sim, point_name))
-        aucs.append(roc_auc_score(test["scored"].astype(int), prob_point))
+            fit_pointwise = {"hgb": fit_hgb, "lgbm": fit_lgbm, "extratrees": fit_extratrees}[point_name]
+            if point_name == "lgbm":
+                prob_point = fit_lgbm(train, test, args.lgbm_config)
+            else:
+                prob_point = fit_pointwise(train, test)
+            sim[point_name] = prob_point.fillna(0).values
+            pooled[point_name].append(daily_picks(sim, point_name))
+            aucs.append(roc_auc_score(test["scored"].astype(int), prob_point))
 
-        prob_logreg = fit_logreg(train, test)
-        sim["logreg"] = prob_logreg.fillna(0).values
-        pooled["logreg"].append(daily_picks(sim, "logreg"))
+            prob_logreg = fit_logreg(train, test)
+            sim["logreg"] = prob_logreg.fillna(0).values
+            pooled["logreg"].append(daily_picks(sim, "logreg"))
 
         if args.ranker != "none":
             prob_ranker = fit_ranker(train, test, args.ranker)
@@ -787,7 +803,10 @@ def run_folds(frame, args):
 
         for method, picks in pooled.items():
             stats.append({"fold": number, "method": method, **score_picks(picks[-1], method)})
-        out_cols = [point_name if col == "hgb" else col for col in PICK_FILE_COLUMNS]
+        if point_name == "ensemble":
+            out_cols = [col for col in PICK_FILE_COLUMNS if col != "hgb"] + ["hgb", "lgbm", "ensemble"]
+        else:
+            out_cols = [point_name if col == "hgb" else col for col in PICK_FILE_COLUMNS]
         out_cols += (["ranker"] if args.ranker != "none" else []) + ["random"]
         out_rows.append(sim[out_cols].assign(fold=number))
         print(f"  fold {number}: {len(sim):,} sim rows across {test['date'].nunique()} dates", flush=True)
@@ -862,9 +881,9 @@ def main():
     )
     parser.add_argument(
         "--model",
-        choices=["hgb", "lgbm", "extratrees"],
-        default="hgb",
-        help="pointwise model: HistGradientBoosting (default), LightGBM, or ExtraTrees.",
+        choices=["ensemble", "hgb", "lgbm", "extratrees"],
+        default="ensemble",
+        help="rank ensemble hgb+logreg+lgbm (default), or a single pointwise model.",
     )
     parser.add_argument(
         "--lgbm-config",

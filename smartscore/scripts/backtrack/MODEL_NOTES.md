@@ -557,6 +557,33 @@ categoricals. The corrected LGBM reference is **29.08%** mean (audit seed-0
 corrected baseline 892/3159 = 28.237%). Prior HGB/LGBM headlines that used
 current-game lineups are invalid; a corrected HGB run is still needed.
 
+### V6b — corrected (leak-free) headline
+
+Corrected HGB seed 0 (`--model hgb`, 213s) also produced logreg in the same
+pass, so no separate logreg run was needed. Corrected LGBM seed 0 took 90s;
+the ensemble default run took 257s.
+
+| method | hits / 3159 | acc | per-fold std | vs hgpg | vs corrected LGBM |
+|---|---:|---:|---:|---|---|
+| gpg | 837 | 26.496% | 1.163 | 326-375, p=0.070 | 319-400, p=0.0028 |
+| hgpg | 886 | 28.047% | 1.631 | — | 297-329, p=0.215 |
+| hgb | 917 | 29.028% | 2.409 | 373-342, p=0.262 | 223-224, p=1.0 |
+| logreg | 918 | 29.060% | 1.940 | 273-241, p=0.172 | 254-254, p=1.0 |
+| lgbm | 918 | 29.060% | 2.075 | 329-297, p=0.215 | — |
+| rank ensemble (hgb+logreg+lgbm) | 943 | 29.851% | 2.357 | 335-278, p=0.024 | 136-111, p=0.127 |
+| ensemble, end-to-end default run | 945 | 29.915% | 2.395 | 338-278, p=0.017 | 139-111, p=0.088 |
+
+The seed-0 corrected LGBM is **918/3159 = 29.060%**, not the audit's 892:
+the audit number was on the pre-V4 feature set; the current 42-feature set
+includes the V4 shot block, so the same-seed corrected baseline is 918.
+
+The ensemble beats corrected LGBM by **+0.791pp** on the reconstructed OOFs
+(+0.855pp in the end-to-end run), so it clears the stated +0.5pp rule and is
+now the documented default (`--model ensemble`, mean percentile rank of
+hgb+logreg+lgbm). Caveat: the paired McNemar is p=0.127 on the reconstructed
+OOF (p=0.088 end-to-end, where one tie makes 946 vs the printed 945 picks), so
+the edge is directional rather than decisive.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -585,15 +612,15 @@ current-game lineups are invalid; a corrected HGB run is still needed.
   lookahead and are removed from all models. Prior HGB/LGBM headlines that
   used them (V2-V5; V4 HGB 30.073/30.421, LGBM 30.36) are invalid as
   deployment estimates.
-- Re-run corrected HGB (no `lineup_unit`/`pp_unit`) over 5 folds. The
-  corrected LGBM reference is 29.08% mean over seeds 1-3 (28.24% at seed 0).
+- Corrected seed-0 headline: HGB 29.028%, logreg 29.060%, LGBM 29.060%,
+  rank ensemble 29.851%; default is now `--model ensemble`
+  (hgb+logreg+lgbm mean percentile rank).
+- Ensemble vs corrected LGBM is +0.79pp but McNemar p=0.13 (end-to-end
+  p=0.088); rerun seeds 1-3 and the seasons split before external claims.
 - Lagged lineup/PP replacements were leak-free but added only +0.095pp and
   were reverted; do not re-add without a new idea.
 - Group 3 remains the weak spot (corrected LGBM g3 ~20%); per-group
   calibration or group-specific interactions are the obvious next lever.
-- LGBM: corrected seeds 1-3 mean 29.08% (std 0.26); k-fold edge over hgpg
-  was significant pre-correction, re-check after the fix. Default stays hgb
-  pending a corrected HGB run.
 - V3b/V4 calendar/schedule/goalie features (day_of_season, month,
   rel_goalie_strength, schedule_density) did not help; do not re-add.
 - Every new feature must be justified as pre-game from the joins; if it
