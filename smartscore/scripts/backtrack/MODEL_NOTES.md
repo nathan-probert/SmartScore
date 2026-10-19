@@ -366,8 +366,8 @@ End-to-end default run (`--model hgb --seed 42`, the current CLI defaults;
 40.9/27.9/21.4 vs V2 38.9/27.2/20.9 — the gain is spread across all three
 groups, not one lucky slate. Same-run baselines: hgpg 28.047%
 (886), gpg 26.496% (837), logreg 28.965% (915). Exact McNemar on pooled picks:
-**HGB vs hgpg 406-342, p = 0.0212; HGB vs gpg 468-355, p = 9.2e-05** — the
-first config in this file to beat *both* baselines at p < 0.05.
+**HGB vs hgpg 406-342, p = 0.0212; HGB vs gpg 468-355, p = 9.2e-05** — both
+baseline gaps are significant at p < 0.05 in this run.
 
 Seed robustness (`--seed 0` and the default `--seed 42`, same config):
 
