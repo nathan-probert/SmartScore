@@ -120,6 +120,42 @@ Current headline: **V2 features + train on ALL rows, HGB or logreg ≈ 29.0%
 pooled OOF; ensemble 29.3%** — clearly beats the straight-GPG rule, roughly
 beats/ties hgpg and the live weights, margin short of significance vs hgpg.
 
+### V3a — within-day ranking objective (lambdarank)
+
+Config: `--ranker lambdarank`, LightGBM 4.7.0 `LGBMRanker`
+(objective=lambdarank, 400 trees, lr=0.03, 31 leaves, min_child_samples=50,
+subsample/colsample=0.8). Same V2 feature set; trained on ALL scored rows.
+Rows grouped by `(date, tims)` (tims=0 forms its own per-date group), so the
+model optimises the order inside each slate/group. Date-blocked kfold, k=5;
+3,159 pooled picks. Code falls back to pairwise logistic on (winner, loser)
+feature differences if lightgbm is not importable.
+
+Smoke (k=2, train=all, 173s): ranker 27.03% (854/3159), HGB 28.21%,
+hgpg 28.05%, gpg 26.50%.
+
+Full k=5, train=all (426s):
+
+| method | pooled hits / 3159 | acc | per-fold mean ± std |
+|---|---:|---:|---:|
+| HGB | 916 | 29.00% | 28.995 ± 1.245 |
+| logreg | 917 | 29.03% | 29.029 ± 1.252 |
+| **ranker (lambdarank)** | **832** | **26.34%** | **26.336 ± 1.339** |
+| hgpg | 886 | 28.05% | 28.046 ± 1.631 |
+| gpg | 837 | 26.50% | 26.496 ± 1.163 |
+
+McNemar exact, pooled picks:
+- ranker vs gpg: 394-399, p=0.89 (tie).
+- ranker vs hgpg: 332-386, p=0.048 (**ranker worse**).
+- HGB vs gpg: 442-363, p=0.0059; HGB vs hgpg: 373-343, p=0.28.
+
+Verdict: the ranking objective **did not help** — it fell to the straight-GPG
+level and lost to hgpg, while both pointwise models stayed at ~29%. Per-group
+ranker hit rates (g1/g2/g3 = 36.4/24.0/18.6) trail HGB (38.9/27.2/20.9); the
+likely cause is that lambdarank only sees within-slate order (small groups,
+truncation at 30) and discards the global 0/1 calibration that HGB/logreg use
+across all 380k training rows. Do not promote it; keep `--ranker none` as the
+default.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -139,10 +175,9 @@ beats/ties hgpg and the live weights, margin short of significance vs hgpg.
 
 ## Next steps
 
-- Try pushing past ~29%: pairwise / within-day ranking objective (train to
-  rank inside a slate instead of the global 0/1 loss); monotonic constraints
-  on gpg/hgpg; Tuesday-style ablation of weak features (lineup_* and
-  pp_unit) to see whether they add anything beyond hgpg.
+- Try pushing past ~29%: monotonic constraints on gpg/hgpg; Tuesday-style
+  ablation of weak features (lineup_* and pp_unit) to see whether they add
+  anything beyond hgpg. (Within-day ranking was tried in V3a: 26.3%, worse.)
 - Feature ideas not yet in: season-day-of-season index, goalie-strength
   relative term (opp_gaa vs own_gaa), schedule density, month effects.
 - Every new feature must be justified as pre-game from the joins; if it

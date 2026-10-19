@@ -62,7 +62,7 @@ USAGE
     cd SmartScore-backtrack
     uv run python smartscore/scripts/backtrack/model.py --env dev \
         [--refresh] [--split kfold|seasons] [--splits 5] \
-        [--train-subset challenge|all] [--model-file PATH]
+        [--train-subset challenge|all] [--ranker none|lambdarank] [--model-file PATH]
 
 Defaults: kfold k=5, train-subset all (strongest under CV; see MODEL_NOTES.md).
 
@@ -471,6 +471,101 @@ def fit_logreg(train, test):
     return pd.Series(model.predict_proba(test[NUMERIC_FEATURES])[:, 1], index=test.index)
 
 
+def _group_order(frame):
+    """Row order and group sizes for (date, tims) groups.
+
+    tims=0 rows group together per date, separately from the 1/2/3 challenge
+    groups, which is the grain the daily pick sim ranks inside.
+    """
+    order = np.lexsort((frame["tims"].to_numpy(), frame["date"].to_numpy()))
+    sizes = frame.iloc[order].groupby(["date", "tims"], sort=False).size().to_numpy()
+    return order, sizes
+
+
+def _fit_pairwise_logistic(x_train, y_train, groups, x_test):
+    """Fallback ranker: logistic on within-group positive/negative pairs.
+
+    A pair (winner, loser) becomes the feature difference; a linear model on
+    differences ranks by w . x, so ``decision_function`` is the score.
+    """
+    from sklearn.linear_model import SGDClassifier
+
+    rng = np.random.default_rng(0)
+    max_pairs = 120
+    diffs, labels = [], []
+    for _, idx in groups:
+        y = y_train[idx]
+        pos = idx[y == 1]
+        neg = idx[y == 0]
+        if len(pos) == 0 or len(neg) == 0:
+            continue
+        n = min(max_pairs, len(pos) * len(neg))
+        left = rng.choice(pos, size=n)
+        right = rng.choice(neg, size=n)
+        diff = x_train[left] - x_train[right]
+        # Both directions: (winner-loser, 1) and (loser-winner, 0), so the
+        # logistic loss has two classes and w . x orders the group.
+        diffs.append(np.vstack([diff, -diff]))
+        labels.append(np.concatenate([np.ones(n, dtype=int), np.zeros(n, dtype=int)]))
+    if not diffs:
+        return pd.Series(0.0, index=getattr(x_test, "index", None))
+    model = make_pipeline(
+        SimpleImputer(strategy="median"),
+        StandardScaler(),
+        SGDClassifier(loss="log_loss", alpha=1e-4, max_iter=30, tol=None, random_state=0),
+    )
+    model.fit(np.vstack(diffs), np.concatenate(labels))
+    scores = model.decision_function(x_test)
+    return pd.Series(scores, index=getattr(x_test, "index", None))
+
+
+def fit_ranker(train, test, kind):
+    """Within-(date, tims)-group ranker over the same V2 feature set.
+
+    LightGBM's LGBMRanker is used when importable; otherwise the pairwise
+    logistic fallback keeps the flag usable on a bare install. Scores are
+    higher-is-better, so ``daily_picks`` consumes them unchanged.
+    """
+    x_train, x_test = categorise(train, test)
+    # LightGBM reads pandas category codes; align the test categories to train.
+    for col in CATEGORICAL_FEATURES:
+        x_test[col] = x_test[col].cat.set_categories(x_train[col].cat.categories)
+
+    order, sizes = _group_order(train)
+    x_ordered = x_train.iloc[order]
+    y_ordered = train["scored"].astype(int).to_numpy()[order]
+
+    try:
+        from lightgbm import LGBMRanker
+    except ImportError:
+        print("  ranker: lightgbm unavailable, using pairwise logistic fallback", flush=True)
+        x_num = x_ordered.copy()
+        x_test_num = x_test.copy()
+        for col in CATEGORICAL_FEATURES:
+            x_num[col] = x_num[col].cat.codes.astype(float).replace(-1, np.nan)
+            x_test_num[col] = x_test_num[col].cat.codes.astype(float).replace(-1, np.nan)
+        groups = train.iloc[order].groupby(["date", "tims"], sort=False).indices
+        positional = [(key, np.asarray(vals)) for key, vals in groups.items()]
+        return _fit_pairwise_logistic(
+            x_num.to_numpy(dtype=np.float32), y_ordered, positional, x_test_num
+        )
+
+    model = LGBMRanker(
+        objective="lambdarank",
+        n_estimators=400,
+        learning_rate=0.03,
+        num_leaves=31,
+        min_child_samples=50,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=0,
+        n_jobs=4,
+        verbose=-1,
+    )
+    model.fit(x_ordered, y_ordered, group=sizes)
+    return pd.Series(model.predict(x_test), index=test.index)
+
+
 def fold_blocks(dates, splits_count):
     """Shuffled, contiguous date blocks - one block per fold's test side."""
     dates = np.array(sorted(dates))
@@ -490,7 +585,11 @@ def run_folds(frame, args):
         blocks = fold_blocks(challenge_dates, args.splits)
 
     stats = []
-    pooled = {method: [] for method in ("gpg", "hgpg", "live", "hgb", "logreg", "random")}
+    method_order = ["gpg", "hgpg", "live", "hgb", "logreg"]
+    if args.ranker != "none":
+        method_order.append("ranker")
+    method_order.append("random")
+    pooled = {method: [] for method in method_order}
     out_rows = []
     aucs = []
 
@@ -527,9 +626,15 @@ def run_folds(frame, args):
         sim["logreg"] = prob_logreg.fillna(0).values
         pooled["logreg"].append(daily_picks(sim, "logreg"))
 
+        if args.ranker != "none":
+            prob_ranker = fit_ranker(train, test, args.ranker)
+            sim["ranker"] = prob_ranker.fillna(0).values
+            pooled["ranker"].append(daily_picks(sim, "ranker"))
+
         for method, picks in pooled.items():
             stats.append({"fold": number, "method": method, **score_picks(picks[-1], method)})
-        out_rows.append(sim[PICK_FILE_COLUMNS + ["random"]].assign(fold=number))
+        out_cols = PICK_FILE_COLUMNS + (["ranker"] if args.ranker != "none" else []) + ["random"]
+        out_rows.append(sim[out_cols].assign(fold=number))
         print(f"  fold {number}: {len(sim):,} sim rows across {test['date'].nunique()} dates", flush=True)
 
     return stats, pooled, pd.concat(out_rows, ignore_index=True), aucs
@@ -544,13 +649,14 @@ def report(stats, pooled, aucs, cover, args, out_rows=None):
     print(f"\n=== {tag} | mean held-out AUC: {np.mean(aucs):.4f} +- {np.std(aucs):.4f} ===")
 
     per_fold = pd.DataFrame(stats).pivot(index="fold", columns="method", values="acc")
-    per_fold = per_fold[["gpg", "hgpg", "live", "hgb", "logreg", "random"]]
+    methods = list(pooled.keys())
+    per_fold = per_fold[methods]
     print("\nper-fold pick accuracy (%):")
     print(per_fold.round(1).to_string())
 
     pooled_picks = {method: pd.concat(parts, ignore_index=True) for method, parts in pooled.items()}
     summary_rows = []
-    for method in ("gpg", "hgpg", "live", "hgb", "logreg", "random"):
+    for method in methods:
         picks = pooled_picks[method]
         row = score_picks(picks, method)
         row["acc_std"] = per_fold[method].std()
@@ -562,7 +668,7 @@ def report(stats, pooled, aucs, cover, args, out_rows=None):
     print(summary[cols].round(3).to_string())
 
     print("\nper-group (pooled picks, hit-%):")
-    for method in ("gpg", "hgpg", "live", "hgb", "logreg", "random"):
+    for method in methods:
         picks = pooled_picks[method]
         groups = picks.groupby("tims")["scored"].agg(["count", "sum"])
         g_txt = " ".join(f"g{int(tims)}={100 * row['sum'] / row['count']:.1f}" for tims, row in groups.iterrows())
@@ -592,6 +698,13 @@ def main():
         default="all",
         help="train on every scored row ('all', default - stronger under CV) or only tims-group rows "
         "('challenge', distribution-matched but weaker)",
+    )
+    parser.add_argument(
+        "--ranker",
+        choices=["none", "lambdarank"],
+        default="none",
+        help="add a within-(date,tims)-group ranking model. 'lambdarank' uses LightGBM's "
+        "LGBMRanker when installed, else pairwise logistic on positive/negative pairs.",
     )
     parser.add_argument("--model-file", type=Path, help="save pooled out-of-fold rows with predictions here")
     args = parser.parse_args()
