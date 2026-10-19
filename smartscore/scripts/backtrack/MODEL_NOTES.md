@@ -283,6 +283,30 @@ Verdict: **default stays hgb**. The multi-seed mean is 29.98% (<30.0) and seed
 positive, pooled p<0.001) but loses to hgpg on the seasons split. Tune
 regularisation / try an LGBM+hgpg blend before promoting it.
 
+### V3f — LGBM + baseline blends on saved OOF (notes only)
+
+Inputs: `data/ml/oof_v3e_lgbm_seed{1,2,3}.csv` (3,159 picks/seed). Fixed,
+pre-declared weights only; rank/z transforms within `(date,tims)`.
+
+| variant | seed 1 | seed 2 | seed 3 | mean ± std | McNemar vs lgbm (pooled) |
+|---|---:|---:|---:|---:|---|
+| lgbm alone | 30.294% | 30.073% | 29.566% | 29.978 ± 0.373 | — |
+| rank 0.75 lgbm + 0.25 hgpg | 29.978% | 29.756% | 29.788% | 29.841 ± 0.120 | 173-186, p=0.527 |
+| rank 0.50 lgbm + 0.50 hgpg | 29.630% | 29.471% | 29.218% | 29.440 ± 0.208 | 485-536, p=0.118 |
+| z equal lgbm+hgpg | 29.693% | 29.376% | 29.376% | 29.482 ± 0.183 | 541-588, p=0.171 |
+| z 0.75 lgbm + 0.25 hgpg | 29.471% | 29.915% | 29.693% | 29.693 ± 0.222 | 269-296, p=0.274 |
+| rank 0.75 lgbm + 0.25 gpg | 29.250% | 29.250% | 29.376% | 29.292 ± 0.073 | 329-394, p=0.017 (worse) |
+
+McNemar vs hgpg pooled over all three runs: lgbm 1025-842, p=2.5e-05;
+rank75_hgpg 917-747, p=3.4e-05; rank50_hgpg 612-480, p=7.2e-05; z_eq
+529-393, p=8.4e-06; z75_hgpg 802-646, p=4.6e-05; rank75_gpg 996-878,
+p=0.0069.
+
+Verdict: **no blend qualified**. None reached 30.0% in all three seeds (the
+best, rank75_hgpg, was 29.76-29.98%), and none beat lgbm alone consistently —
+rank75_hgpg won only seed 3, the others lost every seed; pooled McNemar vs
+lgbm was p>=0.12 for all hgpg blends. No `--blend` flag added; notes only.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -307,7 +331,8 @@ regularisation / try an LGBM+hgpg blend before promoting it.
   anything beyond hgpg. (Within-day ranking was tried in V3a: 26.3%, worse.)
 - LGBM: V3e seeds 1-3 mean 29.98% (seed 3 29.57), k-fold edge over hgpg is
   consistent (pooled p=2.5e-05) but it loses to hgpg on the seasons split.
-  Default stays hgb; next try regularisation or an LGBM+hgpg blend.
+  Default stays hgb. V3f fixed LGBM+hgpg/gpg blends did not beat LGBM alone;
+  next try regularisation / feature tuning.
 - V3b calendar/schedule/goalie features (day_of_season, month,
   rel_goalie_strength, schedule_density) did not help and were reverted.
 - Every new feature must be justified as pre-game from the joins; if it
