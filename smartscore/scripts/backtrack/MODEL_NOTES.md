@@ -156,6 +156,54 @@ truncation at 30) and discards the global 0/1 calibration that HGB/logreg use
 across all 380k training rows. Do not promote it; keep `--ranker none` as the
 default.
 
+### V3b — calendar / schedule / relative-goalie features (reverted)
+
+Added four leak-free pre-game features to the V2 set:
+- `day_of_season`: 0-based index of the date among that season's distinct
+  dates (season derived from date, Aug-Jul boundary).
+- `month`: 1-12 from the date.
+- `rel_goalie_strength`: opponent starter's pre-game GAA minus the mean GAA
+  of that date's starters (same dedup rule as `build_frame`; NaN if unknown).
+- `schedule_density`: club games in the 7 days before the game
+  (`date-7 <= prior game < date`), from the team table; NaN if unknown.
+
+Leakage/merge checks: row count stayed 427,240 before/after `add_derived`;
+no `_x`/`_y` suffix columns; `month` matched the parsed date; each season's
+first date had `day_of_season=0`; sampled `rel_goalie_strength` and
+`schedule_density` matched independent recomputation. Calendar features use
+the date only, goalie means use same-date pre-game snapshots, and density
+counts strictly earlier dates.
+
+Full date-blocked k=5, train=all, 284s, 3,159 pooled picks:
+
+| method | pooled hits / 3159 | acc | per-fold mean ± std |
+|---|---:|---:|---:|
+| HGB | 907 | 28.71% | 28.710 ± 1.763 |
+| logreg | 906 | 28.68% | 28.680 ± 1.079 |
+| ensemble | 921 | 29.16% | 29.151 ± 2.697 |
+| hgpg | 886 | 28.05% | 28.046 ± 1.631 |
+| gpg | 837 | 26.50% | 26.496 ± 1.163 |
+
+Delta vs V2 (29.00 / 29.03 / 29.28): HGB **-0.29pp**, logreg **-0.35pp**,
+ensemble **-0.13pp** — all within fold noise, no gain.
+
+McNemar exact, pooled picks:
+- HGB vs gpg: 423-353, p=0.013; HGB vs hgpg: 353-332, p=0.44.
+- logreg vs gpg: 331-262, p=0.0052; logreg vs hgpg: 193-173, p=0.32.
+- ensemble vs gpg: 377-293, p=0.0013; ensemble vs hgpg: 280-245, p=0.14.
+- **V3b HGB vs V2 HGB: 202-211, p=0.69** (tie); 1,062 of 3,159 picks changed.
+
+HGB permutation importance (fold-1 model, 3,000 held-out rows, 1 repeat,
+ROC-AUC decrease), top 15: lineup_unit .0420, hgpg .0171, pp_unit .0125,
+gpg .0092, hppg .0049, opp_save_pct .0042, otshga .0033, club_rest_days
+.0027, otga .0019, ppg .0016, opp_wins .00082, opp_gaa .00070, tims .00070,
+games_since_goal .00066, day_of_season .00053. The other new features were
+negative (schedule_density -0.0008, month -0.00084, rel_goalie_strength
+-0.0013).
+
+Verdict: **reverted**. No metric improved and the new features contributed
+little or negatively; keep the V2 feature set as the baseline.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
