@@ -16,6 +16,11 @@ removed; corrected LGBM is **29.06%**.
 **30.33% ± 0.26** (seeds 0/1/2/3: 30.36/30.61/30.39/29.98). Real morning
 projections should land roughly **29.7-30.3%**; default stays no-lineup.
 
+**Real projections (V10):** 0 `PROJECTED` rows are archived (5,155 `UNKNOWN`
+rows across 17 dates, with null `lineup_unit`/`pp_unit`). Real-projection
+accuracy and the live simulation cannot be measured — collect PROJECTED rows
+with units forward.
+
 **Post-correction experiments — all rejected:**
 
 | experiment | result | verdict |
@@ -1235,6 +1240,25 @@ across available seeds: 29.883 (seed 1 end-to-end) and 29.598 (seed 3),
 mean **29.74%**. Not a clear win on the same seed (p=0.43), so the default
 stays `--lineup none`. Deployment estimate with real morning projections:
 roughly **29.7-30.3%**, between the crude projected ensemble and oracle.
+
+### V10 — real projected lineups are not archived
+
+Inventory of `Player-Snapshots-prod` (Supabase, 2026-10-20): 143,935 total
+rows; `lineup_status` non-null on 5,155 rows, **all `UNKNOWN`**, covering
+17 dates (2026-10-04 .. 2026-10-20) and 745 players. Counts for
+`PROJECTED` / `CONFIRMED` / `ACTUAL` are **0**; `lineup_unit` non-null **0**
+and `pp_unit` non-null **0**. Mongo prod `players.SmartScore` (139,731 docs)
+agrees: 138,949 null status, 782 `UNKNOWN`, **0 PROJECTED**, 0 non-null units;
+dev is the same pattern.
+
+Real projection accuracy therefore has **n=0**: no archived PROJECTED rows and
+no overlap with backtrack actual lineups (backtrack ends 2026-06-14; the
+UNKNOWN prod rows start 2026-10-04). The live simulation cannot run — fewer
+than 300 projected picks, in fact zero — so no match-rate, delta or McNemar
+numbers exist. Our prior-game projector cannot be scored on those dates
+either. The owner’s projection feed is live-only; forward-collect PROJECTED
+rows with units before V10 can be evaluated. V9’s “unverifiable historically”
+caveat stands.
 
 ## Lessons learned this phase
 
