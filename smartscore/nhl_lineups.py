@@ -23,7 +23,7 @@ import html
 import json
 import re
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import requests
 from aws_lambda_powertools import Logger
@@ -138,6 +138,114 @@ def normalize_player_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", folded)
 
 
+def normalize_team_name(name: str) -> str:
+    """Reduce a team name to a join key (accents and punctuation folded away)."""
+    return re.sub(r"[^a-z0-9]+", "", unidecode(name or "").lower())
+
+
+# Players are keyed on the NHL schedule's ``placeName`` ("Anaheim", "Toronto",
+# "New York"), but both lineup sources report the ``commonName`` ("Ducks",
+# "Maple Leafs", "Rangers"/"Islanders"). Keying the lineup lookup on the source
+# name therefore never matched a production player and every skater came out
+# UNKNOWN. Translate each source name to the schedule place name before joining.
+# New York is intentionally a single key: the lookup is per-player, so merging
+# both clubs' players under one team key cannot mix their lineups up.
+_TEAM_NAMES = (
+    ("Anaheim", "Ducks", "ANA"),
+    ("Boston", "Bruins", "BOS"),
+    ("Buffalo", "Sabres", "BUF"),
+    ("Calgary", "Flames", "CGY"),
+    ("Carolina", "Hurricanes", "CAR"),
+    ("Chicago", "Blackhawks", "CHI"),
+    ("Colorado", "Avalanche", "COL"),
+    ("Columbus", "Blue Jackets", "CBJ"),
+    ("Dallas", "Stars", "DAL"),
+    ("Detroit", "Red Wings", "DET"),
+    ("Edmonton", "Oilers", "EDM"),
+    ("Florida", "Panthers", "FLA"),
+    ("Los Angeles", "Kings", "LAK"),
+    ("Minnesota", "Wild", "MIN"),
+    ("Montréal", "Canadiens", "MTL"),
+    ("Nashville", "Predators", "NSH"),
+    ("New Jersey", "Devils", "NJD"),
+    ("New York", "Islanders", "NYI"),
+    ("New York", "Rangers", "NYR"),
+    ("Ottawa", "Senators", "OTT"),
+    ("Philadelphia", "Flyers", "PHI"),
+    ("Pittsburgh", "Penguins", "PIT"),
+    ("San Jose", "Sharks", "SJS"),
+    ("Seattle", "Kraken", "SEA"),
+    ("St. Louis", "Blues", "STL"),
+    ("Tampa Bay", "Lightning", "TBL"),
+    ("Toronto", "Maple Leafs", "TOR"),
+    ("Utah", "Mammoth", "UTA"),
+    ("Vancouver", "Canucks", "VAN"),
+    ("Vegas", "Golden Knights", "VGK"),
+    ("Washington", "Capitals", "WSH"),
+    ("Winnipeg", "Jets", "WPG"),
+)
+
+_TEAM_ALIASES = {}
+_TEAM_ABBREVIATIONS = {}
+_place_abbreviations: Dict[str, Set[str]] = {}
+for _place_name, _common_name, _abbr in _TEAM_NAMES:
+    _TEAM_ALIASES[normalize_team_name(_common_name)] = _place_name
+    _TEAM_ALIASES[normalize_team_name(_abbr)] = _place_name
+    _TEAM_ABBREVIATIONS[normalize_team_name(_common_name)] = _abbr
+    _TEAM_ABBREVIATIONS[normalize_team_name(_abbr)] = _abbr
+    _place_abbreviations.setdefault(normalize_team_name(_place_name), set()).add(_abbr)
+
+# Place names are usable only when they identify one club. "New York" maps to
+# both NYR and NYI, so it is deliberately left unresolved; callers that have the
+# schedule disambiguate it with team_id/team_abbr instead.
+for _place_key, _abbrs in _place_abbreviations.items():
+    if len(_abbrs) == 1:
+        _TEAM_ABBREVIATIONS[_place_key] = next(iter(_abbrs))
+
+
+def canonical_team_name(name: str) -> str:
+    """Map a source team name/abbreviation onto the NHL schedule place name.
+
+    Returns the normalized join key so "Canadiens", "Montréal" and "MTL" all
+    collapse to the same value. Unknown names fall through normalized, which
+    keeps the pre-existing behaviour for players already keyed like the source.
+    """
+    key = normalize_team_name(name)
+    return normalize_team_name(_TEAM_ALIASES.get(key, name))
+
+
+def team_abbreviation(name: str) -> str:
+    """Official NHL abbreviation for a source team name, or "" if unknown.
+
+    Understands common names ("Rangers"), abbreviations ("NYR") and unambiguous
+    place names ("Toronto", "Los Angeles", "Montréal"). "New York" is
+    deliberately ambiguous (NYR/NYI) and returns ""; use the schedule's
+    ``team_id``/``team_abbr`` to resolve those clubs.
+    """
+    return _TEAM_ABBREVIATIONS.get(normalize_team_name(name), "")
+
+
+def club_key(name: str) -> str:
+    """Unambiguous club key for a name: abbreviation when known, else the name.
+
+    The lookup must never collapse NYR and NYI onto one "New York" key.
+    """
+    return team_abbreviation(name) or canonical_team_name(name)
+
+
+def _game_pair(game: Dict) -> frozenset:
+    """The unordered team pair for a parsed game, keyed by abbreviation.
+
+    Used only to check a source game against the target date's schedule, so
+    Rangers and Islanders must not collapse into one "New York" key.
+    """
+    away = team_abbreviation(game.get("away") or "")
+    home = team_abbreviation(game.get("home") or "")
+    if not away or not home:
+        return frozenset()
+    return frozenset((away, home))
+
+
 def _fetch_text(url: str, max_retries: int = 3, base_delay: int = 1) -> Optional[str]:
     """Fetch a page as text with exponential backoff.
 
@@ -150,6 +258,8 @@ def _fetch_text(url: str, max_retries: int = 3, base_delay: int = 1) -> Optional
     for attempt in range(max_retries):
         try:
             response = requests.get(url, headers=SCRAPE_HEADERS, timeout=20)
+            status = getattr(response, "status_code", "?")
+            logger.info(f"GET {url} -> HTTP {status} ({len(response.text or '')} chars)")
             response.raise_for_status()
             return response.text
         except requests.RequestException as e:
@@ -282,15 +392,29 @@ def _parse_nhl_article_body(body: str) -> List[Dict]:
     return games
 
 
-def get_nhl_com_lineups(url: str = NHL_LINEUP_ARTICLE_URL) -> List[Dict]:
+def get_nhl_com_lineups(  # noqa: PLR0911 - each early return is a distinct parse failure
+    url: str = NHL_LINEUP_ARTICLE_URL,
+    slate_pairs: Optional[Set[frozenset]] = None,
+    target_date: Optional[str] = None,
+) -> List[Dict]:
     """
     Fetch and parse projected lineups from the NHL.com daily projections article.
 
     The lineup text is delivered as JSON-LD (``application/ld+json`` schema.org
     ``NewsArticle``), so this parses a JSON string field rather than scraping HTML.
 
+    The article is edited in place and can still describe the previous day's
+    slate (observed: the 2026-10-20 10:30 ET run got the 2026-10-19 article). When
+    ``slate_pairs`` is supplied, games whose two teams are not playing each other
+    on the target date are dropped; if none match, all forward lines are skipped
+    rather than stamping yesterday's combinations as today's projection.
+
     Args:
         url: Article URL. Override in tests to point at a fixture.
+        slate_pairs: Unordered canonical team pairs (``frozenset``) playing on
+            ``target_date``. ``None`` disables the guard (parser tests); an
+            empty set means the schedule is unknown and skips all forward lines.
+        target_date: ``YYYY-MM-DD`` the run is for, used in log messages.
 
     Returns:
         List of games; each has ``away``, ``home``, records, and per-team
@@ -309,6 +433,7 @@ def get_nhl_com_lineups(url: str = NHL_LINEUP_ARTICLE_URL) -> List[Dict]:
     # The ld+json script tag is HTML-escaped in the raw source ('ld&#x2B;json').
     source = html.unescape(document)
     blocks = re.findall(r'<script type="application/ld\+json">(.*?)</script>', source, re.S)
+    logger.info(f"NHL.com page: {len(blocks)} ld+json blocks, {len(document)} chars")
 
     article = None
     for block in blocks:
@@ -336,7 +461,40 @@ def get_nhl_com_lineups(url: str = NHL_LINEUP_ARTICLE_URL) -> List[Dict]:
         return []
 
     _log_structure("nhl.com", games)
-    logger.info(f"NHL.com article published {article.get('datePublished')}, parsed {len(games)} games")
+    teams = [team for game in games for team in game["teams"]]
+    player_count = sum(len(unit["players"]) for team in teams for unit in team["units"])
+    logger.info(
+        f"NHL.com article published {article.get('datePublished')} "
+        f"(modified {article.get('dateModified')}): {len(games)} games, "
+        f"{len(teams)} teams, {player_count} players"
+    )
+
+    if slate_pairs is not None:
+        parsed_count = len(games)
+        parsed_slate = [f"{game.get('away')}@{game.get('home')}" for game in games]
+        if not slate_pairs:
+            logger.error(
+                "forward lines skipped: no target-date schedule to verify the article slate; "
+                f"forward_lines_skipped_no_schedule=1 target_date={target_date} "
+                f"article_modified={article.get('dateModified')} parsed_slate={parsed_slate}"
+            )
+            return []
+
+        matched = [game for game in games if _game_pair(game) in slate_pairs]
+        if len(matched) < parsed_count:
+            skipped = [f"{game.get('away')}@{game.get('home')}" for game in games if game not in matched]
+            logger.warning(
+                "forward lines skipped: stale slate; "
+                f"stale_slate_games_skipped={parsed_count - len(matched)} "
+                f"target_date={target_date} article_modified={article.get('dateModified')} "
+                f"parsed_slate={parsed_slate} skipped_games={skipped} "
+                f"applying={len(matched)}/{parsed_count}"
+            )
+        games = matched
+
+    teams = [team for game in games for team in game["teams"]]
+    player_count = sum(len(unit["players"]) for team in teams for unit in team["units"])
+    logger.info(f"NHL.com: applying {len(games)} games, {len(teams)} teams, {player_count} players")
     return games
 
 
@@ -378,6 +536,8 @@ def get_rotowire_lineups(url: str = ROTOWIRE_LINEUPS_URL) -> List[Dict]:
     """
     try:
         response = requests.get(url, headers=SCRAPE_HEADERS, timeout=20)
+        status = getattr(response, "status_code", "?")
+        logger.info(f"GET {url} -> HTTP {status} ({len(response.text or '')} chars)")
         response.raise_for_status()
     except requests.RequestException as e:
         logger.error(f"Error fetching RotoWire lineups: {e}")
@@ -385,6 +545,14 @@ def get_rotowire_lineups(url: str = ROTOWIRE_LINEUPS_URL) -> List[Dict]:
 
     soup = BeautifulSoup(response.text, "html.parser")
     games: List[Dict] = []
+    skipped_no_lineup = 0
+    # The page carries one non-game promo box with the same class, so only
+    # count matchup blocks that actually have two team links.
+    matchup_count = sum(
+        1
+        for matchup in soup.find_all("div", class_="lineup__matchup")
+        if len(matchup.find_all("a", class_=re.compile(r"lineup__mteam"))) == EXPECTED_TEAMS_PER_GAME
+    )
 
     for matchup in soup.find_all("div", class_="lineup__matchup"):
         main = matchup.find_next_sibling("div", class_="lineup__main")
@@ -406,14 +574,30 @@ def get_rotowire_lineups(url: str = ROTOWIRE_LINEUPS_URL) -> List[Dict]:
 
         away = next((t["name"] for t in teams if t["is_visit"]), None)
         home = next((t["name"] for t in teams if not t["is_visit"]), None)
-        if away and home:
-            games.append({"away": away, "home": home, "teams": teams})
+        if not (away and home):
+            continue
+        if not all(team.get("has_lineup") for team in teams):
+            # A matchup with no lineup__list is incomplete (usually the page has
+            # not rendered that game yet). Drop it so the gap is visible in the
+            # parsed-vs-matchup warning instead of silently adding an empty team.
+            skipped_no_lineup += 1
+            continue
+        games.append({"away": away, "home": home, "teams": teams})
 
     pp_total = sum(len(u["players"]) for g in games for t in g["teams"] for u in t["pp_units"])
     logger.info(
-        f"RotoWire lineups: {len(games)} games, "
+        f"RotoWire lineups: {len(games)} games, {sum(len(g['teams']) for g in games)} teams, "
         f"{sum(len(t['pp_units']) for g in games for t in g['teams'])} PP units, {pp_total} PP skaters"
     )
+    if skipped_no_lineup:
+        logger.warning(
+            f"RotoWire lineups: skipped {skipped_no_lineup} matchup(s) with no lineup__list "
+            f"({len(games)} of {matchup_count} matchups usable)"
+        )
+    elif len(games) < matchup_count:
+        logger.warning(
+            f"RotoWire lineups: parsed {len(games)} of {matchup_count} matchups (missing team or lineup list)"
+        )
     return games
 
 
@@ -423,6 +607,7 @@ def _parse_rotowire_team(main: Tag, list_class: str, team_name: str) -> Dict:
     result: Dict = {
         "name": team_name,
         "is_visit": list_class == "is-visit",
+        "has_lineup": listing is not None,
         "starting_goalie": None,
         "pp_units": [],
         "injuries": [],

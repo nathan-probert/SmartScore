@@ -14,6 +14,7 @@ from utility import (
     get_picks_for_date,
     get_tims_players,
     put_working_set,
+    save_to_db,
 )
 
 
@@ -293,3 +294,47 @@ def test_create_cron_schedule_new_year():
     result = create_cron_schedule(dt)
 
     assert result == "cron(0 0 1 1 ? 2025)"
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_save_to_db_scopes_the_delete_to_the_published_date(mock_request):
+    """S3: replacing today's Picks must not wipe another date's rows."""
+    mock_request.side_effect = [[{"id": 0}], None]  # max id, then POST
+
+    save_to_db([{"id": 1, "date": "2026-04-15", "player_id": 1, "opp_goalie_name": "G"}], "2026-04-15")
+
+    assert mock_request.call_args.kwargs["eq"] == ("date", "2026-04-15")
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_save_to_db_allocates_ids_above_other_dates(mock_request):
+    """Picks' conflict key is ``id``; a scoped delete must not reuse other dates' ids."""
+    mock_request.side_effect = [[{"id": 700}], None]  # max id, then POST
+
+    players = [{"id": 1, "date": "2026-04-15", "player_id": 11, "opp_goalie_name": "G"}]
+    save_to_db(players, "2026-04-15")
+
+    posted = mock_request.call_args.kwargs["json_data"]
+    assert [row["id"] for row in posted] == [701]
+    assert 700 not in {row["id"] for row in posted}
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_save_to_db_carries_forward_goalie_values_on_fetch_failure(mock_request):
+    """The publish is a delete+reinsert, so a failed goalie fetch must copy prior values."""
+    prior = [{"player_id": 11, "opp_goalie_name": "Starter", "opp_goalie_status": "CONFIRMED"}]
+    mock_request.side_effect = [prior, [{"id": 700}], None]  # prior read, max id, POST
+
+    players = [{"id": 1, "date": "2026-04-15", "player_id": 11}]
+    save_to_db(players, "2026-04-15")
+
+    posted = mock_request.call_args.kwargs["json_data"]
+    assert posted[0]["opp_goalie_name"] == "Starter"
+    assert posted[0]["opp_goalie_status"] == "CONFIRMED"
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_save_to_db_without_a_date_keeps_the_legacy_wipe(mock_request):
+    save_to_db([{"id": 1}])
+
+    assert mock_request.call_args.kwargs["eq"] is None

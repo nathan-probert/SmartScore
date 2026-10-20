@@ -9,6 +9,7 @@ from player_archive import save_player_snapshots
 from service import (
     backfill_dates,
     build_goalies_with_team_id,
+    build_slate_pairs,
     calculate_metrics,
     calculate_season_metrics,
     check_db_for_date,
@@ -21,12 +22,12 @@ from service import (
     get_injury_data,
     get_players_from_team,
     get_published_picks,
+    get_schedule_slate_pairs,
     get_teams,
     get_tims,
     get_todays_schedule,
     load_working_set,
     make_predictions_teams,
-    mark_lineups_unknown,
     merge_injury_data,
     merge_lineup_data,
     merge_players_and_teams,
@@ -41,6 +42,46 @@ from service import (
 
 logger = Logger()
 
+_RUN_STATUSES = ("first_run", "normal_run", "last_run")
+
+
+def _require_status(event, caller):
+    """Return the run status, refusing to guess.
+
+    Every branch of PlayerProcessingPipeline carries the status from
+    CheckCompleted. Defaulting a missing status to ``first_run`` used to make a
+    normal_run take the UpdateHistory path silently (and made last_run archive),
+    so a missing/invalid value is an explicit failure instead.
+    """
+    status = event.get("status")
+    if status not in _RUN_STATUSES:
+        logger.error(f"{caller} received an invalid run status: {status!r}")
+        raise ValueError(f"{caller} requires status in {_RUN_STATUSES}, got {status!r}")
+    return status
+
+
+def _carry_status(output, event):
+    """Pass the run status through a handler that does not consume it."""
+    if "status" in event:
+        output["status"] = event["status"]
+    return output
+
+
+def _ensure_lineup_fields(players):
+    """Keep existing lineup values, filling only players that never had any.
+
+    The mid-morning refresh must not replace a good 03:00 projection with
+    UNKNOWN just because both lineup fetches came back empty. On the first run
+    the players have no lineup keys yet, so they still get the explicit UNKNOWN
+    the archive treats as "we tried and missed".
+    """
+    for player in players:
+        player.setdefault("lineup_unit", None)
+        player.setdefault("lineup_position_group", None)
+        player.setdefault("pp_unit", None)
+        player.setdefault("lineup_status", "UNKNOWN")
+    return players
+
 
 @lambda_handler_error_responder
 def handle_backfill(event, context):
@@ -54,12 +95,13 @@ def handle_backfill(event, context):
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
+            - "status" (str): The run status, passed through so the
+              first_run chain still has it after the GetPlayers sub-machine.
     """
     backfill_dates()
 
-    return {
-        "statusCode": 200,
-    }
+    output = {"statusCode": 200}
+    return _carry_status(output, event)
 
 
 @lambda_handler_error_responder
@@ -116,11 +158,13 @@ def handle_load_working_set(event, context):
             - "players" (list): Lean player data for today.
             - "teams" (list): Lean team data for today.
     """
+    status = _require_status(event, "LoadWorkingSet")
     players, teams = load_working_set()
 
     return {
         "statusCode": 200,
-        "status": event.get("status", "normal_run"),
+        "status": status,
+        "date": get_date(),
         "players": players,
         "teams": teams,
     }
@@ -198,9 +242,14 @@ def handle_make_predictions(event, context):
             - "players" (list): Player data, now including stat (and beta stat).
             - "teams" (list, optional): Passed through when present.
     """
-    players = make_predictions_teams(event.get("players"), event.get("teams"))
+    players = event.get("players") or []
+    if players:
+        players = make_predictions_teams(players, event.get("teams"))
 
     output = {"statusCode": 200, "players": players}
+    # Keep the status for GetTims/CheckSaveHistory: MakePredictions sits between
+    # GetLineups and GetTims on the first_run path.
+    _carry_status(output, event)
     if "teams" in event:
         output["teams"] = event["teams"]
     if "goalies" in event:
@@ -229,13 +278,14 @@ def handle_get_tims(event, context):
             - "teams"/"goalies" (list, optional): Passed through when present.
     """
     players = event.get("players")
-    players = get_tims(players, allow_empty=event.get("status") == "last_run")
+    status = _require_status(event, "GetTims")
+    players = get_tims(players, allow_empty=status == "last_run")
 
     output = {
         "statusCode": 200,
         "date": get_date(),
         "players": players,
-        "status": event.get("status", "first_run"),
+        "status": status,
     }
     if "teams" in event:
         output["teams"] = event["teams"]
@@ -305,7 +355,8 @@ def handle_save_players(event, context):
     """
 
     players = event.get("players") or []
-    date = event.get("date")
+    date = event.get("date") or get_date()
+    status = _require_status(event, "SavePlayers")
 
     if players:
         if event.get("teams") or event.get("goalies"):
@@ -315,7 +366,7 @@ def handle_save_players(event, context):
         save_player_snapshots(upload_rows, date=date)
         save_working_set(players, event.get("teams") or [])
 
-    output = {"statusCode": 200, "players": players}
+    output = {"statusCode": 200, "status": status, "players": players}
     if "teams" in event:
         output["teams"] = event["teams"]
     if "goalies" in event:
@@ -325,11 +376,17 @@ def handle_save_players(event, context):
 
 @lambda_handler_error_responder
 def handle_parse_teams(event, context):
-    # Handles the case when there are no games today
-    if event == []:
-        return {"players": [], "teams": []}
-
-    return merge_players_and_teams(event)
+    # ParseData normally receives the Map's list, so the status is restored by
+    # the EnsureFirstRunStatus Pass state in PlayerProcessingPipeline. A caller
+    # that hands over a state dict keeps its status and its ``teams`` payload.
+    if isinstance(event, dict):
+        output = merge_players_and_teams(event.get("teams") or [])
+        _carry_status(output, event)
+    elif event == []:
+        output = {"players": [], "teams": []}
+    else:
+        output = merge_players_and_teams(event)
+    return output
 
 
 @lambda_handler_error_responder
@@ -386,12 +443,19 @@ def handle_get_injuries(event, context):
     players = event.get("players", [])
 
     injuries = get_injury_data()
-    merged_info = merge_injury_data(players, injuries)
+    if injuries is None:
+        # A failed fetch must not be treated as "nobody is injured": that would
+        # stamp every skater HEALTHY and erase the 03:00 working-set values.
+        logger.error("Injury fetch failed; keeping existing injury fields")
+        merged_info = players
+    else:
+        merged_info = merge_injury_data(players, injuries)
 
     output = {
         "statusCode": 200,
         "players": merged_info,
     }
+    _carry_status(output, event)
     if "teams" in event:
         output["teams"] = event["teams"]
     if "goalies" in event:
@@ -416,19 +480,31 @@ def handle_get_goalies(event, context):
         context (dict): Unused Lambda context.
 
     Returns:
-        dict: players (lean) + teams + goalies.
+        dict: players (lean) + teams + goalies. ``goalies`` is ``None`` when the
+        fetch failed, which downstream denormalizers read as "leave the
+        opp_goalie_* columns untouched".
     """
     players = event.get("players", [])
     teams = event.get("teams", [])
 
     starters = enrich_starting_goalies()
-    goalies = build_goalies_with_team_id(starters, teams)
-    return {
+    if starters is None:
+        # A failed fetch must not overwrite the day's goalie data with
+        # opp_goalie_*=None/UNKNOWN. ``None`` is the sentinel downstream
+        # denormalizers use to leave those columns untouched.
+        logger.error("Starting goalie fetch failed; preserving existing goalie data")
+        goalies = event.get("goalies")
+    else:
+        goalies = build_goalies_with_team_id(starters, teams)
+
+    output = {
         "statusCode": 200,
         "players": players,
         "teams": teams,
         "goalies": goalies,
     }
+    _carry_status(output, event)
+    return output
 
 
 @lambda_handler_error_responder
@@ -439,8 +515,9 @@ def handle_get_lineups(event, context):
     Forward lines and defence pairs come from the NHL.com daily projections
     article; power play units come from the RotoWire lineups page. Both sources
     are optional here: if either fails the other still contributes, and if both
-    fail the players are returned with lineup_status UNKNOWN rather than failing
-    the pipeline.
+    fail the player's existing lineup fields are preserved (players with no
+    prior values get ``lineup_status: UNKNOWN``) rather than failing the
+    pipeline or erasing the morning projection.
 
     Args:
         event (dict): A dictionary containing player data.
@@ -453,6 +530,7 @@ def handle_get_lineups(event, context):
 
     def _passthrough(payload_players):
         output = {"statusCode": 200, "players": payload_players}
+        _carry_status(output, event)
         if "teams" in event:
             output["teams"] = event["teams"]
         if "goalies" in event:
@@ -463,10 +541,17 @@ def handle_get_lineups(event, context):
         return _passthrough(players)
 
     # Each source is fetched independently so one being down still lets the other
-    # contribute. Any unexpected failure here degrades to lineup_status UNKNOWN
-    # rather than failing the whole pipeline step, which would block the picks.
+    # contribute. Any unexpected failure here preserves the lineup fields already
+    # on the working set rather than rewriting good projections as UNKNOWN.
+    # The NHL.com article is edited in place and can lag a day, so it is filtered
+    # against the target date's actual schedule; RotoWire carries today's games.
+    date = event.get("date") or get_date()
+    slate_pairs = build_slate_pairs(event.get("teams"))
+    if not slate_pairs:
+        slate_pairs = get_schedule_slate_pairs(date)
+
     try:
-        nhl_games = get_nhl_com_lineups()
+        nhl_games = get_nhl_com_lineups(slate_pairs=slate_pairs, target_date=date)
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error fetching NHL.com lineups: {e}")
         nhl_games = []
@@ -478,13 +563,19 @@ def handle_get_lineups(event, context):
         rotowire_games = []
 
     if not nhl_games and not rotowire_games:
-        logger.error("Both lineup sources returned no games; skipping lineup merge")
+        logger.error("Both lineup sources returned no games; keeping existing lineup fields")
+        return _passthrough(_ensure_lineup_fields(players))
+
+    logger.info(
+        f"Lineup sources for {len(players)} players: "
+        f"nhl.com={len(nhl_games)} games, rotowire={len(rotowire_games)} games"
+    )
 
     try:
-        merged_info = merge_lineup_data(players, nhl_games, rotowire_games)
+        merged_info = merge_lineup_data(players, nhl_games, rotowire_games, teams=event.get("teams"))
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error merging lineup data: {e}")
-        return _passthrough(mark_lineups_unknown(players))
+        return _passthrough(_ensure_lineup_fields(players))
 
     return _passthrough(merged_info)
 
@@ -508,6 +599,11 @@ def handle_emails(event, context):
         dict: A dictionary containing status code.
     """
     picks = choose_picks(event.get("players") or get_published_picks())
+    if not picks:
+        # A failed/racing publish can briefly leave Picks empty. Failing the
+        # NotifyUsers execution is not useful; log loudly and skip this send.
+        logger.error(f"No picks found for {get_date()}; skipping the email send")
+        return {"statusCode": 200, "skipped": True}
 
     users = get_all_emails()  # Now returns list of dicts with email and display_name
     for user in users:

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 import pytz
+import requests
 from smartscore_info_client.api.nhle import NHLClient
 from smartscore_info_client.models.player import PlayerInfo, PlayerStats
 from smartscore_info_client.models.team import GameTeam
@@ -15,9 +16,11 @@ from service import (
     check_db_for_date,
     choose_picks,
     get_date,
+    get_injury_data,
     get_nhl_client,
     get_players_from_team,
     get_published_picks,
+    get_schedule_slate_pairs,
     load_working_set,
     merge_injury_data,
     merge_players_and_teams,
@@ -388,6 +391,23 @@ def test_merge_injury_data_empty_injuries():
     assert result[0]["injury_status"] == "HEALTHY"
 
 
+def test_merge_injury_data_none_payload_preserves_fields():
+    """A failed fetch (None) is not an empty report: leave prior values alone."""
+    players = [{"name": "Player One", "injury_status": "INJURED", "injury_desc": "Ankle"}]
+
+    result = merge_injury_data(players, None)
+
+    assert result == [{"name": "Player One", "injury_status": "INJURED", "injury_desc": "Ankle"}]
+
+
+@patch("service.requests.get")
+def test_get_injury_data_returns_none_on_request_failure(mock_get):
+    """An outage returns the failure sentinel, not an empty injury list."""
+    mock_get.side_effect = requests.RequestException("boom")
+
+    assert get_injury_data() is None
+
+
 def test_merge_injury_data_empty_players():
     """Test merging with empty player list."""
     injuries = [
@@ -676,3 +696,23 @@ def test_write_historic_db_ignores_picks_missing_from_the_archive(
 
     written = mock_update_historical_data.call_args[0][0]
     assert written[0]["Scored"] is None
+
+
+@patch("service.get_nhl_client")
+def test_get_schedule_slate_pairs_filters_to_the_target_date(mock_client):
+    """NIT: only gameWeek[].date == date counts; other days cannot verify the slate."""
+    mock_client.return_value.get_schedule.return_value = {
+        "gameWeek": [
+            {
+                "date": "2026-10-19",
+                "games": [{"awayTeam": {"abbrev": "BOS"}, "homeTeam": {"abbrev": "NYR"}}],
+            },
+            {
+                "date": "2026-10-20",
+                "games": [{"awayTeam": {"abbrev": "PHI"}, "homeTeam": {"abbrev": "NJD"}}],
+            },
+        ]
+    }
+
+    assert get_schedule_slate_pairs("2026-10-20") == {frozenset(("PHI", "NJD"))}
+    mock_client.return_value.get_schedule.assert_called_once_with("2026-10-20")

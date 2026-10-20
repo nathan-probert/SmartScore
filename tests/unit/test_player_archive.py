@@ -137,7 +137,9 @@ def test_save_maps_id_to_player_id_and_drops_unknown_fields(monkeypatch):
     assert row["date"] == "2026-04-15"
     assert "stat" not in row
     assert "unexpected" not in row
-    assert set(row) == {"date", "player_id", *SNAPSHOT_COLUMNS}
+    # No goalie payload on this row, so opp_goalie_* is omitted on purpose (S2).
+    optional = tuple(column for column in SNAPSHOT_COLUMNS if not column.startswith("opp_goalie_"))
+    assert set(row) == {"date", "player_id", *optional}
 
 
 def test_save_omits_scored_so_a_reupload_cannot_wipe_a_backfill(monkeypatch):
@@ -331,3 +333,31 @@ def test_schema_error_is_not_retried(monkeypatch):
 
     assert query.executions == 1  # no retry
     assert sleeps == []
+
+
+def test_snapshot_omits_opp_goalie_columns_when_the_fetch_failed():
+    """S2: a failed goalie fetch must not null the archived opp_goalie_* values.
+
+    The denormalizer leaves the keys out of the row; _to_snapshot must keep them
+    out of the payload so PostgREST's upsert only updates provided columns.
+    """
+    snapshot = player_archive._to_snapshot({"id": 1, "name": "Player 1", "team_name": "Team A"}, "2026-10-20")
+
+    assert snapshot is not None
+    assert not any(column.startswith("opp_goalie_") for column in snapshot)
+
+
+def test_snapshot_includes_opp_goalie_columns_on_success():
+    row = {
+        "id": 1,
+        "name": "Player 1",
+        "team_name": "Team A",
+        "opp_goalie_name": "Starter",
+        "opp_goalie_status": "CONFIRMED",
+    }
+
+    snapshot = player_archive._to_snapshot(row, "2026-10-20")
+
+    assert snapshot is not None
+    for column in player_archive.OPP_GOALIE_COLUMNS:
+        assert column in snapshot

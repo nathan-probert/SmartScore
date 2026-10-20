@@ -115,14 +115,14 @@ def test_get_starting_goalies_skips_incomplete_rows(mock_request):
 
 @patch("service.exponential_backoff_request", side_effect=Exception("boom"))
 def test_get_starting_goalies_handles_failure(mock_request):
-    assert get_starting_goalies("2026-09-29") == []
+    assert get_starting_goalies("2026-09-29") is None
 
 
 @patch("service.exponential_backoff_request")
 def test_get_starting_goalies_rejects_non_list_payload(mock_request):
     mock_request.return_value = {"games": []}
 
-    assert get_starting_goalies("2026-09-29") == []
+    assert get_starting_goalies("2026-09-29") is None
 
 
 @patch("service.exponential_backoff_request")
