@@ -1345,6 +1345,80 @@ Recent-era per-season: A LGBM 28.87/30.65 (2024-25/2025-26), A ensemble
 28.87/31.75; B both only 2025-26 (LGBM 30.81, ensemble 31.60).
 Per tims group: A LGBM 37.01/30.11/22.07, A ensemble 36.78/31.72/22.30;
 B LGBM 32.23/31.75/28.44, B ensemble 34.60/30.81/29.38.
+### V12-qoc — quality of competition/teammates from shift charts (reverted)
+
+Hypothesis: the existing player rates ignore who a player skated against and
+with. The raw shift charts can produce prior-game QoC/QoT and, if zone starts
+existed, usage context.
+
+**Data.** `shifts` in `data/raw_nhl.sqlite`: 9,125,547 shift rows, 2017-18 ..
+2025-26, one row per player-period shift (`start_time`/`end_time`). Joined to
+`player_games` for club/position/date; goalies excluded. For each game and
+period the shifts were rasterised to a player × second on-ice matrix, giving
+overlap seconds for every player pair.
+
+**Zone starts are not available.** The raw store has no play-by-play/faceoff
+event table and no zone-start column in `shifts` or the boxscore JSON, so
+`ozs_pct` was skipped.
+
+**Per-game metrics** (rate = prior-season goals/60 or points/60 from
+`player_games`; rookies/no prior season → NaN):
+
+| metric | definition |
+|---|---|
+| `qoc_g60`, `qoc_p60` | overlap-weighted mean of opponents' prior-season goals/60, points/60 |
+| `qot_g60`, `qot_p60` | same for teammates (self excluded) |
+| `*_rel` | subtract the team-game minutes-weighted mean (team-relative) |
+
+That is 8 per-game metrics. Every model feature is shifted one row per player:
+`r5_*`, `r10_*` and `sd_*` (season-to-date prior mean over valid games), 24
+columns total.
+
+**Checks.** 425,176 player-games in the QoC cache; merge keeps the frame at
+**427,240 rows**, no `_x`/`_y`, no duplicate keys. `r5_qoc_g60` is non-null on
+374,516 rows (87.7%; 2017-18 has no prior-season rates). Three player-games
+were recomputed from raw shifts and prior-season totals and matched exactly
+(e.g. 8479981 2021-12-28 1.903186 vs 1.903186; 8478403 2023-04-27 0.520029;
+8480835 2023-03-14 0.121633). A rolling check matched the prior-5 mean to
+1e-16, and setting the target game's QoC to 9999 left its `r5_qoc_g60`
+unchanged.
+
+**Protocol.** LGBM config a, date-blocked k=5, `--train-subset all`,
+`OMP_NUM_THREADS=2`, `LGBM_N_JOBS=2`, `timeout 300`. Baselines are the corrected
+V7 base (`oof_v7_base_lgbm_seed{1,3}.csv`): seed 1 **928/3159 = 29.376%**,
+seed 3 **916/3159 = 28.997%**; hgpg **886 = 28.047%**.
+
+| model | seed | baseline | + QoC/QoT | delta | McNemar vs base | McNemar vs hgpg | AUC |
+|---|---|---:|---:|---:|---|---|---:|
+| LGBM | 1 | 928 = 29.376% | **944 = 29.883%** | **+0.507pp** | 176-160, p=0.413 | 348-290, p=0.024 | 0.6931 ± 0.0049 |
+| LGBM | 3 | 916 = 28.997% | **917 = 29.028%** | **+0.032pp** | 167-166, p=1.000 | 318-287, p=0.223 | 0.6928 ± 0.0019 |
+| LGBM mean | | 29.186% | 29.455% | +0.269pp | | | |
+
+Per-fold: seed 1 33.6/27.2/25.3/33.2/30.2 (std 3.663); seed 3
+30.2/28.4/28.6/29.0/28.9 (std 0.684). The ensemble was not run because both
+LGBM seeds did not clear +0.5pp.
+
+**Importances** (fold-1 LGBM, seed 1, gain rank among 66 features):
+
+| feature | gain | rank |
+|---|---:|---:|
+| `r5_qot_p60_rel` | 302 | 10 |
+| `r5_qot_p60` | 225 | 17 |
+| `r10_qot_g60_rel` | 221 | 18 |
+| `sd_qoc_g60_rel` | 218 | 19 |
+| `r5_qoc_g60_rel` | 217 | 20 |
+| `r10_qot_p60` | 214 | 21 |
+| `sd_qoc_g60` | 210 | 22 |
+| `r5_qoc_g60` | 206 | 23 |
+
+The teammate-relative block is used most, but seed 3's gain is only +0.03pp
+and its per-fold spread collapses to 0.684.
+
+**Verdict: reverted.** Seed 1 clears +0.5pp by 0.007pp (p=0.41 vs baseline),
+seed 3 is flat (+0.03pp, p=1.0), so the both-seeds rule fails. The `qoc.py`
+builder and `--qoc-features` flag were removed; the QoC cache stays in
+`data/moneypuck/qoc_player_game.csv` for a follow-up (e.g. QoT-relative only,
+or smoothed prior-season rates with a minimum-TOI floor).
 
 ## Lessons learned this phase
 
@@ -1415,6 +1489,10 @@ B LGBM 32.23/31.75/28.44, B ensemble 34.60/30.81/29.38.
   V7 MoneyPuck individual xG was also negative and collinear with V4.
 - V8-own-xG (per-shot LightGBM, AUC 0.769) was negative on both seeds
   (-0.16 / -0.35pp, McNemar p=0.82/0.57) and reverted.
+- V12-qoc (shift-chart QoC/QoT, 24 columns) was mixed: +0.507pp seed 1
+  (p=0.41 vs baseline) and +0.032pp seed 3 (p=1.0); reverted. Zone starts are
+  not in the raw layer. QoT-relative features ranked highly (top 10-20), so a
+  narrower teammate-only block is the only follow-up worth trying.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
 - Update this file after every experiment: config used, split mode, pooled
