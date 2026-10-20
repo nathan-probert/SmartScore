@@ -1510,6 +1510,33 @@ Per season the pipeline would use `local_store.py --build/--derive/--lineups/
 (tims=0), so they can only augment pointwise training, not challenge
 evaluation; era/style drift makes the expected value uncertain.
 
+### V14b — pre-2017 runbook
+
+Full copy-paste runbook: `docs/backtrack_pre2017_runbook.md`. Entry points were
+verified with `--help`; one 2013-14 game log, schedule window, and shiftchart
+call returned data. Per season:
+
+```bash
+export ENV=dev
+for SEASON in 20132014 20142015 20152016 20162017; do
+  uv run python smartscore/scripts/backtrack/local_store.py --build "$SEASON"
+  uv run python smartscore/scripts/backtrack/local_store.py --derive "$SEASON"
+  uv run python smartscore/scripts/backtrack/local_store.py --lineups "$SEASON"
+  uv run python smartscore/scripts/backtrack/local_store.py --feeds "$SEASON"
+  uv run python smartscore/scripts/backtrack/local_store.py --publish "$SEASON"
+  uv run python smartscore/scripts/backtrack/local_store.py --publish-team "$SEASON"
+  uv run python smartscore/scripts/backtrack/local_store.py --publish-goalies "$SEASON"
+  uv run python smartscore/scripts/backtrack/dump_store.py --export --season "$SEASON"
+done
+```
+
+Expect ~55k player-games, ~13 MB dump, ~0.18 GB cache + ~0.18 GB raw DB per
+season, and 30-45 min/season (2-3h total). Verification SQL (row counts, date
+range, `scored` sanity, feature-null rates, join integrity) and the model
+refresh/evaluation commands are in the runbook. Blocker: pre-2021 rows have
+**no Tims groups** (`tims=0`), so they are pointwise training rows only; verify
+`pre-2021 rows with tims group = 0` and keep `rows in tims groups = 92,440`.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
