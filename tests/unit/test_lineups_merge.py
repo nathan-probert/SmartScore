@@ -314,23 +314,78 @@ def test_merge_warns_when_article_lists_player_on_two_lines(caplog):
     assert "F1" in caplog.text and "F2" in caplog.text
 
 
+def _teams():
+    """Pipeline ``teams`` payload for the Flyers/Devils game in ``_nhl_games``."""
+    return [
+        {"team_name": "Philadelphia", "team_abbr": "PHI", "team_id": 4, "opponent_id": 1, "home": False},
+        {"team_name": "New Jersey", "team_abbr": "NJD", "team_id": 1, "opponent_id": 4, "home": True},
+    ]
+
+
 @patch("event_handler.get_nhl_com_lineups")
 @patch("event_handler.get_rotowire_lineups")
 def test_handle_get_lineups_merges(mock_rotowire, mock_nhl):
     mock_nhl.return_value = _nhl_games()
     mock_rotowire.return_value = []
 
-    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None)
 
     assert result["statusCode"] == 200
     assert result["players"][0]["lineup_unit"] == "F1"
+
+
+@patch("event_handler.get_nhl_com_lineups")
+@patch("event_handler.get_rotowire_lineups")
+def test_handle_get_lineups_passes_slate_and_target_date(mock_rotowire, mock_nhl):
+    mock_nhl.return_value = _nhl_games()
+    mock_rotowire.return_value = []
+
+    handle_get_lineups(
+        {
+            "players": [{"name": "Owen Tippett", "team_name": "Flyers"}],
+            "date": "2026-10-20",
+            "teams": _teams(),
+        },
+        None,
+    )
+
+    kwargs = mock_nhl.call_args.kwargs
+    assert kwargs["target_date"] == "2026-10-20"
+    assert frozenset(("PHI", "NJD")) in kwargs["slate_pairs"]
+
+
+@patch("event_handler.get_nhl_com_lineups")
+@patch("event_handler.get_rotowire_lineups")
+@patch("event_handler.get_schedule_slate_pairs", return_value={frozenset(("PHI", "NJD"))})
+def test_handle_get_lineups_falls_back_to_schedule_without_teams(mock_schedule, mock_rotowire, mock_nhl):
+    mock_nhl.return_value = _nhl_games()
+    mock_rotowire.return_value = []
+
+    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+
+    mock_schedule.assert_called_once()
+    assert result["players"][0]["lineup_unit"] == "F1"
+
+
+@patch("event_handler.get_nhl_com_lineups", return_value=[])
+@patch("event_handler.get_rotowire_lineups")
+def test_handle_get_lineups_keeps_pp_when_forward_lines_are_skipped(mock_rotowire, mock_nhl):
+    """A stale-slate article yields no forward lines; RotoWire PP still applies."""
+    mock_rotowire.return_value = _rotowire_games()
+
+    result = handle_get_lineups(
+        {"players": [{"name": "Adam Fantilli", "team_name": "Columbus"}], "teams": _teams()}, None
+    )
+
+    assert result["players"][0]["lineup_unit"] is None
+    assert result["players"][0]["pp_unit"] == "POWER PLAY #1"
 
 
 @patch("event_handler.get_nhl_com_lineups", return_value=[])
 @patch("event_handler.get_rotowire_lineups", return_value=[])
 def test_handle_get_lineups_survives_both_sources_failing(mock_rotowire, mock_nhl):
     """A lineup outage must not fail the pipeline; status UNKNOWN carries the signal."""
-    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None)
 
     assert result["statusCode"] == 200
     assert result["players"][0]["lineup_status"] == "UNKNOWN"
@@ -365,7 +420,9 @@ def test_handle_get_lineups_survives_source_failures(nhl, rotowire):
         patch("event_handler.get_nhl_com_lineups", side_effect=nhl),
         patch("event_handler.get_rotowire_lineups", side_effect=rotowire),
     ):
-        result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+        result = handle_get_lineups(
+            {"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None
+        )
 
     assert result["statusCode"] == 200
     assert result["players"][0]["lineup_status"] == "UNKNOWN"
@@ -376,7 +433,7 @@ def test_handle_get_lineups_survives_source_failures(nhl, rotowire):
 @patch("event_handler.get_nhl_com_lineups", return_value=[])
 def test_handle_get_lineups_survives_merge_failure(mock_nhl, mock_rotowire, mock_merge):
     """A malformed source payload degrades to UNKNOWN rows, not a failed step."""
-    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None)
 
     assert result["statusCode"] == 200
     assert result["players"][0] == {

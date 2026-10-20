@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 
 import nhl_lineups
 from nhl_lineups import (
+    _game_pair,
     _name_from_slug,
     _parse_nhl_article_body,
     _parse_rotowire_team,
@@ -22,6 +23,7 @@ from nhl_lineups import (
     get_rotowire_lineups,
     normalize_player_name,
     normalize_team_name,
+    team_abbreviation,
 )
 
 # Mirrors the real article: the second game header is appended to the end of the
@@ -248,6 +250,63 @@ def test_get_nhl_com_lineups_skips_unparsable_json_block(monkeypatch):
     assert len(get_nhl_com_lineups()) == 2
 
 
+def _slate(*pairs):
+    return {frozenset(team_abbreviation(name) for name in pair) for pair in pairs}
+
+
+def test_get_nhl_com_lineups_applies_games_on_the_target_slate(monkeypatch):
+    monkeypatch.setattr("nhl_lineups._fetch_text", lambda url, **kw: _nhl_page(_ARTICLE_BODY))
+
+    games = get_nhl_com_lineups(
+        slate_pairs=_slate(("Flyers", "Devils"), ("Lightning", "Rangers")),
+        target_date="2026-10-20",
+    )
+
+    assert len(games) == 2
+
+
+def test_get_nhl_com_lineups_skips_previous_slate_article(monkeypatch, caplog):
+    """The live 2026-10-20 article still described the 2026-10-19 games."""
+    monkeypatch.setattr("nhl_lineups._fetch_text", lambda url, **kw: _nhl_page(_ARTICLE_BODY))
+
+    with caplog.at_level("WARNING"):
+        games = get_nhl_com_lineups(
+            slate_pairs=_slate(("Ducks", "Rangers"), ("Avalanche", "Flyers")),
+            target_date="2026-10-20",
+        )
+
+    assert games == []
+    assert "forward lines skipped: stale slate" in caplog.text
+    assert "forward_lines_skipped_stale_slate=2" in caplog.text
+    assert "target_date=2026-10-20" in caplog.text
+    assert "FLYERS@DEVILS" in caplog.text
+
+
+def test_get_nhl_com_lineups_applies_only_matching_games_from_partial_slate(monkeypatch, caplog):
+    monkeypatch.setattr("nhl_lineups._fetch_text", lambda url, **kw: _nhl_page(_ARTICLE_BODY))
+
+    with caplog.at_level("WARNING"):
+        games = get_nhl_com_lineups(
+            slate_pairs=_slate(("Flyers", "Devils")),
+            target_date="2026-10-20",
+        )
+
+    assert len(games) == 1
+    assert (games[0]["away"], games[0]["home"]) == ("FLYERS", "DEVILS")
+    assert "forward_lines_skipped_stale_slate=1" in caplog.text
+    assert "applying=1/2" in caplog.text
+
+
+def test_get_nhl_com_lineups_skips_forward_lines_without_a_schedule(monkeypatch, caplog):
+    monkeypatch.setattr("nhl_lineups._fetch_text", lambda url, **kw: _nhl_page(_ARTICLE_BODY))
+
+    with caplog.at_level("ERROR"):
+        games = get_nhl_com_lineups(slate_pairs=set(), target_date="2026-10-20")
+
+    assert games == []
+    assert "forward_lines_skipped_no_schedule=1" in caplog.text
+
+
 # --- RotoWire ----------------------------------------------------------------
 
 
@@ -354,6 +413,13 @@ def test_normalize_player_name_repairs_accents_left_intact():
 def test_canonical_team_name_maps_source_names_to_schedule_place_names(source_name, schedule_name):
     """Players are keyed on schedule placeName; sources report commonName/abbr."""
     assert canonical_team_name(source_name) == normalize_team_name(schedule_name)
+
+
+def test_slate_pairs_keep_rangers_and_islanders_distinct():
+    """Player joins collapse both clubs onto "New York"; slate matching must not."""
+    assert team_abbreviation("Rangers") == "NYR"
+    assert team_abbreviation("Islanders") == "NYI"
+    assert _game_pair({"away": "DUCKS", "home": "RANGERS"}) != _game_pair({"away": "Ducks", "home": "Islanders"})
 
 
 def test_canonical_team_name_leaves_schedule_names_unchanged():
