@@ -36,6 +36,7 @@ from aws_lambda_powertools import Logger
 from postgrest.exceptions import APIError
 
 from config import ENV, SUPABASE_ADMIN_CLIENT
+from constants import OPP_GOALIE_COLUMNS
 
 logger = Logger()
 
@@ -92,7 +93,8 @@ SNAPSHOT_COLUMNS = (
 # validated the equivalent three fields (plus that the id was a number).
 REQUIRED_FIELDS = ("date", "player_id", "name")
 
-OPP_GOALIE_COLUMNS = tuple(column for column in SNAPSHOT_COLUMNS if column.startswith("opp_goalie_"))
+# Opponent-goalie columns are omitted from the snapshot payload when a row has
+# none (fetch failure); see _to_snapshot. Shared with the Picks writer.
 
 
 def _retry(operation, description):

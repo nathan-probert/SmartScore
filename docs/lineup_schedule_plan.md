@@ -70,7 +70,7 @@ Timezone/date: `service.get_date()` (L55) uses `America/Toronto`, so the date ro
 
 ## 3. Assessment of the owner's claim
 
-**Mostly scheduling, but not purely.** Since PR #131 (`e6f3500`) `normal_run` no longer skips the data steps: `LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> PublishDb`. The README's "Known gap" block (L91–113) still describes the old graph (`normal_run -> GetTims`) and is **stale**.
+**Mostly scheduling, but not purely.** Since PR #131 (`e6f3500`) `normal_run` no longer skips the data steps: `LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> PublishToDb`. The pre-#131 README graph (`normal_run -> GetTims`) was stale and has been replaced.
 
 What is genuinely broken by scheduling:
 
@@ -102,7 +102,7 @@ Rationale: 09:30–10:30 ET is after the overnight article refresh and at/after 
 
 Do **not** pass `last_game` on the new rule; pass `{"source": "eventBridge"}` so `CheckCompleted` cannot classify it as `last_run`.
 
-Optional (not required by this goal): a second cheap `normal_run` at `cron(30 16 * * ? *)` (12:30 EDT / 11:30 EST) to pick up late confirmations before the site traffic peak. It would reuse the same rule target; no new code.
+A second cheap `normal_run` at `cron(30 15 * * ? *)` (11:15 EDT / 10:15 EST) picks up starters named after the morning skate; the email at `cron(45 15 * * ? *)` runs 30 minutes later.
 
 ### State machine changes (`templates/player_processing_pipeline.asl.json`)
 

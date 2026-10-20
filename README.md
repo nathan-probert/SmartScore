@@ -93,8 +93,8 @@ the pipeline for a date refreshes that date's rows in place and
 ⚠️ **Archive freshness depends on the schedule.** Three EventBridge rules drive the
 pipeline: an 08:00 UTC deterministic `first_run` (04:00 EDT / 03:00 EST), a
 mid-morning `normal_run` at 14:30 UTC (10:30 EDT / 09:30 EST), and a confirmation
-`normal_run` at 15:15 UTC (11:15 EDT / 10:15 EST). All three `normal_run`/`first_run`
-branches re-fetch injuries, goalies and lineups, then archive to
+`normal_run` at 15:15 UTC (11:15 EDT / 10:15 EST). The `first_run` and both
+`normal_run` phases re-fetch injuries, goalies and lineups, then archive to
 `Player-Snapshots` and publish to `Picks-{ENV}`; a fourth rule sends email at
 15:45 UTC, after both refreshes:
 
