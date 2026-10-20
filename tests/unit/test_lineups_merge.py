@@ -74,6 +74,76 @@ def test_merge_assigns_forward_line():
     assert result[0]["pp_unit"] is None
 
 
+def test_merge_matches_source_nickname_to_schedule_place_name():
+    """Production players carry the schedule ``placeName`` ("Philadelphia").
+
+    Both lineup sources report the ``commonName`` ("Flyers"). Keying the lookup
+    on the source name matched zero production players; both sides must fold
+    onto the same team key.
+    """
+    players = [{"name": "Owen Tippett", "team_name": "Philadelphia"}]
+
+    result = merge_lineup_data(players, _nhl_games(), [])
+
+    assert result[0]["lineup_unit"] == "F1"
+    assert result[0]["lineup_status"] == "PROJECTED"
+
+
+def test_merge_matches_rotowire_pp_unit_for_schedule_place_name():
+    players = [{"name": "Adam Fantilli", "team_name": "Columbus"}]
+
+    result = merge_lineup_data(players, [], _rotowire_games())
+
+    assert result[0]["pp_unit"] == "POWER PLAY #1"
+
+
+def test_merge_keeps_new_york_teams_apart_by_player_name():
+    """Rangers and Islanders share the schedule placeName "New York".
+
+    The team key is shared, but entries are keyed per player, so one club's PP
+    unit must never land on the other club's skater.
+    """
+    players = [
+        {"name": "J.T. Miller", "team_name": "New York"},
+        {"name": "Bo Horvat", "team_name": "New York"},
+    ]
+    rotowire = [
+        {
+            "teams": [
+                {"name": "Rangers", "pp_units": [{"label": "POWER PLAY #1", "players": [{"name": "J.T. Miller"}]}]},
+                {"name": "Islanders", "pp_units": [{"label": "POWER PLAY #2", "players": [{"name": "Bo Horvat"}]}]},
+            ]
+        }
+    ]
+
+    result = merge_lineup_data(players, [], rotowire)
+
+    assert result[0]["pp_unit"] == "POWER PLAY #1"
+    assert result[1]["pp_unit"] == "POWER PLAY #2"
+
+
+def test_merge_warns_when_source_covers_no_player_team(caplog):
+    """A zero-match run must say so; this is what made the dev outage silent."""
+    players = [{"name": "Owen Tippett", "team_name": "Philadelphia"}]
+    stale = [
+        {
+            "teams": [
+                {
+                    "name": "Rangers",
+                    "units": [{"label": "F1", "players": ["J.T. Miller", "Mika Zibanejad", "Will Cuylle"]}],
+                }
+            ]
+        }
+    ]
+
+    with caplog.at_level("WARNING"):
+        result = merge_lineup_data(players, stale, [])
+
+    assert result[0]["lineup_status"] == "UNKNOWN"
+    assert "No player matched a projected forward line" in caplog.text
+    assert "not on this slate" in caplog.text
+
+
 def test_merge_assigns_defence_pair_as_non_forward_group():
     """D-pairing is parsed but not stored per skater; status stays UNKNOWN."""
     players = [{"name": "Travis Sanheim", "team_name": "Flyers"}]

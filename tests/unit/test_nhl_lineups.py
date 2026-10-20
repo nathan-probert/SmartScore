@@ -8,6 +8,7 @@ markup for one game.
 
 import json
 
+import pytest
 from bs4 import BeautifulSoup
 
 import nhl_lineups
@@ -16,9 +17,11 @@ from nhl_lineups import (
     _parse_nhl_article_body,
     _parse_rotowire_team,
     _repair_mojibake,
+    canonical_team_name,
     get_nhl_com_lineups,
     get_rotowire_lineups,
     normalize_player_name,
+    normalize_team_name,
 )
 
 # Mirrors the real article: the second game header is appended to the end of the
@@ -331,6 +334,32 @@ def test_normalize_player_name_repairs_double_encoded_apostrophe():
 
 def test_normalize_player_name_repairs_accents_left_intact():
     assert normalize_player_name("Zdeněk Čermák") == "zdenekcermak"
+
+
+@pytest.mark.parametrize(
+    ("source_name", "schedule_name"),
+    [
+        ("Maple Leafs", "Toronto"),
+        ("Canadiens", "Montréal"),
+        ("Golden Knights", "Vegas"),
+        ("Mammoth", "Utah"),
+        ("Blue Jackets", "Columbus"),
+        ("Rangers", "New York"),
+        ("Islanders", "New York"),
+        ("TOR", "Toronto"),
+        ("MTL", "Montréal"),
+        ("VGK", "Vegas"),
+    ],
+)
+def test_canonical_team_name_maps_source_names_to_schedule_place_names(source_name, schedule_name):
+    """Players are keyed on schedule placeName; sources report commonName/abbr."""
+    assert canonical_team_name(source_name) == normalize_team_name(schedule_name)
+
+
+def test_canonical_team_name_leaves_schedule_names_unchanged():
+    assert canonical_team_name("Montréal") == canonical_team_name("Montreal") == "montreal"
+    assert canonical_team_name("New York") == "newyork"
+    assert canonical_team_name("Philadelphia") == "philadelphia"
 
 
 def test_repair_mojibake_leaves_clean_text_alone():

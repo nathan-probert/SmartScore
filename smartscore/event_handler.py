@@ -557,6 +557,11 @@ def handle_get_lineups(event, context):
         logger.error("Both lineup sources returned no games; keeping existing lineup fields")
         return _passthrough(_ensure_lineup_fields(players))
 
+    logger.info(
+        f"Lineup sources for {len(players)} players: "
+        f"nhl.com={len(nhl_games)} games, rotowire={len(rotowire_games)} games"
+    )
+
     try:
         merged_info = merge_lineup_data(players, nhl_games, rotowire_games)
     except Exception as e:  # noqa: BLE001

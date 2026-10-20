@@ -17,7 +17,7 @@ from constants import DAYS_TO_KEEP_HISTORIC_DATA, NUM_EXPECTED_PLAYERS, WEIGHTS
 from email_utility import send_email
 from feature_flags import NHL_MOCK_FLAG, is_feature_enabled
 from mock_nhl_client import MockNHLClient
-from nhl_lineups import normalize_player_name
+from nhl_lineups import canonical_team_name, normalize_player_name
 from player_archive import backfill_scored, delete_game_snapshots, get_players_for_date, get_unscored_dates
 from utility import (
     count_picks_for_date,
@@ -1044,9 +1044,10 @@ def _build_lineup_lookup(nhl_games: List[Dict], rotowire_games: List[Dict]) -> D
     publishes them where NHL.com does not. The two are kept as separate keys so a
     player can carry both, which is the normal case for a top-six forward.
 
-    Team names are keyed exactly as the sources report them ("Blue Jackets"), and
-    players are matched on ``team_name`` from the same NHL schedule, so no
-    cross-source team-name translation is needed.
+    Team names are folded onto the NHL schedule's ``placeName`` ("Toronto",
+    "New York") because that is what ``team_name`` on the player payload holds,
+    while both sources report the ``commonName`` ("Maple Leafs", "Rangers").
+    Keying on the source name directly matched zero production players.
 
     Returns:
         Mapping of team name to a mapping of normalized player name to
@@ -1055,7 +1056,7 @@ def _build_lineup_lookup(nhl_games: List[Dict], rotowire_games: List[Dict]) -> D
     lookup: Dict[str, Dict[str, Dict]] = {}
 
     def team_entry(team_name: str) -> Dict[str, Dict]:
-        return lookup.setdefault(team_name, {})
+        return lookup.setdefault(canonical_team_name(team_name), {})
 
     def assign_unit(team_name: str, player_name: str, label: str) -> None:
         key = normalize_player_name(player_name)
@@ -1141,9 +1142,28 @@ def merge_lineup_data(
     """
     lookup = _build_lineup_lookup(nhl_games, rotowire_games)
 
-    matched = total = 0
+    def _team_key(team_name):
+        return canonical_team_name(team_name or "")
+
+    player_teams = {_team_key(p.get("team_name")) for p in players if p.get("team_name")}
+    source_teams = {_team_key(t.get("name")) for t in _iter_teams(nhl_games)}
+    source_teams |= {_team_key(t.get("name")) for t in _iter_teams(rotowire_games)}
+    source_teams.discard("")
+    uncovered = sorted(player_teams - source_teams)
+    off_slate = sorted(source_teams - player_teams)
+    logger.info(
+        f"Lineup coverage: {len(player_teams)} player teams, {len(player_teams) - len(uncovered)} with source data; "
+        f"nhl.com={len(_iter_teams(nhl_games))} teams, rotowire={len(_iter_teams(rotowire_games))} teams"
+    )
+    if uncovered:
+        logger.warning(f"Lineup sources have no team for {len(uncovered)} team(s): {uncovered}")
+    if off_slate:
+        # The usual cause is a source still serving the previous day's slate.
+        logger.warning(f"Lineup sources cover {len(off_slate)} team(s) not on this slate: {off_slate}")
+
+    matched = total = pp_matched = 0
     for player in players:
-        entries = lookup.get(player.get("team_name", ""), {})
+        entries = lookup.get(_team_key(player.get("team_name")), {})
         entry = entries.get(normalize_player_name(player.get("name", "")), {})
 
         unit = entry.get("unit") or ""
@@ -1173,12 +1193,13 @@ def merge_lineup_data(
 
         total += 1
         matched += bool(is_forward)
+        pp_matched += pp_unit is not None
 
-    logger.info(f"Matched {matched}/{total} players to a projected forward line")
-    if total and matched < total:
+    logger.info(f"Matched {matched}/{total} players to a projected forward line, {pp_matched} to a PP unit")
+    if total and matched == 0:
         logger.warning(
-            f"Only {matched}/{total} players matched a projected line; check that the "
-            "NHL.com article and the player list refer to the same slate of games"
+            "No player matched a projected forward line; check that the NHL.com article and the "
+            "player list refer to the same slate of games and team names"
         )
 
     return players

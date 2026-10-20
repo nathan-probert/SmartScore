@@ -138,6 +138,70 @@ def normalize_player_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", folded)
 
 
+def normalize_team_name(name: str) -> str:
+    """Reduce a team name to a join key (accents and punctuation folded away)."""
+    return re.sub(r"[^a-z0-9]+", "", unidecode(name or "").lower())
+
+
+# Players are keyed on the NHL schedule's ``placeName`` ("Anaheim", "Toronto",
+# "New York"), but both lineup sources report the ``commonName`` ("Ducks",
+# "Maple Leafs", "Rangers"/"Islanders"). Keying the lineup lookup on the source
+# name therefore never matched a production player and every skater came out
+# UNKNOWN. Translate each source name to the schedule place name before joining.
+# New York is intentionally a single key: the lookup is per-player, so merging
+# both clubs' players under one team key cannot mix their lineups up.
+_TEAM_NAMES = (
+    ("Anaheim", "Ducks", "ANA"),
+    ("Boston", "Bruins", "BOS"),
+    ("Buffalo", "Sabres", "BUF"),
+    ("Calgary", "Flames", "CGY"),
+    ("Carolina", "Hurricanes", "CAR"),
+    ("Chicago", "Blackhawks", "CHI"),
+    ("Colorado", "Avalanche", "COL"),
+    ("Columbus", "Blue Jackets", "CBJ"),
+    ("Dallas", "Stars", "DAL"),
+    ("Detroit", "Red Wings", "DET"),
+    ("Edmonton", "Oilers", "EDM"),
+    ("Florida", "Panthers", "FLA"),
+    ("Los Angeles", "Kings", "LAK"),
+    ("Minnesota", "Wild", "MIN"),
+    ("Montréal", "Canadiens", "MTL"),
+    ("Nashville", "Predators", "NSH"),
+    ("New Jersey", "Devils", "NJD"),
+    ("New York", "Islanders", "NYI"),
+    ("New York", "Rangers", "NYR"),
+    ("Ottawa", "Senators", "OTT"),
+    ("Philadelphia", "Flyers", "PHI"),
+    ("Pittsburgh", "Penguins", "PIT"),
+    ("San Jose", "Sharks", "SJS"),
+    ("Seattle", "Kraken", "SEA"),
+    ("St. Louis", "Blues", "STL"),
+    ("Tampa Bay", "Lightning", "TBL"),
+    ("Toronto", "Maple Leafs", "TOR"),
+    ("Utah", "Mammoth", "UTA"),
+    ("Vancouver", "Canucks", "VAN"),
+    ("Vegas", "Golden Knights", "VGK"),
+    ("Washington", "Capitals", "WSH"),
+    ("Winnipeg", "Jets", "WPG"),
+)
+
+_TEAM_ALIASES = {}
+for _place_name, _common_name, _abbr in _TEAM_NAMES:
+    _TEAM_ALIASES[normalize_team_name(_common_name)] = _place_name
+    _TEAM_ALIASES[normalize_team_name(_abbr)] = _place_name
+
+
+def canonical_team_name(name: str) -> str:
+    """Map a source team name/abbreviation onto the NHL schedule place name.
+
+    Returns the normalized join key so "Canadiens", "Montréal" and "MTL" all
+    collapse to the same value. Unknown names fall through normalized, which
+    keeps the pre-existing behaviour for players already keyed like the source.
+    """
+    key = normalize_team_name(name)
+    return normalize_team_name(_TEAM_ALIASES.get(key, name))
+
+
 def _fetch_text(url: str, max_retries: int = 3, base_delay: int = 1) -> Optional[str]:
     """Fetch a page as text with exponential backoff.
 
@@ -150,6 +214,8 @@ def _fetch_text(url: str, max_retries: int = 3, base_delay: int = 1) -> Optional
     for attempt in range(max_retries):
         try:
             response = requests.get(url, headers=SCRAPE_HEADERS, timeout=20)
+            status = getattr(response, "status_code", "?")
+            logger.info(f"GET {url} -> HTTP {status} ({len(response.text or '')} chars)")
             response.raise_for_status()
             return response.text
         except requests.RequestException as e:
@@ -309,6 +375,7 @@ def get_nhl_com_lineups(url: str = NHL_LINEUP_ARTICLE_URL) -> List[Dict]:
     # The ld+json script tag is HTML-escaped in the raw source ('ld&#x2B;json').
     source = html.unescape(document)
     blocks = re.findall(r'<script type="application/ld\+json">(.*?)</script>', source, re.S)
+    logger.info(f"NHL.com page: {len(blocks)} ld+json blocks, {len(document)} chars")
 
     article = None
     for block in blocks:
@@ -336,7 +403,13 @@ def get_nhl_com_lineups(url: str = NHL_LINEUP_ARTICLE_URL) -> List[Dict]:
         return []
 
     _log_structure("nhl.com", games)
-    logger.info(f"NHL.com article published {article.get('datePublished')}, parsed {len(games)} games")
+    teams = [team for game in games for team in game["teams"]]
+    player_count = sum(len(unit["players"]) for team in teams for unit in team["units"])
+    logger.info(
+        f"NHL.com article published {article.get('datePublished')} "
+        f"(modified {article.get('dateModified')}): {len(games)} games, "
+        f"{len(teams)} teams, {player_count} players"
+    )
     return games
 
 
@@ -378,6 +451,8 @@ def get_rotowire_lineups(url: str = ROTOWIRE_LINEUPS_URL) -> List[Dict]:
     """
     try:
         response = requests.get(url, headers=SCRAPE_HEADERS, timeout=20)
+        status = getattr(response, "status_code", "?")
+        logger.info(f"GET {url} -> HTTP {status} ({len(response.text or '')} chars)")
         response.raise_for_status()
     except requests.RequestException as e:
         logger.error(f"Error fetching RotoWire lineups: {e}")
@@ -385,6 +460,13 @@ def get_rotowire_lineups(url: str = ROTOWIRE_LINEUPS_URL) -> List[Dict]:
 
     soup = BeautifulSoup(response.text, "html.parser")
     games: List[Dict] = []
+    # The page carries one non-game promo box with the same class, so only
+    # count matchup blocks that actually have two team links.
+    matchup_count = sum(
+        1
+        for matchup in soup.find_all("div", class_="lineup__matchup")
+        if len(matchup.find_all("a", class_=re.compile(r"lineup__mteam"))) == EXPECTED_TEAMS_PER_GAME
+    )
 
     for matchup in soup.find_all("div", class_="lineup__matchup"):
         main = matchup.find_next_sibling("div", class_="lineup__main")
@@ -411,9 +493,13 @@ def get_rotowire_lineups(url: str = ROTOWIRE_LINEUPS_URL) -> List[Dict]:
 
     pp_total = sum(len(u["players"]) for g in games for t in g["teams"] for u in t["pp_units"])
     logger.info(
-        f"RotoWire lineups: {len(games)} games, "
+        f"RotoWire lineups: {len(games)} games, {sum(len(g['teams']) for g in games)} teams, "
         f"{sum(len(t['pp_units']) for g in games for t in g['teams'])} PP units, {pp_total} PP skaters"
     )
+    if len(games) < matchup_count:
+        logger.warning(
+            f"RotoWire lineups: parsed {len(games)} of {matchup_count} matchups (missing team or lineup list)"
+        )
     return games
 
 
