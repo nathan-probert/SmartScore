@@ -698,6 +698,56 @@ was +0.19pp; mean -0.21pp) and neither seed's McNemar is close to significant
 season rates plus opponent team/goalie context. No `--opp-history` flag or
 feature code retained; notes only.
 
+### V7-objective — Poisson LGBM and conditional-softmax logit (reverted)
+
+Protocol: date-blocked k=5, train=all, seeds 1/3, `OMP_NUM_THREADS=2`,
+`LGBM_N_JOBS=2`, `timeout 300`, 3,159 pooled picks. The corrected binary
+baseline reproduced exactly in this worktree: seed 1 **928 = 29.376%**, seed 3
+**916 = 28.997%**. Both arms use the same 42-feature set and the same folds.
+
+**A. Poisson LGBM.** Added `--objective {binary,poisson}`. The Poisson arm fits
+`LGBMRegressor(objective="poisson")` on the raw `player_games.goals` count
+(identical tree config) and scores `1 - exp(-lambda)`. All 92,440 challenge
+rows join a goal count, and `goals >= 1` matches `scored = 1` exactly (no
+mismatch).
+
+| seed | binary | poisson | delta | McNemar vs binary | McNemar vs hgpg |
+|---|---:|---:|---:|---|---|
+| 1 | 928 / 29.376% | 936 / 29.630% | +0.254pp | 153-145, p=0.685 | 326-276, p=0.046 |
+| 3 | 916 / 28.997% | 919 / 29.091% | +0.094pp | 131-128, p=0.901 | 310-277, p=0.187 |
+| pooled | 1,844 / 29.186% | 1,855 / 29.361% | +0.174pp | 284-273, p=0.672 | 636-553, p=0.017 |
+
+Held-out AUC 0.6929 (both seeds) vs 0.6924 / 0.6922 for binary. Runtime ~150s
+per seed with both seeds running concurrently, under the 300s cap.
+
+Verdict: rejected — positive on both seeds but only +0.09pp on seed 3, well
+short of +0.5pp, and the paired McNemar vs binary is a tie.
+
+**B. Conditional softmax.** Added `--model csoftmax`: a within-`(date, tims)`
+conditional logit on the same features, fitted by scipy L-BFGS on challenge
+rows only (PyTorch was not installed). Design matrix: 40 numeric features
+median-imputed and standardised on the training rows, `lineup_position_group`
+one-hot (F / D / missing) = 43 columns; `tims` is constant within a group and
+cancels exactly in the softmax. Groups average 29.3 rows and 5.05 scorers (223
+of 3,159 have none), so the likelihood sums the log probability of every
+scored row in the group (multiple-choice conditional logit). Returned score is
+the within-group softmax probability.
+
+| seed | binary | csoftmax | delta | McNemar vs binary | McNemar vs hgpg |
+|---|---:|---:|---:|---|---|
+| 1 | 928 / 29.376% | 888 / 28.110% | -1.266pp | 228-268, p=0.080 | 328-326, p=0.969 |
+| 3 | 916 / 28.997% | 894 / 28.300% | -0.697pp | 229-251, p=0.338 | 336-328, p=0.786 |
+| pooled | 1,844 / 29.186% | 1,782 / 28.205% | -0.981pp | 457-519, p=0.051 | 664-654, p=0.804 |
+
+Training time 1.9-6.4s per fold (143-300 L-BFGS iterations; one seed-3 fold
+hit the 300 cap), ~64s per seed end-to-end including the 14s frame build.
+Held-out AUC 0.569 — far below LGBM's 0.692. The linear group-softmax cannot
+represent the GBDT's nonlinear interactions, and it optimises within-slate rank
+rather than the global 0/1 calibration the pointwise models exploit.
+
+Verdict: rejected — worse than binary on both seeds and no better than hgpg.
+No code changes retained; the default remains `--model ensemble`.
+
 ### V8-shrinkage — empirical-Bayes rate features (reverted)
 
 Eight prior-only features on the corrected 42-feature set:
