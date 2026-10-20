@@ -90,13 +90,15 @@ the roster. Here every write is an upsert on `(date, player_id)`, so re-running
 the pipeline for a date refreshes that date's rows in place and
 `get_players_for_date` returns exactly one row per player.
 
-⚠️ **Archive freshness depends on the schedule.** Three EventBridge rules drive the
+⚠️ **Archive freshness depends on the schedule.** Five EventBridge rules drive the
 pipeline: an 08:00 UTC deterministic `first_run` (04:00 EDT / 03:00 EST), a
-mid-morning `normal_run` at 14:30 UTC (10:30 EDT / 09:30 EST), and a confirmation
-`normal_run` at 15:15 UTC (11:15 EDT / 10:15 EST). The `first_run` and both
-`normal_run` phases re-fetch injuries, goalies and lineups, then archive to
-`Player-Snapshots` and publish to `Picks-{ENV}`; a fourth rule sends email at
-15:45 UTC, after both refreshes:
+mid-morning `normal_run` at 14:30 UTC (10:30 EDT / 09:30 EST), a confirmation
+`normal_run` at 15:15 UTC (11:15 EDT / 10:15 EST), and later refreshes at 17:00
+UTC (13:00 EDT / 12:00 EST) and 20:00 UTC (16:00 EDT / 15:00 EST). The `first_run`
+and every `normal_run` re-fetch injuries, goalies and lineups, then archive to
+`Player-Snapshots` and publish to `Picks-{ENV}`; a sixth rule sends email at
+15:45 UTC, after the morning refreshes. The later refreshes correct the
+archive/site but are not used for the email.
 
 ```
 first_run  -> Backfill -> GetPlayers -> EnsureFirstRunStatus -> GetInjuries -> GetGoalies -> GetLineups -> MakePredictions -> GetTims -> SaveToDb -> UpdateHistory -> PublishToDb

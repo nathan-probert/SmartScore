@@ -88,6 +88,27 @@ def test_confirmation_phase_runs_after_the_morning_skate():
     assert "last_game" not in rule["Targets"][0]["Input"]
 
 
+@pytest.mark.parametrize(
+    ("logical_id", "cron"),
+    [
+        ("LineupRefreshStepFunctionTrigger", "cron(0 17 * * ? *)"),  # 13:00 EDT / 12:00 EST
+        ("EveningRefreshStepFunctionTrigger", "cron(0 20 * * ? *)"),  # 16:00 EDT / 15:00 EST
+    ],
+)
+def test_later_refreshes_are_normal_runs_without_last_game(logical_id, cron):
+    """Archive/site refreshes: same pipeline, never last_game, never a new email."""
+    rule = _rule(logical_id)
+
+    assert rule["ScheduleExpression"] == cron
+    assert rule["State"] == "ENABLED"
+    assert _target_state_machines(logical_id) == ["PlayerProcessingPipeline"]
+
+    targets = rule["Targets"]
+    assert len(targets) == 1
+    assert json.loads(targets[0]["Input"]) == {"source": "eventBridge"}
+    assert "last_game" not in targets[0]["Input"]
+
+
 def test_email_runs_after_the_projections_and_confirmation_phases():
     rule = _rule("DailySendEmailTrigger")
 

@@ -559,6 +559,33 @@ Resources:
           Id: PlayerProcessingPipelineConfirmationTarget
           Input: '{"source": "eventBridge"}'
 
+  # Later refreshes for archive/site correctness. The projections article can
+  # lag a full slate (observed still serving the previous day at 11:24 ET), so
+  # these re-run the normal_run path after it updates. They are not used for
+  # the email; Picks replacement is date-scoped and the archive upserts, so a
+  # repeated run is safe.
+  LineupRefreshStepFunctionTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(0 17 * * ? *)"  # 17:00 UTC = 13:00 EDT / 12:00 EST
+      State: ENABLED
+      Targets:
+        - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
+          RoleArn: !GetAtt EventBridgeInvokeRole.Arn
+          Id: PlayerProcessingPipelineLineupRefreshTarget
+          Input: '{"source": "eventBridge"}'
+
+  EveningRefreshStepFunctionTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(0 20 * * ? *)"  # 20:00 UTC = 16:00 EDT / 15:00 EST
+      State: ENABLED
+      Targets:
+        - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
+          RoleArn: !GetAtt EventBridgeInvokeRole.Arn
+          Id: PlayerProcessingPipelineEveningRefreshTarget
+          Input: '{"source": "eventBridge"}'
+
   # Email goes out after both the projections and confirmation refreshes.
   # 15:45 UTC = 11:45 EDT / 10:45 EST.
   DailySendEmailTrigger:

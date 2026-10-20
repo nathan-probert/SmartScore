@@ -96,11 +96,13 @@ Keep two independent EventBridge Rules. A single state machine with a `Wait` unt
 | `cron(0 8 * * ? *)` (existing) | 04:00 | 03:00 | Deterministic phase: backfill, roster/stats, predictions, scoring, archive + publish. Guarantees a slate exists even if the mid-morning run fails. |
 | `cron(30 14 * * ? *)` (new) | 10:30 | 09:30 | Projections phase: `normal_run` refresh of injuries, goalies, lineups → archive + publish. |
 | `cron(30 15 * * ? *)` (new) | 11:15 | 10:15 | Confirmation phase: second `normal_run` for late morning-skate news. |
-| `cron(45 15 * * ? *)` (moved from 14:00) | 11:45 | 10:45 | `NotifyUsers`, after both refreshes. |
+| `cron(0 17 * * ? *)` (new) | 13:00 | 12:00 | `LineupRefreshStepFunctionTrigger`: `normal_run` once the article catches up. Archive/site only, no email. |
+| `cron(0 20 * * ? *)` (new) | 16:00 | 15:00 | `EveningRefreshStepFunctionTrigger`: final `normal_run` for late lines/PP/goalies. Archive/site only, no email. |
+| `cron(45 15 * * ? *)` (moved from 14:00) | 11:45 | 10:45 | `NotifyUsers`, after both morning refreshes. |
 
-Rationale: 09:30–10:30 ET is after the overnight article refresh and at/after most morning skates in summer. In winter the phase lands at 09:30 ET, before a 10:30 skate, but RotoWire's `Expected` projections are already populated; the site still gets `Confirmed` values from the game-start runs. If exact local time is required year-round, switch these two rules to **EventBridge Scheduler** `AWS::Scheduler::Schedule` with `ScheduleExpressionTimezone: America/Toronto` (follow-up, larger change: new resource type + role). EventBridge **Rules** cron is always UTC — do not add a timezone field to a Rule.
+Rationale: 09:30–10:30 ET is after the overnight article refresh and at/after most morning skates in summer. In winter the phase lands at 09:30 ET, before a 10:30 skate, but RotoWire's `Expected` projections are already populated; the site still gets `Confirmed` values from the game-start runs. The 13:00/16:00 ET refreshes exist because the NHL.com article can lag a full slate (observed still serving the previous day at 11:24 ET); they correct the archive/site but do not change the email. If exact local time is required year-round, switch these rules to **EventBridge Scheduler** `AWS::Scheduler::Schedule` with `ScheduleExpressionTimezone: America/Toronto` (follow-up, larger change: new resource type + role). EventBridge **Rules** cron is always UTC — do not add a timezone field to a Rule.
 
-Do **not** pass `last_game` on the new rule; pass `{"source": "eventBridge"}` so `CheckCompleted` cannot classify it as `last_run`.
+Do **not** pass `last_game` on any of the added rules; pass `{"source": "eventBridge"}` so `CheckCompleted` cannot classify them as `last_run`. Repeated `normal_run`s are idempotent: Picks replacement is date-scoped, the archive/Working tables upsert, `UpdateHistory` is skipped, and the stale-slate guard skips forward lines instead of writing yesterday's.
 
 A second cheap `normal_run` at `cron(30 15 * * ? *)` (11:15 EDT / 10:15 EST) picks up starters named after the morning skate; the email at `cron(45 15 * * ? *)` runs 30 minutes later.
 
@@ -141,7 +143,7 @@ A second cheap `normal_run` at `cron(30 15 * * ? *)` (11:15 EDT / 10:15 EST) pic
 
 | File | Change |
 |---|---|
-| `templates/template.yaml` L521–575 | Add `ProjectionsStepFunctionTrigger` `cron(30 14 * * ? *)` and `ConfirmationStepFunctionTrigger` `cron(30 15 * * ? *)` → `PlayerProcessingPipeline-${ENV}`, Input `{"source":"eventBridge"}`, same `EventBridgeInvokeRole`. Move `DailySendEmailTrigger` to `cron(45 15 * * ? *)`. Update comments with the EDT/EST mapping. |
+| `templates/template.yaml` L521–610 | Add `ProjectionsStepFunctionTrigger` `cron(30 14 * * ? *)`, `ConfirmationStepFunctionTrigger` `cron(30 15 * * ? *)`, `LineupRefreshStepFunctionTrigger` `cron(0 17 * * ? *)` and `EveningRefreshStepFunctionTrigger` `cron(0 20 * * ? *)` → `PlayerProcessingPipeline-${ENV}`, Input `{"source":"eventBridge"}`, same `EventBridgeInvokeRole`. Move `DailySendEmailTrigger` to `cron(45 15 * * ? *)`. Update comments with the EDT/EST mapping. |
 | `templates/player_processing_pipeline.asl.json` | Reorder `MakePredictions` after `GetLineups`; add `EnsureFirstRunStatus` after the `GetPlayers` sub-machine; route `normal_run` to `SaveToDb`; add `CheckSaveHistory` (`first_run → UpdateHistory`, else → `PublishToDb`). |
 | `smartscore/event_handler.py` | `LoadWorkingSet` returns `date`; `Backfill`/`ParseData`/data handlers carry `status`; `GetTims`/`SavePlayers` require it; failed lineup/injury/goalie fetches preserve prior values; empty picks skip the email. |
 | `smartscore/player_archive.py` | Omit `opp_goalie_*` from the snapshot payload when the row carries none, so a failed goalie fetch cannot null the archive. |
