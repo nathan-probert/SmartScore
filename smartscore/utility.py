@@ -57,7 +57,14 @@ def get_tims_players():
     return ids
 
 
-def save_to_db(players):
+def save_to_db(players, date=None):
+    """Replace the Picks rows for one date.
+
+    The delete is scoped to ``date`` so a failed or overlapping publish cannot
+    empty another date's picks (the old ``delete().neq("id", 0)`` wiped the
+    whole table). When ``date`` is omitted the legacy full wipe is kept for
+    callers that do not know the date.
+    """
     # remove fields that aren't currently show in frontend, plus relational
     # join keys (team_id etc.) which never existed on the Picks table --
     # Supabase rejects upserts with unknown columns.
@@ -71,7 +78,8 @@ def save_to_db(players):
         player.pop("season", None)
         player.pop("team_abbr", None)
         player["id"] = i + 1
-    exponential_backoff_supabase_request(f"Picks-{ENV}", method="post", json_data=players)
+    eq = ("date", date) if date else None
+    exponential_backoff_supabase_request(f"Picks-{ENV}", method="post", json_data=players, eq=eq)
 
 
 def get_today_db(eq=None):

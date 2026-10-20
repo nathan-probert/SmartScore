@@ -546,12 +546,12 @@ Resources:
           Id: PlayerProcessingPipelineProjectionsTarget
           Input: '{"source": "eventBridge"}'
 
-  # Optional late-morning refresh for confirmations that land after the
-  # morning skate. Same normal_run path and idempotent upserts.
+  # Confirmation refresh: picks up starters named after the morning skate.
+  # Same normal_run path and idempotent upserts; runs before the email rule.
   ConfirmationStepFunctionTrigger:
     Type: AWS::Events::Rule
     Properties:
-      ScheduleExpression: "cron(30 16 * * ? *)"  # 16:30 UTC = 12:30 EDT / 11:30 EST
+      ScheduleExpression: "cron(30 15 * * ? *)"  # 15:15 UTC = 11:15 EDT / 10:15 EST
       State: ENABLED
       Targets:
         - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
@@ -559,12 +559,12 @@ Resources:
           Id: PlayerProcessingPipelineConfirmationTarget
           Input: '{"source": "eventBridge"}'
 
-  # Email goes out after the projections phase has had an hour to finish.
-  # 15:30 UTC = 11:30 EDT / 10:30 EST.
+  # Email goes out after both the projections and confirmation refreshes.
+  # 15:45 UTC = 11:45 EDT / 10:45 EST.
   DailySendEmailTrigger:
     Type: AWS::Events::Rule
     Properties:
-      ScheduleExpression: "cron(30 15 * * ? *)"  # 15:30 UTC = 11:30 EDT / 10:30 EST
+      ScheduleExpression: "cron(45 15 * * ? *)"  # 15:45 UTC = 11:45 EDT / 10:45 EST
       State: ENABLED
       Targets:
         - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:NotifyUsers-${ENV}"

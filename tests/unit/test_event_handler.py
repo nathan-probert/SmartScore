@@ -20,7 +20,7 @@ def test_handle_save_players_archives_with_date(mock_save, mock_working_set):
     """Players are archived under the run's date."""
     players = [{"id": 1, "name": "Player 1", "tims": 1}]
 
-    result = handle_save_players({"players": players, "date": "2026-04-15"}, {})
+    result = handle_save_players({"players": players, "date": "2026-04-15", "status": "first_run"}, {})
 
     assert result == {"statusCode": 200, "status": "first_run", "players": players}
     mock_save.assert_called_once_with(players, date="2026-04-15")
@@ -44,7 +44,7 @@ def test_handle_save_players_falls_back_to_today(mock_save, mock_working_set, mo
 @patch("event_handler.save_player_snapshots")
 def test_handle_save_players_skips_upload_when_empty(mock_save, mock_working_set):
     """An empty player list must not hit Supabase (an empty upsert is a no-op error)."""
-    result = handle_save_players({"players": [], "date": "2026-04-15"}, {})
+    result = handle_save_players({"players": [], "date": "2026-04-15", "status": "first_run"}, {})
 
     assert result == {"statusCode": 200, "status": "first_run", "players": []}
     mock_save.assert_not_called()
@@ -58,7 +58,7 @@ def test_handle_save_players_persists_working_set(mock_save, mock_working_set):
     players = [{"id": 1, "name": "Player 1", "team_id": 10}]
     teams = [{"team_id": 10, "opponent_id": 11}]
 
-    handle_save_players({"players": players, "teams": teams, "date": "2026-04-15"}, {})
+    handle_save_players({"players": players, "teams": teams, "date": "2026-04-15", "status": "first_run"}, {})
 
     mock_working_set.assert_called_once_with(players, teams)
 
@@ -405,3 +405,14 @@ def test_handle_emails_prefers_players_from_state(mock_get_picks, mock_get_email
 
     mock_get_picks.assert_not_called()
     assert [p["name"] for p in mock_send.call_args[0][1]] == ["Player 2", "Player 3", "Player 4"]
+
+
+@patch("event_handler.send_emails")
+@patch("event_handler.get_all_emails", return_value=[{"email": "test@example.com", "display_name": "Tester"}])
+@patch("event_handler.get_published_picks", return_value=[])
+def test_handle_emails_skips_softly_when_picks_are_empty(mock_get_picks, mock_get_emails, mock_send):
+    """A racing/failed publish must not fail NotifyUsers; log and skip."""
+    result = handle_emails({"status": "normal_run"}, {})
+
+    assert result == {"statusCode": 200, "skipped": True}
+    mock_send.assert_not_called()

@@ -14,6 +14,7 @@ from utility import (
     get_picks_for_date,
     get_tims_players,
     put_working_set,
+    save_to_db,
 )
 
 
@@ -293,3 +294,18 @@ def test_create_cron_schedule_new_year():
     result = create_cron_schedule(dt)
 
     assert result == "cron(0 0 1 1 ? 2025)"
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_save_to_db_scopes_the_delete_to_the_published_date(mock_request):
+    """S3: replacing today's Picks must not wipe another date's rows."""
+    save_to_db([{"id": 1, "date": "2026-04-15"}], "2026-04-15")
+
+    assert mock_request.call_args.kwargs["eq"] == ("date", "2026-04-15")
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_save_to_db_without_a_date_keeps_the_legacy_wipe(mock_request):
+    save_to_db([{"id": 1}])
+
+    assert mock_request.call_args.kwargs["eq"] is None

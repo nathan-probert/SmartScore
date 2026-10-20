@@ -90,23 +90,26 @@ the roster. Here every write is an upsert on `(date, player_id)`, so re-running
 the pipeline for a date refreshes that date's rows in place and
 `get_players_for_date` returns exactly one row per player.
 
-⚠️ **Archive freshness depends on the schedule.** Two EventBridge rules drive the
-day: an 08:00 UTC deterministic `first_run` (04:00 EDT / 03:00 EST) and a
-mid-morning `normal_run` at 14:30 UTC (10:30 EDT / 09:30 EST), with an optional
-16:30 UTC confirmation refresh. Both `normal_run`s reload the day's `Working-*`
-slices and re-fetch injuries, goalies and lineups, then archive to
-`Player-Snapshots` and publish to `Picks-{ENV}`:
+⚠️ **Archive freshness depends on the schedule.** Three EventBridge rules drive the
+pipeline: an 08:00 UTC deterministic `first_run` (04:00 EDT / 03:00 EST), a
+mid-morning `normal_run` at 14:30 UTC (10:30 EDT / 09:30 EST), and a confirmation
+`normal_run` at 15:15 UTC (11:15 EDT / 10:15 EST). All three `normal_run`/`first_run`
+branches re-fetch injuries, goalies and lineups, then archive to
+`Player-Snapshots` and publish to `Picks-{ENV}`; a fourth rule sends email at
+15:45 UTC, after both refreshes:
 
 ```
 first_run  -> Backfill -> GetPlayers -> GetInjuries -> GetGoalies -> GetLineups -> MakePredictions -> GetTims -> SaveToDb -> UpdateHistory -> PublishToDb
 normal_run -> LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> SaveToDb -> PublishToDb   # skips UpdateHistory
-last_run   -> LoadWorkingSet -> ... same as normal_run ... -> GetTims -> PublishToDb
+last_run   -> LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> PublishToDb               # no archive
 ```
 
 `SaveToDb` upserts on `(date, player_id)`, so the mid-morning run refreshes the
 same archive rows in place with the projections that were not available at 03:00
 ET. A re-run for the same date is idempotent; `PublishToDb` rewrites the day's
-`Picks` rows and `write_historic_db` is a no-op once the date exists.
+`Picks` rows (delete scoped to that date) and `write_historic_db` is a no-op once
+the date exists. A failed lineup/injury/goalie fetch keeps the previous values
+instead of overwriting them with UNKNOWN/HEALTHY.
 
 Two more caveats that came out of the port:
 

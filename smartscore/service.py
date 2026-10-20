@@ -333,7 +333,7 @@ def publish_public_db(players):
         if not player.get("player_id"):
             player["player_id"] = player.pop("id")
 
-    save_to_db(players)
+    save_to_db(players, date)
 
 
 def check_db_for_date():
@@ -548,7 +548,7 @@ def normalize_rotowire_team_abbr(abbr: str | None) -> str:
     return ROTOWIRE_TEAM_ABBR_MAP.get(abbr.upper(), abbr.upper())
 
 
-def get_injury_data() -> List[Dict[str, str]]:
+def get_injury_data() -> List[Dict[str, str]] | None:
     """
     Get current injury data from RotoWire.
 
@@ -557,6 +557,9 @@ def get_injury_data() -> List[Dict[str, str]]:
         - player: Name of the injured player
         - injury: Injury description
         - status: Injury status
+
+        ``None`` when the fetch/parse failed, so callers can distinguish an
+        outage from a genuinely empty injury report (``[]``).
     """
     url = "https://www.rotowire.com/hockey/tables/injury-report.php?team=ALL&pos=ALL"
 
@@ -566,10 +569,10 @@ def get_injury_data() -> List[Dict[str, str]]:
         data = response.json()
     except requests.RequestException as e:
         logger.error(f"Error fetching injury data: {e}")
-        return []
+        return None
     except json.JSONDecodeError as e:
         logger.error(f"Error parsing injury JSON: {e}")
-        return []
+        return None
 
     injuries = []
     for item in data:
@@ -595,17 +598,23 @@ def get_injury_data() -> List[Dict[str, str]]:
     return injuries
 
 
-def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]]) -> List[Dict]:
+def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]] | None) -> List[Dict]:
     """
     Merge injury data into the player list.
 
     Args:
         players: List of player dictionaries
-        injuries: List of injury dictionaries from RotoWire
+        injuries: List of injury dictionaries from RotoWire, or ``None`` when
+            the fetch failed. A failure leaves the existing injury fields
+            untouched instead of marking every skater HEALTHY.
 
     Returns:
         List of players with added injury information
     """
+    if injuries is None:
+        logger.error("No injury payload (fetch failed); keeping existing injury fields")
+        return players
+
     injury_dict = {injury["player"].lower(): injury for injury in injuries}
 
     for player in players:
@@ -621,7 +630,7 @@ def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]]) -> Li
     return players
 
 
-def get_starting_goalies(date: str | None = None) -> List[Dict]:
+def get_starting_goalies(date: str | None = None) -> List[Dict] | None:
     """
     Get projected/confirmed starting goalies for a date from RotoWire.
 
@@ -635,6 +644,9 @@ def get_starting_goalies(date: str | None = None) -> List[Dict]:
         List of starter dictionaries with keys:
         - date, team_abbr (NHL-normalized), home (bool),
           goalie_name, rotowire_id, status (e.g. Confirmed/Expected/Unknown)
+
+        ``None`` when the fetch failed or returned an unexpected shape, so
+        callers can distinguish an outage from a valid empty slate (``[]``).
     """
     date = date or get_date()
     url = f"{ROTOWIRE_GOALIE_TABLE_URL}?date={date}"
@@ -643,11 +655,11 @@ def get_starting_goalies(date: str | None = None) -> List[Dict]:
         data = exponential_backoff_request(url, headers=ROTOWIRE_HEADERS)
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error fetching starting goalie data: {e}")
-        return []
+        return None
 
     if not isinstance(data, list):
         logger.error(f"Unexpected starting goalie payload type: {type(data)}")
-        return []
+        return None
 
     starters = []
     for game in data:
@@ -760,7 +772,7 @@ def get_goalie_stats_for_team(team_abbr: str) -> Dict[str, Dict]:
     return stats
 
 
-def enrich_starting_goalies(date: str | None = None) -> List[Dict]:
+def enrich_starting_goalies(date: str | None = None) -> List[Dict] | None:
     """
     Get starting goalies for a date enriched with official NHL stats.
 
@@ -770,9 +782,12 @@ def enrich_starting_goalies(date: str | None = None) -> List[Dict]:
         date: Date in YYYY-MM-DD format. Defaults to today (Toronto time).
 
     Returns:
-        List of starter dictionaries including gaa, save_pct, record, etc.
+        List of starter dictionaries including gaa, save_pct, record, etc.,
+        or ``None`` when the underlying fetch failed.
     """
     starters = get_starting_goalies(date)
+    if starters is None:
+        return None
     teams = sorted({starter["team_abbr"] for starter in starters})
     stats_by_team = {team: get_goalie_stats_for_team(team) for team in teams}
 
@@ -982,7 +997,10 @@ def denormalize_players_for_db(
         if team:
             opp_id = team.get("opponent_id")
             opp = goalies_by_team.get(opp_id, {}) if opp_id is not None else {}
-        if opp or teams is not None:
+        # goalies is None when the starting-goalie fetch failed: leave the
+        # opp_goalie_* columns out of the payload so a Picks upsert keeps the
+        # previous values instead of writing None/UNKNOWN.
+        if teams is not None and goalies is not None:
             row["opp_goalie_name"] = opp.get("goalie_name")
             row["opp_goalie_team"] = opp.get("team_abbr")
             row["opp_goalie_status"] = (opp.get("status") or "UNKNOWN").upper() if opp else "UNKNOWN"

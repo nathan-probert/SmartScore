@@ -1,6 +1,6 @@
 # Mid-morning lineup / goalie / injury ingestion
 
-Status: research + design only. No production code or deploy in this change.
+Status: implemented on `lineup-schedule` (PR #134). No deploy yet.
 Branch: `lineup-schedule` (worktree `/home/nathan/code/SmartScore-lineup-schedule`).
 
 ## 1. When game-day data is actually posted (ET)
@@ -47,7 +47,7 @@ GetDate -> CheckCompletion
                  -> GetLineups -> GetTims -> SaveToDb -> UpdateHistory -> PublishDb
   normal_run -> LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups
                  -> GetTims -> PublishDb
-  last_run   -> LoadWorkingSet -> ... same ... -> PublishDb
+  last_run   -> LoadWorkingSet -> ... same ... -> GetTims -> PublishToDb
 ```
 
 - `CheckCompletion` L10–28: `first_run` if no Picks rows for today, `normal_run` if published, `last_run` when the EventBridge input has `last_game: true`.
@@ -94,7 +94,8 @@ Keep two independent EventBridge Rules. A single state machine with a `Wait` unt
 |---|---|---|---|
 | `cron(0 8 * * ? *)` (existing) | 04:00 | 03:00 | Deterministic phase: backfill, roster/stats, predictions, scoring, archive + publish. Guarantees a slate exists even if the mid-morning run fails. |
 | `cron(30 14 * * ? *)` (new) | 10:30 | 09:30 | Projections phase: `normal_run` refresh of injuries, goalies, lineups → archive + publish. |
-| `cron(30 15 * * ? *)` (moved from 14:00) | 11:30 | 10:30 | `NotifyUsers`, one hour after the projections phase. |
+| `cron(30 15 * * ? *)` (new) | 11:15 | 10:15 | Confirmation phase: second `normal_run` for late morning-skate news. |
+| `cron(45 15 * * ? *)` (moved from 14:00) | 11:45 | 10:45 | `NotifyUsers`, after both refreshes. |
 
 Rationale: 09:30–10:30 ET is after the overnight article refresh and at/after most morning skates in summer. In winter the phase lands at 09:30 ET, before a 10:30 skate, but RotoWire's `Expected` projections are already populated; the site still gets `Confirmed` values from the game-start runs. If exact local time is required year-round, switch these two rules to **EventBridge Scheduler** `AWS::Scheduler::Schedule` with `ScheduleExpressionTimezone: America/Toronto` (follow-up, larger change: new resource type + role). EventBridge **Rules** cron is always UTC — do not add a timezone field to a Rule.
 
@@ -135,7 +136,7 @@ Optional (not required by this goal): a second cheap `normal_run` at `cron(30 16
 - The 10:30 projections execution must finish before `NotifyUsers`. A 60-minute window covers the ~1–3 minute pipeline, but if the phase is slow or retried the email still sends from the 03:00 Picks (stale, not empty). Add a CloudWatch alarm on failed executions as the guard (follow-up).
 - `PublishDb` is a wipe+rewrite of today's Picks; do not run `NotifyUsers` concurrently. The 60-minute gap avoids this.
 
-## 5. Concrete file/line change list (next turn)
+## 5. Concrete file/line change list (implemented)
 
 | File | Change |
 |---|---|
@@ -154,20 +155,20 @@ No DB migration is needed (no schema change).
 
 | Risk | Mitigation |
 |---|---|
-| Projections still preliminary at 09:30–10:30 ET | The 03:00 deterministic run guarantees a published slate; the merge already degrades to `lineup_status: UNKNOWN` rather than failing. Log coverage and consider a 16:30 UTC refresh (optional). |
-| Early games (weekend 12:30/13:00 ET) | Email at 11:30/10:30 ET still precedes puck drop by ~1–2 h; if it is too tight, move the projections/notify pair earlier **only** when the slate's first `startTimeUTC` is before ~17:00 UTC (follow-up: derive the cron from the schedule, as `schedule_run` already does). |
+| Projections still preliminary at 09:30–10:30 ET | The 03:00 deterministic run guarantees a published slate. A fetch failure now preserves the previous lineup/injury/goalie fields instead of stamping UNKNOWN/HEALTHY. Log coverage and retry at the 15:15 confirmation phase. |
+| Early games (weekend 12:30/13:00 ET) | Email at 11:45/10:45 ET precedes a 12:30 ET puck drop by ~45–105 min, and those teams often skip the morning skate. Moving the pair earlier for early slates is a follow-up (derive the cron from the first `startTimeUTC`, as `schedule_run` already does). |
 | West-coast confirmations after the email | Out of scope: the game-start `normal_run` still refreshes Picks; the morning email is projection-based by design. |
 | Back-to-backs / backup goalies | Same as above; `Expected` values are what RotoWire publishes. Do not treat a missing confirmation as an error. |
-| 03:00 run fails → 10:30 run becomes `first_run` | Full chain runs, including `GetTeams`/`schedule_run`; `NotifyUsers` may race it. Mitigation: 60-minute gap; alarm on failures; optionally move notify to 16:00 UTC if this proves common. |
-| DST: fixed UTC cron drifts by 1 h | Documented; 09:30–10:30 ET band still satisfies "mid-morning". Use EventBridge Scheduler with `America/Toronto` if exactness is required. |
+| 03:00 run fails → 10:30 run becomes `first_run` | Full chain runs, including `GetTeams`/`schedule_run`; `NotifyUsers` may race it. Mitigation: 90-minute gap to the email; alarm on failures. Also archive/status propagation is now covered by chain-level tests. |
+| DST: fixed UTC cron drifts by 1 h | Documented; 09:30–10:45 ET band still satisfies "mid-morning". Use EventBridge Scheduler with `America/Toronto` if exactness is required. |
 | `schedule_run` deletes all `TriggerStateMachineAt_*` rules for the env | Pre-existing behavior; the projections phase does not call it. A concurrent fallback `first_run` could re-create rules while a game trigger fires — low risk, unchanged by this work. |
-| `PublishDb` wipe+rewrite vs. email read | 60-minute separation; no concurrent execution expected on a weekday morning. |
+| `PublishDb` rewrite vs. email read | The Picks delete is now scoped to the current date, and `handle_emails` logs and skips instead of raising when Picks are unexpectedly empty, so a failed publish cannot empty another date or fail the notification run. |
 
-## 7. Verification plan for the implementation turn
+## 7. Verification performed
 
-1. `uv run make test` and `uv run make lint` (CI also runs these).
-2. Parse both ASL files (`json.load`) and deploy to **dev** only; confirm `aws stepfunctions describe-state-machine` shows the new graph.
-3. `aws events list-rules` in dev: exactly one `ProjectionsStepFunctionTrigger`, one daily trigger, one email trigger; no duplicate `TriggerStateMachineAt_*` rules after a manual `first_run`.
-4. Manually start `PlayerProcessingPipeline-dev` after 10:00 ET: expect `normal_run`, `Player-Snapshots-dev` rows for today refreshed with non-null `lineup_unit` for a majority of skaters, and `Picks-dev` carrying the same.
-5. Run `NotifyUsers-dev` and confirm the email contains the refreshed lines/goalie fields.
-6. Re-run the same execution to confirm idempotency: row counts identical, `scored` labels preserved.
+1. `uv run pytest -q --ignore=tests/unit/test_rust.py` → 277 passed (Rust extension is built by CI; locally a test-only stub is used because the host has no C linker).
+2. `statelint` on all ASL files → exit 0.
+3. `cfn-lint templates/template.yaml` → only the pre-existing `W1020` at L158.
+4. `ruff check` / `ruff format --check` → clean.
+5. Chain-level tests cover `first_run`/`normal_run`/`last_run` status propagation and the `CheckSaveHistory` routing.
+6. Remaining manual step: deploy to **dev** only, then `aws events list-rules` and a manual `PlayerProcessingPipeline-dev` execution after 10:00 ET to confirm `normal_run`, refreshed `lineup_status` on Picks, and updated `Player-Snapshots` rows.

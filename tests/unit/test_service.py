@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 import pytz
+import requests
 from smartscore_info_client.api.nhle import NHLClient
 from smartscore_info_client.models.player import PlayerInfo, PlayerStats
 from smartscore_info_client.models.team import GameTeam
@@ -15,6 +16,7 @@ from service import (
     check_db_for_date,
     choose_picks,
     get_date,
+    get_injury_data,
     get_nhl_client,
     get_players_from_team,
     get_published_picks,
@@ -386,6 +388,23 @@ def test_merge_injury_data_empty_injuries():
 
     assert len(result) == 1
     assert result[0]["injury_status"] == "HEALTHY"
+
+
+def test_merge_injury_data_none_payload_preserves_fields():
+    """A failed fetch (None) is not an empty report: leave prior values alone."""
+    players = [{"name": "Player One", "injury_status": "INJURED", "injury_desc": "Ankle"}]
+
+    result = merge_injury_data(players, None)
+
+    assert result == [{"name": "Player One", "injury_status": "INJURED", "injury_desc": "Ankle"}]
+
+
+@patch("service.requests.get")
+def test_get_injury_data_returns_none_on_request_failure(mock_get):
+    """An outage returns the failure sentinel, not an empty injury list."""
+    mock_get.side_effect = requests.RequestException("boom")
+
+    assert get_injury_data() is None
 
 
 def test_merge_injury_data_empty_players():
