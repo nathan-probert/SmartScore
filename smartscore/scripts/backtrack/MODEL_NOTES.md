@@ -13,8 +13,10 @@ removed; corrected LGBM is **29.06%**.
 
 **Lineup check:** projected ensemble **29.88%** seed 1 (end-to-end) and
 **29.60%** seed 3 (mean **29.74%**); oracle-lineup LGBM 4-seed mean
-**30.33% ± 0.26** (seeds 0/1/2/3: 30.36/30.61/30.39/29.98). Real morning
-projections should land roughly **29.7-30.3%**; default stays no-lineup.
+**30.33% ± 0.26** (seeds 0/1/2/3: 30.36/30.61/30.39/29.98). V11 sensitivity:
+61.6% → 100% unit fidelity maps to 28.97/28.49 → 30.61/29.98 (seeds 1/3);
+real 80-90% morning projections imply roughly **29.25-29.54%**, below 30.
+Default stays no-lineup.
 
 **Real projections (V10):** 0 `PROJECTED` rows are archived (5,155 `UNKNOWN`
 rows across 17 dates, with null `lineup_unit`/`pp_unit`). Real-projection
@@ -39,10 +41,10 @@ the ceiling**. ≥30% was reachable only with same-game lookahead leakage.
 **Legitimate deployment levers, unverifiable historically:** (1) projected
 lineups and confirmed starting goalies are available pre-game in the live
 pipeline — the crude projector gave an ensemble 29.88/29.60 (seeds 1/3) and the
-oracle-lineup LGBM 4-seed mean is 30.33 ±0.26, so real morning projections
-should land roughly **29.7-30.3%**; test a real feed before switching the
-default. (2) forward-collect market anytime-goal-scorer odds (no free historical
-source exists before 2023-05).
+oracle-lineup LGBM 4-seed mean is 30.33 ±0.26. V11 puts 80-90% line fidelity at
+roughly **29.25-29.54%**; reaching 29.7-30.3 needs a near-oracle feed (~100%).
+Test a real feed before switching the default. (2) forward-collect market
+anytime-goal-scorer odds (no free historical source exists before 2023-05).
 
 **Reproduce:**
 ```bash
@@ -1260,6 +1262,34 @@ either. The owner’s projection feed is live-only; forward-collect PROJECTED
 rows with units before V10 can be evaluated. V9’s “unverifiable historically”
 caveat stands.
 
+### V11 — projection-fidelity sensitivity curve
+
+Mixed lineup labels per row: actual with probability q, else method-b
+projected; lineup-aware LGBM trained and evaluated at the same q, k=5,
+train=all. Fidelity is the realized mixed-label match vs actual on the
+challenge rows.
+
+| input | unit fidelity | PP fidelity | seed 1 | seed 3 |
+|---|---:|---:|---:|---:|
+| no-lineup | — | — | 29.376% | 28.997% |
+| V9 stage-2 projected features | ~59.6% | ~76.4% | 30.358% | 28.743% |
+| V11 q=0 (mixed-cat) | 61.6% | 80.8% | 28.965% | 28.490% |
+| V11 q=0.5 | 81.0% | 90.3% | 29.250% | 28.933% |
+| V11 q=0.75 | 90.3% | 95.2% | 29.535% | 29.376% |
+| oracle q=1 | 100% | 100% | 30.611% | 29.978% |
+
+Per-fold std: q=0 2.551/1.622; q=0.5 1.957/1.049; q=0.75 2.254/0.960;
+oracle 3.298/0.532. The V9 stage-2 projected row uses projected features
+(confidence/linemate) and is not directly comparable to the mixed-categorical
+curve; it is included because it is the known ~60% reference.
+
+No mixed fidelity reaches **30.0% on both seeds**: the oracle itself is
+**29.978%** on seed 3, just under 30, and the best sub-oracle point (q=0.75)
+is 29.535/29.376. Seed 1 crosses 30 only at q=1. Real morning projections
+likely sit at ~80-90% unit fidelity, implying roughly **29.25-29.54%** on
+seeds 1/3 — below 30 unless the feed is essentially oracle-accurate or the
+model improves.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -1312,8 +1342,8 @@ caveat stands.
   other); config a stays the reference.
 - V9 lineup work: hard b +0.98/-0.25pp, probabilistic -0.41/0.00pp,
   projected ensemble +0.48/-0.22pp; oracle LGBM 4-seed mean 30.33%. Keep
-  projected as opt-in; default remains no-lineup. Deployment with a real
-  morning feed is ~29.7-30.3% and still needs testing.
+  projected as opt-in; default remains no-lineup. V11 puts 80-90% real
+  morning fidelity at ~29.25-29.54%; near-oracle is needed for ~30.3%.
 - V7 team form / special teams / goalie rest did not help (+0.06pp seed 1,
   -0.25pp seed 3) and was reverted. Historical anytime-goal-scorer odds are
   not available free before 2023-05; forward collection or a paid backfill
