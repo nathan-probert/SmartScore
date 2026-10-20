@@ -21,7 +21,7 @@ removed; corrected LGBM is **29.06%**.
 | V8-own-xG (first-party per-shot xG model) | -0.16 / -0.35pp, p=0.82/0.57 | rejected |
 | V8-shrinkage (empirical-Bayes rate features) | -0.67 / -0.54pp | rejected |
 | V8-tune (LGBM configs b/d) | +0.19 / -0.03 and -0.06 / +0.19pp vs a | rejected (mixed) |
-| V9-projected-lineups (prior-games projector) | projected LGBM -0.38 / -0.25pp; ensemble -0.44 / -0.29 / -0.76; oracle +1.24 / +0.98 | rejected |
+| V9-projected-lineups (prior-games projector) | method b LGBM +0.98 / -0.25pp; oracle +1.24 / +0.98 | rejected (mixed) |
 
 **Conclusion:** with the currently available historical raw data, **~29.7% is
 the ceiling**. ≥30% was reachable only with same-game lookahead leakage.
@@ -1132,6 +1132,36 @@ Projected lineups hurt every model/seed; the oracle shows the information is
 worth ~+1.0 to +1.2pp, but projection accuracy (~60% line, ~71% PP for method
 c) is too low. Reverted; feature set back to 42, notes only.
 
+**Stage 2 — method b re-evaluation.** Used method b (best: F 59.63%, PP
+76.43%) plus `proj_line_conf`, `proj_pp_conf`, prior-only linemate means and
+`line_intact`. Merge checks: 427,240 rows, no duplicate/suffixed columns;
+nulls: line unit/conf 1,902, PP unit/conf 75,491, linemate means 17,040,
+PP-mate mean 80,090, line_intact 0. All inputs are prior games only.
+
+| variant | seed 1 | seed 3 |
+|---|---:|---:|
+| no-lineup LGBM | 928 / 29.376% | 916 / 28.997% |
+| projected method b | **959 / 30.358%** | 908 / 28.743% |
+| projected delta | **+0.981pp** | -0.253pp |
+| projected McNemar | 163-132, p=0.081 | 155-163, p=0.695 |
+| projected per-fold std | 3.055 | 1.160 |
+| oracle (actual units) | 967 / 30.611% | 947 / 29.978% |
+| oracle delta | +1.235pp | +0.981pp |
+| oracle McNemar | 217-178, p=0.056 | 194-163, p=0.112 |
+
+Projected feature importances (fold-1 LGBM gain rank/50; permutation AUC):
+`proj_lineup_unit_b` #2 (145,540; 0.0118), `proj_pp_unit_b` #12 (5,827;
+0.0017), `proj_pp_conf` #13 (5,719; 0.0007), `pp_unit_prior_ppg_mean` #14
+(5,416; 0.0016), `linemate_prior_gpg_mean` #20 (4,168; 0.0006),
+`linemate_prior_ppg_mean` #25 (3,124; -0.0008), `proj_line_conf` #40 (967;
+0.0003), `line_intact` #45 (270; -0.0002).
+
+Verdict: **mixed, not promoted**. Method b reaches 30.36% on seed 1
+(+0.98pp, p=0.081) but loses 0.25pp on seed 3; the oracle confirms lineup
+information is worth ~+1.0 to +1.2pp, but projection quality is not reliable
+enough. `--lineup projected` is retained as an opt-in; default remains
+`--lineup none` and the rank ensemble.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -1182,8 +1212,9 @@ c) is too low. Reverted; feature set back to 42, notes only.
   were reverted; the information is already in the existing rates.
 - V8-tune configs b/d were mixed (+0.19pp on one seed, negative/low on the
   other); config a stays the reference.
-- V9 projected lineups hurt both models/seeds; the oracle is +1.2/+1.0pp, so
-  projection quality (~60% line / 71% PP) is the blocker. Reverted.
+- V9 projected lineups: method b is mixed (+0.98pp seed 1, -0.25pp seed 3);
+  oracle is +1.2/+1.0pp, so projection quality is the blocker. Opt-in only,
+  default remains no-lineup.
 - V7 team form / special teams / goalie rest did not help (+0.06pp seed 1,
   -0.25pp seed 3) and was reverted. Historical anytime-goal-scorer odds are
   not available free before 2023-05; forward collection or a paid backfill

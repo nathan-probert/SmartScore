@@ -62,7 +62,7 @@ USAGE
     cd SmartScore-backtrack
     uv run python smartscore/scripts/backtrack/model.py --env dev \
         [--refresh] [--split kfold|seasons] [--splits 5] \
-        [--train-subset challenge|all] [--model ensemble|hgb|lgbm|extratrees] [--lgbm-config a|b|c] [--seed N] [--ranker none|lambdarank] [--model-file PATH]
+        [--train-subset challenge|all] [--model ensemble|hgb|lgbm|extratrees] [--lgbm-config a|b|c] [--lineup none|projected|oracle] [--seed N] [--ranker none|lambdarank] [--model-file PATH]
 
 Defaults: kfold k=5, train-subset all (strongest under CV; see MODEL_NOTES.md).
 
@@ -95,6 +95,9 @@ from sklearn.pipeline import make_pipeline  # noqa: E402
 from sklearn.preprocessing import StandardScaler  # noqa: E402
 
 from config import ENV, SUPABASE_ADMIN_CLIENT  # noqa: E402
+
+sys.path.append(os.path.dirname(__file__))
+from lineup_project import project as project_lineups  # noqa: E402
 
 CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "ml"
 RAW_DB = Path(__file__).resolve().parents[3] / "data" / "raw_nhl.sqlite"
@@ -160,6 +163,16 @@ NUMERIC_FEATURES = [
 ] + SHOT_FEATURES
 
 CATEGORICAL_FEATURES = ["lineup_position_group", "tims"]
+
+PROJECTED_LINEUP_CATEGORICAL = ["proj_lineup_unit_b", "proj_pp_unit_b"]
+PROJECTED_LINEUP_NUMERIC = [
+    "proj_line_conf",
+    "proj_pp_conf",
+    "linemate_prior_gpg_mean",
+    "linemate_prior_ppg_mean",
+    "pp_unit_prior_ppg_mean",
+    "line_intact",
+]
 
 DATASET_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 
@@ -403,6 +416,129 @@ def shot_features():
     return games[cols]
 
 
+def projected_lineup_features(frame):
+    """Method-b projected units + prior-only linemate quality.
+
+    ``lineup_project.project`` supplies the a/b/c projections; this wrapper
+    keeps method b and computes line/PP mate means from the projected groups
+    using the frame's pre-game gpg/ppg. ``line_intact`` compares the projected
+    forward trio set with the player's previous-game actual trio.
+    """
+    source = frame.rename(columns={"club": "team"})[
+        [
+            "date",
+            "player_id",
+            "team",
+            "season",
+            "lineup_position_group",
+            "lineup_unit",
+            "pp_unit",
+        ]
+    ]
+    projection = project_lineups(source)
+    projected = projection[
+        [
+            "date",
+            "player_id",
+            "proj_lineup_unit_b",
+            "proj_pp_unit_b",
+            "proj_line_confidence_b",
+            "proj_pp_confidence_b",
+        ]
+    ].rename(
+        columns={
+            "proj_line_confidence_b": "proj_line_conf",
+            "proj_pp_confidence_b": "proj_pp_conf",
+        }
+    )
+    merged = frame.merge(
+        projected, on=["date", "player_id"], how="left", validate="many_to_one"
+    ).sort_values(["player_id", "date"]).reset_index(drop=True)
+
+    n = len(merged)
+    pos = merged["lineup_position_group"].to_numpy(dtype=object)
+    gpg = pd.to_numeric(merged["gpg"], errors="coerce").to_numpy(dtype=float)
+    ppg = pd.to_numeric(merged["ppg"], errors="coerce").to_numpy(dtype=float)
+    date = merged["date"].to_numpy(dtype=object)
+    club = merged["club"].to_numpy(dtype=object)
+    unit = merged["lineup_unit"].to_numpy(dtype=object)
+    proj_u = merged["proj_lineup_unit_b"].to_numpy(dtype=object)
+    proj_p = merged["proj_pp_unit_b"].to_numpy(dtype=object)
+    pid = merged["player_id"].to_numpy()
+
+    line_gpg = np.full(n, np.nan)
+    line_ppg = np.full(n, np.nan)
+    pp_ppg = np.full(n, np.nan)
+    proj_frame = pd.DataFrame({"date": date, "club": club, "unit": proj_u})
+    proj_indices = proj_frame.groupby(["date", "club", "unit"], sort=False).indices
+    for (_, _, group_unit), group_idx in proj_indices.items():
+        if pd.isna(group_unit):
+            continue
+        for row in group_idx:
+            others = [
+                other
+                for other in group_idx
+                if other != row and pos[other] == pos[row]
+            ]
+            if others:
+                line_gpg[row] = np.nanmean(gpg[others])
+                line_ppg[row] = np.nanmean(ppg[others])
+
+    pp_frame = pd.DataFrame({"date": date, "club": club, "unit": proj_p})
+    pp_indices = pp_frame.groupby(["date", "club", "unit"], sort=False).indices
+    for (_, _, group_unit), group_idx in pp_indices.items():
+        if pd.isna(group_unit):
+            continue
+        for row in group_idx:
+            others = [other for other in group_idx if other != row]
+            if others:
+                pp_ppg[row] = np.nanmean(ppg[others])
+
+    actual_sets = {}
+    for (day, team, group_unit), idxs in merged.groupby(
+        ["date", "club", "lineup_unit"], sort=False
+    ).indices.items():
+        if pd.notna(group_unit):
+            actual_sets[(day, team, group_unit)] = set(pid[idxs])
+    proj_sets = {}
+    for (day, team, group_unit), idxs in proj_indices.items():
+        if pd.notna(group_unit):
+            proj_sets[(day, team, group_unit)] = set(pid[idxs])
+
+    previous = np.full(n, -1, dtype=int)
+    for _, positions in merged.groupby("player_id", sort=False).indices.items():
+        for earlier, later in zip(positions[:-1], positions[1:]):
+            previous[later] = earlier
+    intact = np.zeros(n, dtype=float)
+    for row in range(n):
+        prev = previous[row]
+        if prev < 0 or pd.isna(proj_u[row]):
+            continue
+        prev_unit = unit[prev]
+        if pd.isna(prev_unit) or not str(prev_unit).startswith("F"):
+            continue
+        if not str(proj_u[row]).startswith("F"):
+            continue
+        old = actual_sets.get((date[prev], club[prev], prev_unit))
+        new = proj_sets.get((date[row], club[row], proj_u[row]))
+        intact[row] = int(old is not None and old == new)
+
+    return pd.DataFrame(
+        {
+            "date": date,
+            "player_id": pid,
+            "proj_lineup_unit_b": proj_u,
+            "proj_pp_unit_b": proj_p,
+            "proj_line_conf": merged["proj_line_conf"].to_numpy(),
+            "proj_pp_conf": merged["proj_pp_conf"].to_numpy(),
+            "linemate_prior_gpg_mean": line_gpg,
+            "linemate_prior_ppg_mean": line_ppg,
+            "pp_unit_prior_ppg_mean": pp_ppg,
+            "line_intact": intact,
+        }
+    )
+
+
 def add_derived(frame, teams):
     """V2 features layered onto the joined frame. Everything stays pre-game.
 
@@ -418,6 +554,7 @@ def add_derived(frame, teams):
                      shot_features); never includes the current game's line.
     """
     frame = frame.sort_values(["player_id", "date"]).reset_index(drop=True)
+    n_rows = len(frame)
     player = frame.groupby("player_id", sort=False)
 
     shifted_label = player["scored"].shift(1)
@@ -466,11 +603,24 @@ def add_derived(frame, teams):
         validate="many_to_one",
     )
 
+    # V9 stage 2: method-b projected units + prior-only linemate quality.
+    frame = frame.merge(
+        projected_lineup_features(frame),
+        on=["date", "player_id"],
+        how="left",
+        validate="many_to_one",
+    )
+
     # Within (date, tims group) percentiles of the four rates.
     groups = frame[frame["tims"].isin([1, 2, 3])]
     for col in ("gpg", "hgpg", "five_gpg", "ppg"):
         frame[f"rank_{col}"] = groups.groupby(["date", "tims"])[col].rank(pct=True)
 
+    if len(frame) != n_rows:
+        raise RuntimeError(f"add_derived changed row count: {n_rows} -> {len(frame)}")
+    suffixes = [col for col in frame.columns if col.endswith(("_x", "_y"))]
+    if suffixes:
+        raise RuntimeError(f"add_derived leaked merge suffix columns: {suffixes}")
     return frame
 
 
@@ -893,6 +1043,13 @@ def main():
         "b=600/0.02/15/reg5, c=800/0.02/63.",
     )
     parser.add_argument(
+        "--lineup",
+        choices=["none", "projected", "oracle"],
+        default="none",
+        help="lineup block: none (default), projected method b, or oracle "
+        "(actual same-game units, upper bound only).",
+    )
+    parser.add_argument(
         "--ranker",
         choices=["none", "lambdarank"],
         default="none",
@@ -901,6 +1058,14 @@ def main():
     )
     parser.add_argument("--model-file", type=Path, help="save pooled out-of-fold rows with predictions here")
     args = parser.parse_args()
+
+    global NUMERIC_FEATURES, CATEGORICAL_FEATURES, DATASET_FEATURES
+    if args.lineup == "projected":
+        NUMERIC_FEATURES = NUMERIC_FEATURES + PROJECTED_LINEUP_NUMERIC
+        CATEGORICAL_FEATURES = CATEGORICAL_FEATURES + PROJECTED_LINEUP_CATEGORICAL
+    elif args.lineup == "oracle":
+        CATEGORICAL_FEATURES = CATEGORICAL_FEATURES + ["lineup_unit", "pp_unit"]
+    DATASET_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 
     players, teams, goalies = load_frames(args.env, refresh=args.refresh)
     frame = build_frame(players, teams, goalies)
