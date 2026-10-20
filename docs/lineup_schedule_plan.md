@@ -43,16 +43,17 @@ Per-game triggers are **created at runtime**, not in CloudFormation:
 
 ```
 GetDate -> CheckCompletion
-  first_run  -> Backfill -> GetPlayers -> MakePredictions -> GetInjuries -> GetGoalies
-                 -> GetLineups -> GetTims -> SaveToDb -> UpdateHistory -> PublishDb
+  first_run  -> Backfill -> GetPlayers -> EnsureFirstRunStatus -> GetInjuries -> GetGoalies
+                 -> GetLineups -> MakePredictions -> GetTims -> SaveToDb -> UpdateHistory -> PublishDb
   normal_run -> LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups
-                 -> GetTims -> PublishDb
-  last_run   -> LoadWorkingSet -> ... same ... -> GetTims -> PublishToDb
+                 -> GetTims -> SaveToDb -> PublishDb
+  last_run   -> LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> PublishToDb
 ```
 
 - `CheckCompletion` L10–28: `first_run` if no Picks rows for today, `normal_run` if published, `last_run` when the EventBridge input has `last_game: true`.
-- `MakePredictions` L77–80 runs only on the `first_run` path and **before** `GetInjuries/GetGoalies/GetLineups`.
-- `SaveToDb` L122–125 runs only on `first_run`; `CheckInitialRun` L102–120 sends `normal_run` straight to `PublishDb`.
+- `EnsureFirstRunStatus` is a Pass state after the `GetPlayers` sub-machine: that machine returns only `players`/`teams`, so the branch injects `status: first_run` before `GetInjuries`.
+- `MakePredictions` runs only on the `first_run` path, **after** `GetInjuries/GetGoalies/GetLineups`.
+- `SaveToDb` runs on `first_run` and `normal_run`; `CheckSaveHistory` keeps `UpdateHistory` on `first_run` only. `last_run` goes straight to `PublishToDb`.
 - `NotifyUsers` (`templates/notify_users.asl.json`) is just `GetDate -> SendEmails`. `SendEmails` re-reads today's Picks inside the Lambda (`handle_emails`), so the email content is whatever the last `PublishDb` wrote.
 
 ### Where the data is fetched and persisted
@@ -133,21 +134,20 @@ Optional (not required by this goal): a second cheap `normal_run` at `cron(30 16
 ### Ordering of predictions and notifications
 
 - Predictions are recomputed only on `first_run` (03:00) and now after the data merge; they remain valid all day because the model does not use lineups/injuries. No need to re-run `MakePredictions` at 10:30 (and re-running it would require reloading stats).
-- The 10:30 projections execution must finish before `NotifyUsers`. A 60-minute window covers the ~1–3 minute pipeline, but if the phase is slow or retried the email still sends from the 03:00 Picks (stale, not empty). Add a CloudWatch alarm on failed executions as the guard (follow-up).
-- `PublishDb` is a wipe+rewrite of today's Picks; do not run `NotifyUsers` concurrently. The 60-minute gap avoids this.
+- The 10:30 projections execution must finish before `NotifyUsers` at 15:45 UTC. The 75-minute window covers the ~1–3 minute pipeline. If the phase is slow, fails, or Picks are empty, `handle_emails` logs and skips the send (`{"skipped": true}`) rather than raising; alarm on both failed executions and skipped sends.
+- `PublishDb` rewrites only today's Picks (delete scoped to the date); the 75-minute gap avoids overlapping the email read with the rewrite.
 
 ## 5. Concrete file/line change list (implemented)
 
 | File | Change |
 |---|---|
-| `templates/template.yaml` L521–539 | Add `ProjectionsStepFunctionTrigger` `cron(30 14 * * ? *)` → `PlayerProcessingPipeline-${ENV}`, Input `{"source":"eventBridge"}`, same `EventBridgeInvokeRole`. Move `DailySendEmailTrigger` to `cron(30 15 * * ? *)`. Update both comments with the EDT/EST mapping. |
-| `templates/player_processing_pipeline.asl.json` | Reorder `MakePredictions` after `GetLineups`; route `normal_run` to `SaveToDb`; add `CheckSaveHistory` (`first_run → UpdateHistory`, else → `PublishToDb`). |
-| `smartscore/event_handler.py` L89–120 | `handle_load_working_set` returns `"date": get_date()`. |
-| `smartscore/event_handler.py` L278–320 | `handle_save_players`: `date = event.get("date") or get_date()` fallback. |
+| `templates/template.yaml` L521–575 | Add `ProjectionsStepFunctionTrigger` `cron(30 14 * * ? *)` and `ConfirmationStepFunctionTrigger` `cron(30 15 * * ? *)` → `PlayerProcessingPipeline-${ENV}`, Input `{"source":"eventBridge"}`, same `EventBridgeInvokeRole`. Move `DailySendEmailTrigger` to `cron(45 15 * * ? *)`. Update comments with the EDT/EST mapping. |
+| `templates/player_processing_pipeline.asl.json` | Reorder `MakePredictions` after `GetLineups`; add `EnsureFirstRunStatus` after the `GetPlayers` sub-machine; route `normal_run` to `SaveToDb`; add `CheckSaveHistory` (`first_run → UpdateHistory`, else → `PublishToDb`). |
+| `smartscore/event_handler.py` | `LoadWorkingSet` returns `date`; `Backfill`/`ParseData`/data handlers carry `status`; `GetTims`/`SavePlayers` require it; failed lineup/injury/goalie fetches preserve prior values; empty picks skip the email. |
+| `smartscore/player_archive.py` | Omit `opp_goalie_*` from the snapshot payload when the row carries none, so a failed goalie fetch cannot null the archive. |
+| `smartscore/utility.py` | `save_to_db(players, date)` scopes the Picks delete to that date. |
 | `README.md` L91–113, L129–133 | Replace the stale "Known gap" graph with the post-#131 graph + the two-phase schedule; drop the "MakePredictions runs before GetLineups" caveat. |
-| `tests/unit/test_notify_users_state_size.py` L75–110 | Update `CheckInitialRun` expectations (`normal_run` → `SaveToDb`) and assert the new `CheckSaveHistory` routing. |
-| `tests/unit/test_template_env_vars.py` (or a new ASL/template test) | Assert the two cron expressions and that `GetLineups` precedes `MakePredictions`. |
-| `tests/unit/test_event_handler.py` | Assert `LoadWorkingSet` output carries `date`. |
+| `tests/unit/test_pipeline_schedule.py` | Rule hours, ASL trace per status, handler-chain status propagation, first-run entry, data preservation. |
 
 No DB migration is needed (no schema change).
 
@@ -166,9 +166,9 @@ No DB migration is needed (no schema change).
 
 ## 7. Verification performed
 
-1. `uv run pytest -q --ignore=tests/unit/test_rust.py` → 277 passed (Rust extension is built by CI; locally a test-only stub is used because the host has no C linker).
+1. `uv run pytest -q --ignore=tests/unit/test_rust.py` → 292 passed (Rust extension is built by CI; locally a test-only stub is used because the host has no C linker).
 2. `statelint` on all ASL files → exit 0.
 3. `cfn-lint templates/template.yaml` → only the pre-existing `W1020` at L158.
 4. `ruff check` / `ruff format --check` → clean.
-5. Chain-level tests cover `first_run`/`normal_run`/`last_run` status propagation and the `CheckSaveHistory` routing.
+5. Tests cover the ASL routing per status, the real first-run entry (CheckCompleted → Backfill → ParseData → EnsureFirstRunStatus), handler-chain status propagation, and lineup/goalie/injury data preservation on failure.
 6. Remaining manual step: deploy to **dev** only, then `aws events list-rules` and a manual `PlayerProcessingPipeline-dev` execution after 10:00 ET to confirm `normal_run`, refreshed `lineup_status` on Picks, and updated `Player-Snapshots` rows.

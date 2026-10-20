@@ -92,6 +92,8 @@ SNAPSHOT_COLUMNS = (
 # validated the equivalent three fields (plus that the id was a number).
 REQUIRED_FIELDS = ("date", "player_id", "name")
 
+OPP_GOALIE_COLUMNS = tuple(column for column in SNAPSHOT_COLUMNS if column.startswith("opp_goalie_"))
+
 
 def _retry(operation, description):
     """Run a Supabase operation with bounded exponential backoff.
@@ -129,11 +131,17 @@ def _to_snapshot(player, date):
     dropped for parity with the worker's ``filterPlayerFields``, so the training
     set keeps the columns it has always had. Missing optional fields are written
     as null rather than omitted, so a re-upload refreshes a stale value instead of
-    leaving it behind. Returns ``None`` when a required field is missing, which is
-    logged rather than sent as a null the database would reject.
+    leaving it behind - except ``opp_goalie_*``: a row with none of those keys
+    came from a failed goalie fetch, so the keys are omitted and PostgREST's
+    merge-duplicates upsert leaves the archived values intact. Returns ``None``
+    when a required field is missing, which is logged rather than sent as a null
+    the database would reject.
     """
     snapshot = {"date": player.get("date") or date, "player_id": player.get("id")}
+    has_opp_goalie_data = any(column in player for column in OPP_GOALIE_COLUMNS)
     for column in SNAPSHOT_COLUMNS:
+        if column in OPP_GOALIE_COLUMNS and not has_opp_goalie_data:
+            continue
         snapshot[column] = player.get(column)
 
     if any(snapshot.get(field) is None for field in REQUIRED_FIELDS):

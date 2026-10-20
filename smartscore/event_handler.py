@@ -93,12 +93,13 @@ def handle_backfill(event, context):
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
+            - "status" (str): The run status, passed through so the
+              first_run chain still has it after the GetPlayers sub-machine.
     """
     backfill_dates()
 
-    return {
-        "statusCode": 200,
-    }
+    output = {"statusCode": 200}
+    return _carry_status(output, event)
 
 
 @lambda_handler_error_responder
@@ -373,11 +374,17 @@ def handle_save_players(event, context):
 
 @lambda_handler_error_responder
 def handle_parse_teams(event, context):
-    # Handles the case when there are no games today
-    if event == []:
-        return {"players": [], "teams": []}
-
-    return merge_players_and_teams(event)
+    # ParseData normally receives the Map's list, so the status is restored by
+    # the EnsureFirstRunStatus Pass state in PlayerProcessingPipeline. A caller
+    # that hands over a state dict keeps its status and its ``teams`` payload.
+    if isinstance(event, dict):
+        output = merge_players_and_teams(event.get("teams") or [])
+        _carry_status(output, event)
+    elif event == []:
+        output = {"players": [], "teams": []}
+    else:
+        output = merge_players_and_teams(event)
+    return output
 
 
 @lambda_handler_error_responder

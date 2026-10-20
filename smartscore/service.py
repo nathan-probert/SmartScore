@@ -1135,8 +1135,9 @@ def merge_lineup_data(
         ``lineup_unit`` is only set for forwards (F1-F4); defence pairings and
         goalie designations are parsed and available on the source payload but not
         stored per skater, since the picks table is skater-scoped. ``lineup_status``
-        is PROJECTED when a forward line matched and UNKNOWN otherwise, so an empty
-        fetch is distinguishable from a genuine miss.
+        is PROJECTED when a forward line matched and UNKNOWN otherwise. A player
+        who is missing from a partial payload keeps the values already on the row
+        (the 03:00 working set) instead of being reset to UNKNOWN.
     """
     lookup = _build_lineup_lookup(nhl_games, rotowire_games)
 
@@ -1149,10 +1150,26 @@ def merge_lineup_data(
         is_forward = unit.startswith("F")
         pp_unit = entry.get("pp_unit")
 
-        player["lineup_unit"] = unit if is_forward else None
-        player["lineup_position_group"] = unit[:1] if unit else None
-        player["pp_unit"] = pp_unit
-        player["lineup_status"] = "PROJECTED" if is_forward else "UNKNOWN"
+        if is_forward:
+            player["lineup_unit"] = unit
+            player["lineup_position_group"] = unit[:1]
+            player["lineup_status"] = "PROJECTED"
+        elif unit:
+            # Defence pair / goalie group: parsed but not stored as a forward line.
+            player["lineup_unit"] = None
+            player["lineup_position_group"] = unit[:1]
+            player["lineup_status"] = "UNKNOWN"
+        else:
+            # A partial source (e.g. RotoWire only, which has no forward lines)
+            # must not erase a projection already merged earlier in the day.
+            player.setdefault("lineup_unit", None)
+            player.setdefault("lineup_position_group", None)
+            player.setdefault("lineup_status", "UNKNOWN")
+
+        if pp_unit is not None:
+            player["pp_unit"] = pp_unit
+        else:
+            player.setdefault("pp_unit", None)
 
         total += 1
         matched += bool(is_forward)

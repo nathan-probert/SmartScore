@@ -16,12 +16,15 @@ import pytest
 import yaml
 
 from event_handler import (
+    handle_backfill,
+    handle_check_completed,
     handle_get_goalies,
     handle_get_injuries,
     handle_get_lineups,
     handle_get_tims,
     handle_load_working_set,
     handle_make_predictions,
+    handle_parse_teams,
     handle_save_players,
 )
 from service import denormalize_players_for_db
@@ -171,22 +174,23 @@ def _run_chain(status):
         if status == "first_run":
             state = handle_make_predictions(state, {})
         state = handle_get_tims(state, {})
-        state = handle_save_players(state, {})
+        if status != "last_run":
+            # ASL: last_run goes straight to PublishToDb and never archives.
+            state = handle_save_players(state, {})
 
     return state, save_snapshot
 
 
 @pytest.mark.parametrize("status", ["first_run", "normal_run", "last_run"])
 def test_status_survives_the_whole_handler_chain(status):
-    """B1: every handler must carry the status into CheckSaveHistory.
-
-    The three data handlers used to return fresh dicts without ``status``, so
-    GetTims defaulted it to first_run and every normal_run took UpdateHistory.
-    """
+    """B1: every handler must carry the status into CheckSaveHistory."""
     state, save_snapshot = _run_chain(status)
 
     assert state["status"] == status
-    save_snapshot.assert_called_once()
+    if status == "last_run":
+        save_snapshot.assert_not_called()
+    else:
+        save_snapshot.assert_called_once()
 
 
 @pytest.mark.parametrize("status", ["first_run", "normal_run", "last_run"])
@@ -279,3 +283,65 @@ def test_empty_goalie_payload_still_marks_unknown():
 
     assert rows[0]["opp_goalie_status"] == "UNKNOWN"
     assert rows[0]["opp_goalie_confirmed"] is False
+
+
+def _trace_asl(pipeline, status):
+    """Walk the pipeline graph for a status, returning the visited Task states."""
+    states = pipeline["States"]
+    name = "CheckCompletion"
+    tasks = []
+    for _ in range(50):
+        state = states[name]
+        if state["Type"] == "Choice":
+            nxt = next(
+                (choice["Next"] for choice in state["Choices"] if choice.get("StringEquals") == status),
+                state.get("Default"),
+            )
+        else:
+            tasks.append(name)
+            if state.get("End"):
+                return tasks
+            nxt = state.get("Next")
+        assert nxt, f"{name} has no next state for {status!r}"
+        name = nxt
+    raise AssertionError("pipeline graph did not terminate")
+
+
+def test_asl_routing_per_run_status():
+    """S4: the graph itself decides archiving, not the handler chain."""
+    pipeline = _asl("player_processing_pipeline.asl.json")
+
+    first = _trace_asl(pipeline, "first_run")
+    assert first[:3] == ["Backfill", "GetPlayersStateMachine", "EnsureFirstRunStatus"]
+    assert first.index("SaveToDb") < first.index("UpdateHistory") < first.index("PublishToDb")
+
+    normal = _trace_asl(pipeline, "normal_run")
+    assert normal[0] == "LoadWorkingSet"
+    assert "SaveToDb" in normal
+    assert "UpdateHistory" not in normal
+    assert normal[-1] == "PublishToDb"
+
+    last = _trace_asl(pipeline, "last_run")
+    assert last[0] == "LoadWorkingSet"
+    assert "SaveToDb" not in last
+    assert "UpdateHistory" not in last
+    assert last[-1] == "PublishToDb"
+
+
+@patch("event_handler.backfill_dates")
+@patch("event_handler.check_db_for_date", return_value=False)
+def test_first_run_status_survives_check_completed_backfill_and_parse(mock_check_db, mock_backfill):
+    """B1: the real first-run entry must still have first_run at GetInjuries."""
+    state = handle_check_completed({}, {})
+    state = handle_backfill(state, {})
+    assert state["status"] == "first_run"
+
+    parsed = handle_parse_teams({"status": state["status"], "teams": []}, {})
+    assert parsed["status"] == "first_run"
+
+    pipeline = _asl("player_processing_pipeline.asl.json")["States"]
+    assert pipeline["GetPlayersStateMachine"]["Next"] == "EnsureFirstRunStatus"
+    restore = pipeline["EnsureFirstRunStatus"]
+    assert restore["Type"] == "Pass"
+    assert restore["Parameters"]["status"] == "first_run"
+    assert restore["Next"] == "CheckIfPlayersOutputIsEmpty"

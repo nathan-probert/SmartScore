@@ -367,3 +367,24 @@ def test_mark_lineups_unknown_preserves_other_fields():
 
 def test_mark_lineups_unknown_empty():
     assert mark_lineups_unknown([]) == []
+
+
+def test_partial_payload_keeps_prior_projection_for_unmatched_player():
+    """NIT: an empty/partial source must not reset a player already projected."""
+    players = [
+        {
+            "name": "Owen Tippett",
+            "team_name": "Flyers",
+            "lineup_unit": "F1",
+            "lineup_position_group": "F",
+            "pp_unit": "POWER PLAY #2",
+            "lineup_status": "PROJECTED",
+        }
+    ]
+
+    result = merge_lineup_data(players, [], [])
+
+    assert result[0]["lineup_unit"] == "F1"
+    assert result[0]["lineup_position_group"] == "F"
+    assert result[0]["pp_unit"] == "POWER PLAY #2"
+    assert result[0]["lineup_status"] == "PROJECTED"

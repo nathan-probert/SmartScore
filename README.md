@@ -99,17 +99,19 @@ branches re-fetch injuries, goalies and lineups, then archive to
 15:45 UTC, after both refreshes:
 
 ```
-first_run  -> Backfill -> GetPlayers -> GetInjuries -> GetGoalies -> GetLineups -> MakePredictions -> GetTims -> SaveToDb -> UpdateHistory -> PublishToDb
+first_run  -> Backfill -> GetPlayers -> EnsureFirstRunStatus -> GetInjuries -> GetGoalies -> GetLineups -> MakePredictions -> GetTims -> SaveToDb -> UpdateHistory -> PublishToDb
 normal_run -> LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> SaveToDb -> PublishToDb   # skips UpdateHistory
 last_run   -> LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> PublishToDb               # no archive
 ```
 
-`SaveToDb` upserts on `(date, player_id)`, so the mid-morning run refreshes the
-same archive rows in place with the projections that were not available at 03:00
-ET. A re-run for the same date is idempotent; `PublishToDb` rewrites the day's
-`Picks` rows (delete scoped to that date) and `write_historic_db` is a no-op once
-the date exists. A failed lineup/injury/goalie fetch keeps the previous values
-instead of overwriting them with UNKNOWN/HEALTHY.
+`EnsureFirstRunStatus` restores the `status` the `GetPlayers` sub-machine does not
+carry, so `CheckSaveHistory` can tell the three branches apart. `SaveToDb` upserts
+on `(date, player_id)`, so the mid-morning run refreshes the same archive rows in
+place with the projections that were not available at 03:00 ET. A re-run for the
+same date is idempotent; `PublishToDb` rewrites the day's `Picks` rows (delete
+scoped to that date) and `write_historic_db` is a no-op once the date exists. A
+failed lineup/injury/goalie fetch keeps the previous values in both `Picks` and
+`Player-Snapshots` instead of overwriting them with UNKNOWN/HEALTHY/nulls.
 
 Two more caveats that came out of the port:
 

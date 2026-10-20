@@ -61,6 +61,16 @@
                     "BackoffRate": 5.0
                 }
             ],
+            "Next": "EnsureFirstRunStatus"
+        },
+        "EnsureFirstRunStatus": {
+            "Type": "Pass",
+            "Comment": "The GetPlayers sub-machine returns only players/teams. This branch is first_run by construction, so restore the status CheckInitialRun/CheckSaveHistory need.",
+            "Parameters": {
+                "players.$": "$.players",
+                "teams.$": "$.teams",
+                "status": "first_run"
+            },
             "Next": "CheckIfPlayersOutputIsEmpty"
         },
         "CheckIfPlayersOutputIsEmpty": {
