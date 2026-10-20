@@ -26,8 +26,8 @@
   `docs/backtrack_ablation.py`). Rejected/negative: V3a lambdarank, V3b
   calendar/schedule, V3c blends, V3e LGBM as default, V3f LGBM+baseline
   blends, V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged
-  lineup replacements, injury filter (fields empty). V4 shot/TOI features
-  are retained.
+  lineup replacements, V8 shrinkage, injury filter (fields empty). V4 shot/TOI
+  features are retained.
 
 Working log for the goal-probability model built on the backtracked archive.
 Purpose: record what was tried, what worked, what broke, and the data gotchas,
@@ -698,6 +698,36 @@ was +0.19pp; mean -0.21pp) and neither seed's McNemar is close to significant
 season rates plus opponent team/goalie context. No `--opp-history` flag or
 feature code retained; notes only.
 
+### V8-shrinkage — empirical-Bayes rate features (reverted)
+
+Eight prior-only features on the corrected 42-feature set:
+`shrunk_gpg_{5,15,40}` (career goals/games shrunk to the prior league mean),
+`shrunk_season_gpg_{5,15}` (season rate shrunk to `hgpg`),
+`shrunk_five_gpg_{3,10}` (last-5 goals shrunk to the season rate), and
+`shrunk_sh_pct_50` (career shooting shrunk to the prior league shooting rate).
+League means are cumulative through the previous date; all player counts are
+prefix sums excluding the current row.
+
+Leakage/merge checks: 427,240 rows, no duplicate `(date, player_id)`, no
+suffix columns; manual recomputation matched for five sampled players on
+`shrunk_gpg_5`/`shrunk_season_gpg_5`/`shrunk_five_gpg_3`/`shrunk_sh_pct_50`.
+Nulls: gpg/shot features 144 (first date), season blends 97,668, five-game
+blends 8,355.
+
+LGBM, k=5, train=all, seeds 1/3, 300s cap (112s/117s):
+
+| seed | baseline hits/acc | shrinkage hits/acc | delta | vs baseline | vs hgpg |
+|---|---:|---:|---:|---|---|
+| 1 | 928 / 29.376% | 907 / 28.712% | **-0.665pp** | 128-149, p=0.229 | 320-299, p=0.422 |
+| 3 | 916 / 28.997% | 899 / 28.458% | **-0.538pp** | 124-141, p=0.326 | 306-293, p=0.624 |
+
+Per-fold std: seed 1 3.272, seed 3 1.651. Both seeds got worse, so the code
+was reverted (feature set back to 42). LGBM gain ranks were high —
+`shrunk_gpg_40` #1 (179,958; perm 0.0079), `shrunk_gpg_15` #2 (75,879; 0.0011),
+`shrunk_gpg_5` #9, `shrunk_season_gpg_15` #15, `shrunk_sh_pct_50` #17,
+`shrunk_season_gpg_5` #28, `shrunk_five_gpg_10` #29, `shrunk_five_gpg_3` #30 —
+but the signal is redundant with the existing rates and hurt pick accuracy.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -744,6 +774,8 @@ feature code retained; notes only.
   opp_goals_last3 / team_vs_opp_gpg_2y) did not help (-0.60pp seed 1,
   +0.19pp seed 3) and was reverted. Do not re-try these four as-is;
   head-to-head form is evidently covered by the existing rates.
+- V8 empirical-Bayes shrinkage rates hurt both seeds (-0.67 / -0.54pp) and
+  were reverted; the information is already in the existing rates.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
 - Update this file after every experiment: config used, split mode, pooled
