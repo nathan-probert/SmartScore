@@ -34,6 +34,7 @@ with units forward.
 | V8-shrinkage (empirical-Bayes rate features) | -0.67 / -0.54pp | rejected |
 | V8-tune (LGBM configs b/d) | +0.19 / -0.03 and -0.06 / +0.19pp vs a | rejected (mixed) |
 | V9-projected-lineups (prior-games projector) | hard b +0.98 / -0.25pp; probabilistic -0.41 / 0.00pp; projected ensemble +0.48 / -0.22pp; oracle LGBM 4-seed 30.33%; oracle ensemble -0.16 / +0.38 | rejected (mixed) |
+| V12-identity (player/team/age) | -1.49 / -0.29pp | rejected |
 
 **Conclusion:** with the currently available historical raw data, **~29.7% is
 the ceiling**. ≥30% was reachable only with same-game lookahead leakage.
@@ -62,6 +63,7 @@ calendar/schedule, V3c blends, V3e LGBM as default, V3f LGBM+baseline blends,
 V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged lineup
 replacements, V7-objective, V7-context, V7-shots, V7 MoneyPuck xG,
 V8-own-xG, V8-shrinkage, V8-tune configs b/d, V9-projected-lineups,
+V12-identity,
 injury filter (fields empty).
 V4 shot/TOI features are retained.
 
@@ -1290,6 +1292,37 @@ likely sit at ~80-90% unit fidelity, implying roughly **29.25-29.54%** on
 seeds 1/3 — below 30 unless the feed is essentially oracle-accurate or the
 model improves.
 
+### V12 — player/team identity + diagnostics (rejected)
+
+Added `player_id` and `team_abbrev` as regularised LGBM categoricals
+(config e: min_data_per_group 200, cat_smooth 50, max_cat_threshold 32), plus
+age and age² from NHL landing birthdates (1,891/1,891 cached) and prior career
+games (`career_games`, already in the 42-feature set).
+
+| variant | seed 1 | seed 3 |
+|---|---:|---:|
+| no-lineup baseline | 928 / 29.376% | 916 / 28.997% |
+| identity | 881 / 27.889% | 907 / 28.712% |
+| delta | **-1.487pp** | **-0.285pp** |
+| McNemar | 270-317, p=0.058 | 273-282, p=0.734 |
+| per-fold std | 1.573 | 1.327 |
+
+Identity importances (fold-1 gain rank/46; permutation AUC): `player_id` #2
+(174,496; 0.0246), `team_abbrev` #10 (7,669; 0.0008), `career_games` #17
+(3,241; -0.0003), `age` #21 (2,538; 0.0028), `age_sq` #40 (504; 0.0002).
+`player_id` is heavily used but hurts out-of-fold picks; reverted.
+
+**Diagnostics (baseline no-lineup LGBM, seeds 1+3):**
+- Per tims group: g1 39.89% (420/1053), g2 27.16% (286/1053), g3 20.89%
+  (220/1053).
+- Per season: 2021-22 27.64% (492), 2022-23 28.53% (666), 2023-24 28.88%
+  (696), 2024-25 29.91% (672), 2025-26 31.28% (633).
+- Calibration: mean max predicted probability **0.3154** vs realized
+  accuracy **29.31%** (overconfident ~2.2pp); by group maxp/acc g1
+  0.4377/39.89%, g2 0.2960/27.16%, g3 0.2123/20.89%.
+- Top pick equals the hgpg leader in **1,531/3,159 = 48.5%** of groups
+  (g1 46.9%, g2 45.2%, g3 53.3%).
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -1344,6 +1377,9 @@ model improves.
   projected ensemble +0.48/-0.22pp; oracle LGBM 4-seed mean 30.33%. Keep
   projected as opt-in; default remains no-lineup. V11 puts 80-90% real
   morning fidelity at ~29.25-29.54%; near-oracle is needed for ~30.3%.
+- V12 identity/age hurt both seeds (-1.49/-0.29pp); reverted. Baseline
+  calibration is ~2.2pp overconfident (maxp 31.5% vs 29.3% realized), and the
+  top pick matches the hgpg leader only 48.5% of the time.
 - V7 team form / special teams / goalie rest did not help (+0.06pp seed 1,
   -0.25pp seed 3) and was reverted. Historical anytime-goal-scorer odds are
   not available free before 2023-05; forward collection or a paid backfill
