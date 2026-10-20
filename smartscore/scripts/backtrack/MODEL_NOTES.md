@@ -698,6 +698,83 @@ was +0.19pp; mean -0.21pp) and neither seed's McNemar is close to significant
 season rates plus opponent team/goalie context. No `--opp-history` flag or
 feature code retained; notes only.
 
+### V7-context — team form / special teams / goalie rest (reverted)
+
+Hypothesis: the corrected baseline has player rates and opponent-goalie
+quality, but little recent **team** form or special-teams context. Added 13
+club-game features, all strictly prior games, from `player_games`:
+
+- `team_shots_for_5/10`, `team_shots_against_5/10` — rolling club shots.
+- `team_goals_for_5/10`, `team_goals_against_5/10` — rolling official club
+  goals (goals against = the opponent's `team_goals_for` in the same game).
+- `shooting_pct_5` = prior-5 goals / shots for; `save_pct_5` =
+  1 - prior-5 goals against / shots against.
+- `opp_penalties_drawn_pg` — opponent PIM/2 per game, season-to-date prior
+  (penalties the opponent takes, i.e. the club's PP exposure).
+- `opp_pp_opportunities_pg` — club PIM/2 per game, season-to-date prior
+  (penalties the club takes, i.e. the opponent's PP exposure).
+- `goalie_rest_days` — days since the opponent starting goalie's previous
+  start, NaN on his first start in coverage.
+
+The cached archive has no penalty-event table, so PIM/2 is the only penalty
+proxy and over-counts majors/misconducts. `lineup_unit`/`pp_unit` were not
+reintroduced; categoricals remain `lineup_position_group` and `tims`.
+
+Leakage checks: 427,240 rows before/after the join, no suffixed columns,
+exactly the 13 new columns. Coverage: rolling/PDO features 426,646 rows,
+penalty features 422,134 / 422,133, `goalie_rest_days` 423,568. Independent
+recomputation matched 120/120 rolling+PDO rows, 150/150 penalty rows and
+150/150 goalie-rest rows; every window is shifted one club game and every
+season-to-date prefix excludes the current game. Club-game grain is 23,740
+rows with one starting goalie per club-game.
+
+Protocol: LGBM, date-blocked k=5, `--train-subset all`, seeds 1 and 3,
+`OMP_NUM_THREADS=2`, `LGBM_N_JOBS=2`, 3,159 picks. The corrected baseline was
+rerun in the same worktree and reproduced V6c exactly (seed 1 928, seed 3 916).
+
+| seed | baseline hits / acc | V7 hits / acc | Δ | McNemar vs baseline | McNemar vs hgpg |
+|---|---:|---:|---:|---:|---:|
+| 1 | 928 / 29.376% | 930 / 29.440% | **+0.063pp** | 152-154, p=0.954 | 327-283, p=0.082 |
+| 3 | 916 / 28.997% | 908 / 28.743% | **-0.253pp** | 148-140, p=0.680 | 304-282, p=0.386 |
+| mean | — / 29.187% | — / 29.092% | **-0.095pp** | — | — |
+
+Held-out AUC moved +0.0004 on both seeds (0.6924→0.6928, 0.6922→0.6926).
+Per-fold deltas: seed 1 +0.8/-0.7/-0.6/+0.5/+0.3pp; seed 3
+0.0/+0.5/-2.2/+1.1/-0.6pp. Only 288-306 of 3,159 picks changed per seed.
+
+LGBM gain importance (mean over folds, share of total; 47 features; seed-1
+rank / share, seed-3 rank / share): `opp_pp_opportunities_pg` 17 / 0.59%,
+23 / 0.55%; `opp_penalties_drawn_pg` 18 / 0.59%, 17 / 0.62%; `save_pct_5`
+19 / 0.59%, 19 / 0.60%; `team_shots_against_10` 22 / 0.55%, 21 / 0.56%;
+`team_shots_against_5` 24 / 0.52%, 24 / 0.51%; `team_shots_for_10`
+27 / 0.48%, 29 / 0.44%; `shooting_pct_5` 28 / 0.44%, 27 / 0.48%;
+`goalie_rest_days` 29 / 0.43%, 30 / 0.44%; `team_shots_for_5`
+32 / 0.40%, 32 / 0.42%; `team_goals_against_10` 40 / 0.28%, 40 / 0.29%;
+`team_goals_for_10` 41 / 0.28%, 41 / 0.28%; `team_goals_for_5`
+44 / 0.19%, 45 / 0.19%; `team_goals_against_5` 45 / 0.17%, 44 / 0.19%.
+All are well behind the player shot/career block and gpg/hgpg.
+
+Verdict: **reverted**. Seed 1 is a statistical tie (+0.06pp, p=0.95) and seed
+3 is worse (-0.25pp); mean -0.10pp. The team context block adds no
+deployment-relevant edge on top of the corrected baseline. No
+`--context-features` flag or feature code retained; notes only.
+
+**Anytime-goal-scorer odds feasibility (no-cost check, no sign-up).** Not
+available for free for this archive's era. The Odds API carries NHL player
+props including Anytime Goal Scorer (Yes/No) for US books, but historical
+player-prop snapshots only start **2023-05-03** and historical access is
+**paid**; NHL game-line history starts 2020-06-29. Its free tier is
+current/upcoming odds only, so it cannot backfill 2017-2023 and cannot supply
+a free historical training set. OddsPortal / Covers expose historical game
+odds on public pages (no official free API; player-prop coverage is patchy
+and scraping is ToS-constrained); OddsPapi advertises free historical odds
+including anytime goalscorer but needs an account and has unverified depth;
+SportsGameOdds / BallDontLie / OddsBlaze / RapidOdds offer current props,
+usually with paid historical tiers. Practical options: (a) collect current
+anytime-goal-scorer snapshots forward via a free-tier odds API, or (b) pay
+for a 2023+ player-prop backfill; neither helps the current 2017-2026
+backtest at zero cost.
+
 ### V7-objective — Poisson LGBM and conditional-softmax logit (reverted)
 
 Protocol: date-blocked k=5, train=all, seeds 1/3, `OMP_NUM_THREADS=2`,
@@ -845,6 +922,10 @@ Verdict: neither config beats a on **both** seeds by +0.5pp; each is mixed
   were reverted; the information is already in the existing rates.
 - V8-tune configs b/d were mixed (+0.19pp on one seed, negative/low on the
   other); config a stays the reference.
+- V7 team form / special teams / goalie rest did not help (+0.06pp seed 1,
+  -0.25pp seed 3) and was reverted. Historical anytime-goal-scorer odds are
+  not available free before 2023-05; forward collection or a paid backfill
+  would be required.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
 - Update this file after every experiment: config used, split mode, pooled
