@@ -204,16 +204,19 @@ def goalie_table(env):
     return f"Goalie-Snapshots-backtrack-{env}"
 
 
-def fetch_table(table, order_cols, refresh=False, chunk=PAGE):
-    """Download one table into a CSV cache and return it as a DataFrame."""
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = CACHE_DIR / f"{table.lower().replace('-', '_')}.csv"
-    if path.exists() and not refresh:
-        return pd.read_csv(path)
+def _month_windows(min_date, max_date):
+    """Half-open month windows covering [min_date, max_date]."""
+    start = pd.Timestamp(min_date).normalize().replace(day=1)
+    end = pd.Timestamp(max_date)
+    while start <= end:
+        nxt = start + pd.offsets.MonthBegin(1)
+        yield start.strftime("%Y-%m-%d"), nxt.strftime("%Y-%m-%d")
+        start = nxt
 
-    print(f"fetching {table} ...", flush=True)
-    start = time.time()
-    query = SUPABASE_ADMIN_CLIENT.table(table).select("*")
+
+def _fetch_window(table, order_cols, lo, hi, chunk):
+    """Fetch one date window; small offsets avoid PostgREST statement timeouts."""
+    query = SUPABASE_ADMIN_CLIENT.table(table).select("*").gte("date", lo).lt("date", hi)
     for col in order_cols:
         query = query.order(col)
     frames = []
@@ -224,6 +227,31 @@ def fetch_table(table, order_cols, refresh=False, chunk=PAGE):
             break
         frames.append(pd.DataFrame(rows))
         offset += len(rows)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def fetch_table(table, order_cols, refresh=False, chunk=PAGE):
+    """Download one table into a CSV cache and return it as a DataFrame."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = CACHE_DIR / f"{table.lower().replace('-', '_')}.csv"
+    if path.exists() and not refresh:
+        return pd.read_csv(path)
+
+    print(f"fetching {table} ...", flush=True)
+    start = time.time()
+    first = SUPABASE_ADMIN_CLIENT.table(table).select("date").order("date").limit(1).execute().data
+    last = SUPABASE_ADMIN_CLIENT.table(table).select("date").order("date", desc=True).limit(1).execute().data
+    if not first or not last:
+        raise RuntimeError(f"{table} is empty - wrong --env, or nothing was published to it")
+
+    # A single ordered range over 600k+ rows trips PostgREST's statement
+    # timeout (57014). Month windows keep each offset small while preserving
+    # the CSV's columns and values.
+    frames = []
+    for lo, hi in _month_windows(first[0]["date"], last[0]["date"]):
+        part = _fetch_window(table, order_cols, lo, hi, chunk)
+        if not part.empty:
+            frames.append(part)
     if not frames:
         raise RuntimeError(f"{table} is empty - wrong --env, or nothing was published to it")
     frame = pd.concat(frames, ignore_index=True)

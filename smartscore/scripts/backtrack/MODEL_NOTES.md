@@ -43,6 +43,7 @@ with units forward.
 | V12-era recent training (2021-22+) | LGBM -1.07 / -0.95pp, ensemble -0.15 / +0.08 vs full-era | rejected |
 | V12-qoc (shift-chart QoC/QoT) | +0.51 / +0.03pp | rejected (mixed) |
 | V12-interactions (tims x rates) | +0.10 / 0.00pp; g3 -0.57pp | rejected |
+| V15 pre-2017 data (2013-17) | LGBM +0.10 / +0.41pp; ensemble -0.38 / -0.22pp | rejected |
 
 **Post-roadmap findings:** identity features were negative; recent-era
 training did not beat full-era on identical dates, but per-season accuracy
@@ -50,6 +51,13 @@ rises (2025-26 ensemble **31.6-32.9%** vs hgpg **30.3%**). QoC/QoT was mixed
 (+0.51/+0.03pp) and reverted. Baseline per-group accuracy is **g1 39.9% /
 g2 27.2% / g3 20.9%**; mean max predicted probability **0.315** vs realized
 **0.293**.
+
+**Pre-2017 data (V15):** 190,070 extra skater rows were ingested and published
+(2013-17, 617,310 snapshot rows total); LGBM +0.10/+0.41pp but the default
+ensemble was **−0.38/−0.22pp**, so it was **not adopted**. Default remains the
+2017+ no-lineup ensemble (**29.71%** mean all-era, **~30-32%** recent-era).
+The four store dumps are committed (`9c9f315`) and `--refresh` now uses
+date-window pagination to avoid the PostgREST 57014 timeout.
 
 **Conclusion:** with the currently available historical raw data, **~29.7% is
 the pooled all-era expectation** (and **~30-32% on recent-era dates**),
@@ -1568,6 +1576,28 @@ end-to-end runs):
 Verdict: **do not adopt** the augmented training set for the ensemble; overall
 accuracy is slightly worse and the recent-era seed-0 gain is not consistent
 across seeds. Keep the 2017+ training default.
+
+### V15b — pre-2017 dumps + refresh pagination fix
+
+Committed the four store dumps (`9c9f315`):
+
+| dump | bytes |
+|---|---:|
+| 20132014.sql.gz | 11,913,769 |
+| 20142015.sql.gz | 11,932,704 |
+| 20152016.sql.gz | 11,957,819 |
+| 20162017.sql.gz | 11,855,755 |
+
+Plain git (no LFS; `.gitattributes` only sets the gzip diff driver, matching
+the existing 2017-2021 dumps).
+
+`fetch_table` refresh now fetches **monthly date windows** via
+`_month_windows` + `_fetch_window` instead of one 617k-row ordered range,
+which tripped PostgREST `57014 statement timeout`. 153 windows cover
+2013-10-01..2026-06-14. Verification on the 2016-10-01..2016-11-01 player
+window: **4,680 rows in 1.72s**, columns identical to cache, key diff 0/0.
+CSV format is unchanged; model behavior is unchanged. Full refresh was not
+rerun (the chunked cache already has 617,310 rows).
 
 ## Lessons learned this phase
 
