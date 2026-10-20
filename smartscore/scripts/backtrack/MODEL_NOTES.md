@@ -21,15 +21,17 @@ removed; corrected LGBM is **29.06%**.
 | V8-own-xG (first-party per-shot xG model) | -0.16 / -0.35pp, p=0.82/0.57 | rejected |
 | V8-shrinkage (empirical-Bayes rate features) | -0.67 / -0.54pp | rejected |
 | V8-tune (LGBM configs b/d) | +0.19 / -0.03 and -0.06 / +0.19pp vs a | rejected (mixed) |
-| V9-projected-lineups (prior-games projector) | hard b +0.98 / -0.25pp; probabilistic -0.41 / 0.00pp; oracle +1.24 / +0.98 | rejected (mixed) |
+| V9-projected-lineups (prior-games projector) | hard b +0.98 / -0.25pp; probabilistic -0.41 / 0.00pp; ensemble +0.44 / -0.22pp; oracle LGBM +1.24 / +0.98; oracle ensemble -0.16 / +0.38 | rejected (mixed) |
 
 **Conclusion:** with the currently available historical raw data, **~29.7% is
 the ceiling**. ≥30% was reachable only with same-game lookahead leakage.
 
 **Legitimate deployment levers, unverifiable historically:** (1) projected
 lineups and confirmed starting goalies are available pre-game in the live
-pipeline; (2) forward-collect market anytime-goal-scorer odds (no free
-historical source exists before 2023-05).
+pipeline — the crude V9 projector was neutral (ensemble 29.85/29.60), while the
+oracle was 29.25/30.20, so real morning projections should sit between them;
+test a real feed before switching the default. (2) forward-collect market
+anytime-goal-scorer odds (no free historical source exists before 2023-05).
 
 **Reproduce:**
 ```bash
@@ -1192,6 +1194,30 @@ seed 3; the condition to run the ensemble was not met. The projector functions
 remain in `lineup_project.py` for analysis, but `model.py` keeps the stage-2
 `--lineup projected` opt-in only and defaults to no lineup.
 
+**Stage 4 — rank ensemble with lineup features.** Built the fixed equal-weight
+rank ensemble from component OOFs (HGB+logreg run + the stage-2 projected/oracle
+LGBM OOFs; the end-to-end 3-model run hit the 300s cap at fold 5). Baselines:
+no-lineup ensemble 29.408% (seed 1) and 29.820% (seed 3).
+
+| variant | seed 1 | seed 3 |
+|---|---:|---:|
+| no-lineup ensemble | 929 / 29.408% | 942 / 29.820% |
+| projected ensemble | 943 / 29.851% | 935 / 29.598% |
+| projected delta | **+0.443pp** | **-0.222pp** |
+| projected per-fold std | 3.186 | 0.667 |
+| projected McNemar vs no-lineup | 165-151, p=0.465 | 162-168, p=0.783 |
+| projected McNemar vs hgpg | 342-285, p=0.025 | 323-274, p=0.049 |
+| oracle ensemble | 924 / 29.250% | 954 / 30.199% |
+| oracle delta | -0.158pp | +0.379pp |
+| oracle per-fold std | 3.171 | 0.805 |
+| oracle McNemar vs hgpg | 328-290, p=0.137 | 331-263, p=0.006 |
+
+Projected ensemble mean over seeds 1/3 = 29.72%, same as the no-lineup 29.71%
+mean; it does not reach 30.0% on both seeds and is not better on both. **Default
+stays `--lineup none`.** Oracle mean is also 29.72% (29.25/30.20), showing the
+crude projector is not the only limiter; real morning projections should sit
+between the crude projector and the oracle, but that is not verifiable here.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -1242,9 +1268,10 @@ remain in `lineup_project.py` for analysis, but `model.py` keeps the stage-2
   were reverted; the information is already in the existing rates.
 - V8-tune configs b/d were mixed (+0.19pp on one seed, negative/low on the
   other); config a stays the reference.
-- V9 lineup work: hard projected +0.98/-0.25pp, probabilistic -0.41/0.00pp,
-  trio continuity F 48.7% (below method b 59.6%); oracle +1.2/+1.0pp. Keep
-  projected as opt-in; default remains no-lineup.
+- V9 lineup work: hard b +0.98/-0.25pp, probabilistic -0.41/0.00pp,
+  ensemble projected +0.44/-0.22pp; oracle ensemble -0.16/+0.38pp. Keep
+  projected as opt-in; default remains no-lineup. A real morning projection
+  feed sits between the crude projector and oracle and still needs testing.
 - V7 team form / special teams / goalie rest did not help (+0.06pp seed 1,
   -0.25pp seed 3) and was reverted. Historical anytime-goal-scorer odds are
   not available free before 2023-05; forward collection or a paid backfill
