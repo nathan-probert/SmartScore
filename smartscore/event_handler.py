@@ -121,6 +121,7 @@ def handle_load_working_set(event, context):
     return {
         "statusCode": 200,
         "status": event.get("status", "normal_run"),
+        "date": get_date(),
         "players": players,
         "teams": teams,
     }
@@ -198,9 +199,13 @@ def handle_make_predictions(event, context):
             - "players" (list): Player data, now including stat (and beta stat).
             - "teams" (list, optional): Passed through when present.
     """
-    players = make_predictions_teams(event.get("players"), event.get("teams"))
+    players = event.get("players") or []
+    if players:
+        players = make_predictions_teams(players, event.get("teams"))
 
     output = {"statusCode": 200, "players": players}
+    if "status" in event:
+        output["status"] = event["status"]
     if "teams" in event:
         output["teams"] = event["teams"]
     if "goalies" in event:
@@ -305,7 +310,7 @@ def handle_save_players(event, context):
     """
 
     players = event.get("players") or []
-    date = event.get("date")
+    date = event.get("date") or get_date()
 
     if players:
         if event.get("teams") or event.get("goalies"):
@@ -315,7 +320,7 @@ def handle_save_players(event, context):
         save_player_snapshots(upload_rows, date=date)
         save_working_set(players, event.get("teams") or [])
 
-    output = {"statusCode": 200, "players": players}
+    output = {"statusCode": 200, "status": event.get("status", "first_run"), "players": players}
     if "teams" in event:
         output["teams"] = event["teams"]
     if "goalies" in event:

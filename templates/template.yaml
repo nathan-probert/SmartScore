@@ -517,21 +517,54 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
                   - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:NotifyUsers-${ENV}"
-  # EventBridge Rule to trigger Step Function daily at 8 AM UTC
+  # EventBridge Rule to trigger the deterministic phase of the daily pipeline
+  # at 8 AM UTC (4 AM EDT / 3 AM EST). EventBridge Rules cron is always UTC;
+  # the ET hour shifts by one across daylight saving.
   DailyStepFunctionTrigger:
     Type: AWS::Events::Rule
     Properties:
-      ScheduleExpression: "cron(0 8 * * ? *)"  # 8 AM UTC
+      ScheduleExpression: "cron(0 8 * * ? *)"  # 08:00 UTC = 04:00 EDT / 03:00 EST
       State: ENABLED
       Targets:
         - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
           RoleArn: !GetAtt EventBridgeInvokeRole.Arn
           Id: PlayerProcessingPipelineStateMachineTarget
 
+  # Mid-morning refresh: re-runs the projections phase (injuries, goalies,
+  # lineups, archive, publish) once the NHL.com article and RotoWire goalie
+  # table have their morning updates. CheckCompleted classifies this as a
+  # normal_run because the 08:00 UTC execution already published today.
+  # Deliberately no "last_game" input, so it can never be a last_run.
+  ProjectionsStepFunctionTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(30 14 * * ? *)"  # 14:30 UTC = 10:30 EDT / 09:30 EST
+      State: ENABLED
+      Targets:
+        - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
+          RoleArn: !GetAtt EventBridgeInvokeRole.Arn
+          Id: PlayerProcessingPipelineProjectionsTarget
+          Input: '{"source": "eventBridge"}'
+
+  # Optional late-morning refresh for confirmations that land after the
+  # morning skate. Same normal_run path and idempotent upserts.
+  ConfirmationStepFunctionTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(30 16 * * ? *)"  # 16:30 UTC = 12:30 EDT / 11:30 EST
+      State: ENABLED
+      Targets:
+        - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
+          RoleArn: !GetAtt EventBridgeInvokeRole.Arn
+          Id: PlayerProcessingPipelineConfirmationTarget
+          Input: '{"source": "eventBridge"}'
+
+  # Email goes out after the projections phase has had an hour to finish.
+  # 15:30 UTC = 11:30 EDT / 10:30 EST.
   DailySendEmailTrigger:
     Type: AWS::Events::Rule
     Properties:
-      ScheduleExpression: "cron(0 14 * * ? *)"  # 9 AM EST (14:00 UTC)
+      ScheduleExpression: "cron(30 15 * * ? *)"  # 15:30 UTC = 11:30 EDT / 10:30 EST
       State: ENABLED
       Targets:
         - Arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:NotifyUsers-${ENV}"

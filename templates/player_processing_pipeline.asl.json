@@ -1,5 +1,5 @@
 {
-    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit. normal_run and last_run reload the day's lean players/teams slices (Working-* tables) via LoadWorkingSet and re-enter the chain at GetInjuries, so the state always carries separated slices, never denormalized rows.",
+    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit. normal_run and last_run reload the day's lean players/teams slices (Working-* tables) via LoadWorkingSet and re-enter the chain at GetInjuries, so the state always carries separated slices, never denormalized rows. On first_run the lineup/goalie/injury steps run before MakePredictions and SaveToDb; normal_run also archives (SaveToDb) so the mid-morning projections refresh Player-Snapshots, but skips UpdateHistory.",
     "StartAt": "GetDate",
     "States": {
         "GetDate": {
@@ -72,12 +72,7 @@
                     "Next": "UpdateHistory"
                 }
             ],
-            "Default": "MakePredictions"
-        },
-        "MakePredictions": {
-            "Type": "Task",
-            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:MakePredictions-${ENV}",
-            "Next": "GetInjuries"
+            "Default": "GetInjuries"
         },
         "GetInjuries": {
             "Type": "Task",
@@ -92,6 +87,11 @@
         "GetLineups": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetLineups-${ENV}",
+            "Next": "MakePredictions"
+        },
+        "MakePredictions": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:MakePredictions-${ENV}",
             "Next": "GetTims"
         },
         "GetTims": {
@@ -110,7 +110,7 @@
                 {
                     "Variable": "$.status",
                     "StringEquals": "normal_run",
-                    "Next": "PublishToDb"
+                    "Next": "SaveToDb"
                 },
                 {
                     "Variable": "$.status",
@@ -122,7 +122,18 @@
         "SaveToDb": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:SavePlayers-${ENV}",
-            "Next": "UpdateHistory"
+            "Next": "CheckSaveHistory"
+        },
+        "CheckSaveHistory": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.status",
+                    "StringEquals": "first_run",
+                    "Next": "UpdateHistory"
+                }
+            ],
+            "Default": "PublishToDb"
         },
         "UpdateHistory": {
             "Type": "Task",

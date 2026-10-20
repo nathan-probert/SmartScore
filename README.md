@@ -90,25 +90,23 @@ the roster. Here every write is an upsert on `(date, player_id)`, so re-running
 the pipeline for a date refreshes that date's rows in place and
 `get_players_for_date` returns exactly one row per player.
 
-⚠️ **Known gap: lineups are not present on every archive write.** `SaveToDb` is
-only reached from the `first_run` path in the state machine:
+⚠️ **Archive freshness depends on the schedule.** Two EventBridge rules drive the
+day: an 08:00 UTC deterministic `first_run` (04:00 EDT / 03:00 EST) and a
+mid-morning `normal_run` at 14:30 UTC (10:30 EDT / 09:30 EST), with an optional
+16:30 UTC confirmation refresh. Both `normal_run`s reload the day's `Working-*`
+slices and re-fetch injuries, goalies and lineups, then archive to
+`Player-Snapshots` and publish to `Picks-{ENV}`:
 
 ```
-first_run  -> Backfill -> GetPlayers -> MakePredictions -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> SaveToDb
-normal_run -> GetTims -> PublishToDb          # skips GetInjuries/GetGoalies/GetLineups entirely
+first_run  -> Backfill -> GetPlayers -> GetInjuries -> GetGoalies -> GetLineups -> MakePredictions -> GetTims -> SaveToDb -> UpdateHistory -> PublishToDb
+normal_run -> LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> SaveToDb -> PublishToDb   # skips UpdateHistory
+last_run   -> LoadWorkingSet -> ... same as normal_run ... -> GetTims -> PublishToDb
 ```
 
-`CheckCompletion` routes `normal_run` straight to `GetTims`, so injuries, goalies
-and lineups are all only fetched on the **first** run of the day — and `SaveToDb`
-(`Player-Snapshots`) only runs on that same first run, while `normal_run` goes to
-`PublishToDb` (`Picks-{ENV}`) instead.
-
-Practical consequence: the archive gets a lineup snapshot only on the first run of
-each date. That is the row training sees, so it is populated — but lineups are
-*not* refreshed later in the day as the RotoWire page updates closer to puck drop.
-If training wants fresher or intraday-refreshed lineups, the fix is to run
-`GetLineups` (and the archive write) on `normal_run` too, or to re-order the state
-machine.
+`SaveToDb` upserts on `(date, player_id)`, so the mid-morning run refreshes the
+same archive rows in place with the projections that were not available at 03:00
+ET. A re-run for the same date is idempotent; `PublishToDb` rewrites the day's
+`Picks` rows and `write_historic_db` is a no-op once the date exists.
 
 Two more caveats that came out of the port:
 
@@ -130,7 +128,8 @@ Other constraints worth knowing:
 - **The Rust predictor does not read these fields.** `make_predictions_teams` builds
   `make_predictions_rust.PlayerInfo` from an explicit field list (gpg/hgpg/tgpg/otga/
   otshga/hppg/home), so lineup data is recorded but not yet a model input.
-  `MakePredictions` also runs *before* `GetLineups` in the state machine.
+  `MakePredictions` now runs after `GetLineups` on the `first_run` path, so a future
+  lineup feature has the merged data available without another re-order.
 - **`lineup_status` distinguishes outcomes.** `PROJECTED` vs `UNKNOWN` lets a training
   job separate a real negative (not on a forward line) from a failed/empty fetch.
   Filter on `PROJECTED` rather than treating null as "not a top-9 forward".

@@ -22,8 +22,22 @@ def test_handle_save_players_archives_with_date(mock_save, mock_working_set):
 
     result = handle_save_players({"players": players, "date": "2026-04-15"}, {})
 
-    assert result == {"statusCode": 200, "players": players}
+    assert result == {"statusCode": 200, "status": "first_run", "players": players}
     mock_save.assert_called_once_with(players, date="2026-04-15")
+
+
+@patch("event_handler.get_date")
+@patch("event_handler.save_working_set")
+@patch("event_handler.save_player_snapshots")
+def test_handle_save_players_falls_back_to_today(mock_save, mock_working_set, mock_get_date):
+    """A normal_run working set carries no date; the handler supplies today's."""
+    mock_get_date.return_value = "2026-04-16"
+    players = [{"id": 1, "name": "Player 1", "team_id": 10}]
+
+    handle_save_players({"players": players, "status": "normal_run"}, {})
+
+    mock_save.assert_called_once_with(players, date="2026-04-16")
+    mock_working_set.assert_called_once_with(players, [])
 
 
 @patch("event_handler.save_working_set")
@@ -32,7 +46,7 @@ def test_handle_save_players_skips_upload_when_empty(mock_save, mock_working_set
     """An empty player list must not hit Supabase (an empty upsert is a no-op error)."""
     result = handle_save_players({"players": [], "date": "2026-04-15"}, {})
 
-    assert result == {"statusCode": 200, "players": []}
+    assert result == {"statusCode": 200, "status": "first_run", "players": []}
     mock_save.assert_not_called()
     mock_working_set.assert_not_called()
 
@@ -91,9 +105,11 @@ def test_handle_check_completed_never_returns_the_roster(mock_check_db):
     assert "players" not in result
 
 
+@patch("event_handler.get_date")
 @patch("event_handler.load_working_set")
-def test_handle_load_working_set_returns_separated_slices(mock_load):
-    """normal_run gets the lean players/teams slices plus the run status."""
+def test_handle_load_working_set_returns_separated_slices(mock_load, mock_get_date):
+    """normal_run gets the lean players/teams slices plus the run status and date."""
+    mock_get_date.return_value = "2026-04-15"
     players = [{"id": 1, "name": "Player 1", "team_id": 10, "stat": 0.8}]
     teams = [{"team_id": 10, "opponent_id": 11}]
     mock_load.return_value = (players, teams)
@@ -103,6 +119,7 @@ def test_handle_load_working_set_returns_separated_slices(mock_load):
     assert result == {
         "statusCode": 200,
         "status": "normal_run",
+        "date": "2026-04-15",
         "players": players,
         "teams": teams,
     }

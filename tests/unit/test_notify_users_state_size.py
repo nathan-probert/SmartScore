@@ -94,13 +94,21 @@ def test_pipeline_normal_and_last_run_reload_separated_slices():
     assert load["Next"] == "GetInjuries"
 
     # last_run now flows through the chain to CheckInitialRun and must route
-    # to PublishToDb, not fall through the Choice unhandled.
+    # to PublishToDb, not fall through the Choice unhandled. normal_run goes
+    # through SaveToDb so the mid-morning refresh also updates Player-Snapshots.
     initial_routing = {
         choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckInitialRun"]["Choices"]
     }
     assert initial_routing["last_run"] == "PublishToDb"
-    assert initial_routing["normal_run"] == "PublishToDb"
+    assert initial_routing["normal_run"] == "SaveToDb"
     assert initial_routing["first_run"] == "SaveToDb"
+
+    assert pipeline["States"]["SaveToDb"]["Next"] == "CheckSaveHistory"
+    history_routing = {
+        choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckSaveHistory"]["Choices"]
+    }
+    assert history_routing["first_run"] == "UpdateHistory"
+    assert pipeline["States"]["CheckSaveHistory"]["Default"] == "PublishToDb"
 
     # GetDate must not trim anything for these branches any more -- its
     # result is already just the status, verified in test_handle_check_completed.
