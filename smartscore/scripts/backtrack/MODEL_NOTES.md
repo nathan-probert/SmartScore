@@ -872,6 +872,110 @@ Verdict: neither config beats a on **both** seeds by +0.5pp; each is mixed
 (b/d win one seed by ~0.19pp and lose the other). Defaults unchanged
 (config a; ensemble default). Config d was reverted, notes only.
 
+### V7-shots — own raw shot-event quality block (reverted)
+
+Hypothesis: replace MoneyPuck's xG with our own pre-game shot-quality features
+built from the raw shot-event archive: distance/angle, high-danger and slot
+attempts, rebounds, rushes, PP usage and goals, all prior-games only. The
+V7-xG experiment was collinear with V4's volume/TOI block; raw geometry is a
+different signal and does not import any external xG column.
+
+**Data.** MoneyPuck raw shot events, one row per unblocked attempt
+(`event in {SHOT, MISS, GOAL}`): 2017-18 .. 2025-26, 1,025,121 attempts and
+71,616 goals over 11,268 games. Nine per-season files were fetched from
+`moneypuck.com/moneypuck/playerData/shots/shots_{season}.zip` (2025/2026) and
+the MoneyPuck mirror `peter-tanner.com/moneypuck/downloads/shots_{season}.zip`
+(2017-2024), verified season-by-season from `gameDate` min/max. Cached under
+`data/moneypuck/shots/` (gitignored). Season start year = filename year;
+`shots_2020` is the COVID 2020-21 season (Jan-Jul 2021). The partial 2026-27
+file was excluded.
+
+The raw files have no `gameDate`, `situation` or opponent columns. Game date is
+mapped from `game_id` via `nhl_game_id = season*1_000_000 + game_id` against
+`player_games` (100% of 2017-2025 games mapped); opponent/strength come from
+home/away codes and skater counts. Build table:
+`data/moneypuck/shots/player_game_shots_full.csv` — **427,402 player-games**
+(364,488 with ≥1 attempt, 62,914 zero-attempt skater-games) and 1,940 players.
+
+**Features** (18, strictly prior games; shift(1) before every window; the
+zero-attempt rows stay in the denominators):
+
+| feature | definition |
+|---|---|
+| `rs_shot_att_pg_5/10` | mean unblocked attempts per game |
+| `rs_hd_att_pg_5/10` | mean attempts with distance < 20 ft and abs(angle) < 30° |
+| `rs_slot_att_pg_5/10` | mean attempts with 54 ≤ abs(x) ≤ 89 and abs(y) ≤ 22 (arena-adjusted) |
+| `rs_rebound_att_pg_5` | mean `shotRebound == 1` |
+| `rs_pp_att_pg_5` | mean own skaters > opponent skaters |
+| `rs_goals_pg_5` | mean raw goal flag |
+| `rs_mean_distance_5` | attempt-weighted mean distance (ft) |
+| `rs_mean_angle_5` | attempt-weighted mean abs angle (deg) |
+| `rs_hd_share_5` | sum(HD attempts) / sum(attempts) over prior 5 |
+| `rs_sd_shot_att_pg`, `rs_sd_hd_att_pg`, `rs_sd_goals_pg`, `rs_sd_hd_share`, `rs_sd_mean_distance`, `rs_sd_mean_angle` | same rates season-to-date before the row |
+
+**Leakage / merge checks.**
+
+- Frame stays **427,240 rows**; no `_x`/`_y` and no duplicate columns.
+- Coverage `rs_shot_att_pg_5` **425,349 / 427,240 = 99.56%** (1,891 first
+  career games are NaN).
+- Hand-checked three player-dates against the raw event rows (McDavid
+  2017-10-21, Ovechkin 2017-10-17, and player 8448208 2017-11-09 whose prior
+  five games include attempts `[5, 0, 4, 1, 0]`). All nine rolling values
+  matched exactly (max abs diff 3.6e-15); e.g. 8448208 `rs_shot_att_pg_5` =
+  10/5 = 2.0, proving zero-attempt games count in the denominator.
+- Cross-check against the abandoned team files: 2024-25 regular unblocked
+  attempts 112,126 vs `I_F_shotsOnGoal + I_F_missedShots` 112,222 (-0.09%),
+  goals 7,891 vs 7,898 (-0.09%).
+
+**Protocol.** Date-blocked k=5, `--train-subset all`, `OMP_NUM_THREADS=2`,
+`LGBM_N_JOBS=2`, `timeout 300`, LGBM config a. Baselines are the corrected V7
+base without the block (`oof_v7_base_lgbm_seed{1,3}.csv`): seed 1
+**928/3159 = 29.376%**, seed 3 **916/3159 = 28.997%**; hgpg **886 = 28.047%**
+in both. AUC 0.6933 ± 0.0051 (seed 1), 0.6934 ± 0.0027 (seed 3).
+
+| model | seed | baseline | + raw shots | delta | McNemar vs base | McNemar vs hgpg |
+|---|---|---:|---:|---:|---|---|
+| LGBM | 1 | 928 = 29.376% | **924 = 29.250%** | **-0.127pp** | 178-182, p=0.874 | 326-288, p=0.135 |
+| LGBM | 3 | 916 = 28.997% | **934 = 29.566%** | **+0.570pp** | 188-170, p=0.369 | 324-276, p=0.055 |
+| LGBM mean | | 29.186% | 29.408% | +0.221pp | | |
+
+Per-fold: seed 1 31.0/28.1/27.0/32.1/28.1 (std 2.148); seed 3
+30.2/27.6/27.5/31.3/31.3 (std 1.883). The ensemble was **not run** because
+both LGBM seeds did not improve (the pre-declared condition).
+
+**Importances** (fold-1 LGBM, seed 1, gain; rank among 60 features):
+
+| feature | gain | rank |
+|---|---:|---:|
+| `rs_sd_shot_att_pg` | 413 | 5 |
+| `rs_sd_mean_distance` | 373 | 8 |
+| `rs_mean_angle_5` | 364 | 9 |
+| `rs_sd_mean_angle` | 341 | 12 |
+| `rs_mean_distance_5` | 320 | 14 |
+| `rs_slot_att_pg_10` | 268 | 18 |
+| `rs_sd_hd_share` | 218 | 24 |
+| `rs_pp_att_pg_5` | 207 | 26 |
+| `rs_hd_share_5` | 206 | 27 |
+| `rs_sd_hd_att_pg` | 184 | 28 |
+| `rs_shot_att_pg_10` | 178 | 31 |
+| `rs_shot_att_pg_5` | 152 | 36 |
+| `rs_slot_att_pg_5` | 127 | 39 |
+| `rs_sd_goals_pg` | 112 | 41 |
+| `rs_hd_att_pg_10` | 94 | 46 |
+| `rs_hd_att_pg_5` | 49 | 53 |
+| `rs_rebound_att_pg_5` | 36 | 55 |
+| `rs_goals_pg_5` | 13 | 59 |
+
+Geometry features are used heavily (five in the top 14), but the goal/rebound
+flags are near the bottom and the pick metric did not follow.
+
+**Verdict: reverted.** Seed 1 is negative (-0.13pp, p=0.87 vs baseline) and
+seed 3 is positive (+0.57pp, p=0.37 vs baseline); this is mixed, not the
++0.5pp-on-both-seeds bar, so the feature block and `--shot-features` flag were
+removed and `model.py` is back to the corrected baseline. The per-player
+table and raw caches stay on disk under `data/moneypuck/shots/` for a follow-up
+(shot distance/angle look more promising than the counting features).
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -926,6 +1030,9 @@ Verdict: neither config beats a on **both** seeds by +0.5pp; each is mixed
   -0.25pp seed 3) and was reverted. Historical anytime-goal-scorer odds are
   not available free before 2023-05; forward collection or a paid backfill
   would be required.
+- V7-shots (18 raw distance/angle/HD/slot/rebound/PP columns) was mixed:
+  LGBM -0.13pp seed 1 / +0.57pp seed 3, both McNemar p>=0.37; reverted.
+  V7 MoneyPuck individual xG was also negative and collinear with V4.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
 - Update this file after every experiment: config used, split mode, pooled
