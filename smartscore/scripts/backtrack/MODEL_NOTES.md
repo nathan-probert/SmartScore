@@ -1088,6 +1088,10 @@ Verdict: neither config beats a on **both** seeds by +0.5pp; each is mixed
 
 ### V9-projected-lineups — prior-games lineup projector (reverted)
 
+Stage-1 module: `smartscore/scripts/backtrack/lineup_project.py` writes
+`data/ml/projected_lineups.csv` (427,240 rows) in 15.9s, with no `model.py`
+change. It emits methods a/b/c plus per-method confidence columns.
+
 Projector uses only games before the target date: (a) last prior unit,
 (b) exponentially weighted mode over the last 10 games, (c) team-constrained
 greedy assignment into F1-F4 / D1-D3 / PP1-PP2 slots. Model features use (c)
