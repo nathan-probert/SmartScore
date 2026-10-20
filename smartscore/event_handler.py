@@ -572,7 +572,7 @@ def handle_get_lineups(event, context):
     )
 
     try:
-        merged_info = merge_lineup_data(players, nhl_games, rotowire_games)
+        merged_info = merge_lineup_data(players, nhl_games, rotowire_games, teams=event.get("teams"))
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error merging lineup data: {e}")
         return _passthrough(_ensure_lineup_fields(players))

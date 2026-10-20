@@ -97,15 +97,48 @@ def test_merge_matches_rotowire_pp_unit_for_schedule_place_name():
     assert result[0]["pp_unit"] == "POWER PLAY #1"
 
 
-def test_merge_keeps_new_york_teams_apart_by_player_name():
-    """Rangers and Islanders share the schedule placeName "New York".
-
-    The team key is shared, but entries are keyed per player, so one club's PP
-    unit must never land on the other club's skater.
-    """
+def test_merge_keeps_same_named_players_on_nyr_and_nyi_apart():
+    """NYR and NYI must be keyed by club abbreviation, not the "New York" placeName."""
     players = [
-        {"name": "J.T. Miller", "team_name": "New York"},
-        {"name": "Bo Horvat", "team_name": "New York"},
+        {"name": "Same Name", "team_name": "New York", "team_id": 1},
+        {"name": "Same Name", "team_name": "New York", "team_id": 2},
+    ]
+    teams = [
+        {"team_id": 1, "team_abbr": "NYR"},
+        {"team_id": 2, "team_abbr": "NYI"},
+    ]
+    nhl = [
+        {
+            "teams": [
+                {"name": "Rangers", "units": [{"label": "F1", "players": ["Same Name"]}]},
+            ]
+        }
+    ]
+    rotowire = [
+        {
+            "teams": [
+                {
+                    "name": "Islanders",
+                    "pp_units": [{"label": "POWER PLAY #2", "players": [{"name": "Same Name"}]}],
+                },
+            ]
+        }
+    ]
+
+    result = merge_lineup_data(players, nhl, rotowire, teams=teams)
+
+    assert result[0]["lineup_unit"] == "F1"
+    assert result[0]["pp_unit"] is None
+    assert result[1]["lineup_unit"] is None
+    assert result[1]["pp_unit"] == "POWER PLAY #2"
+
+
+def test_single_new_york_placename_resolves_to_the_right_club_via_schedule():
+    """A player with only the "New York" placeName is disambiguated by team_id."""
+    players = [{"name": "J.T. Miller", "team_name": "New York", "team_id": 1}]
+    teams = [
+        {"team_id": 1, "team_abbr": "NYR"},
+        {"team_id": 2, "team_abbr": "NYI"},
     ]
     rotowire = [
         {
@@ -116,10 +149,9 @@ def test_merge_keeps_new_york_teams_apart_by_player_name():
         }
     ]
 
-    result = merge_lineup_data(players, [], rotowire)
+    result = merge_lineup_data(players, [], rotowire, teams=teams)
 
     assert result[0]["pp_unit"] == "POWER PLAY #1"
-    assert result[1]["pp_unit"] == "POWER PLAY #2"
 
 
 def test_merge_warns_when_source_covers_no_player_team(caplog):
@@ -140,7 +172,7 @@ def test_merge_warns_when_source_covers_no_player_team(caplog):
         result = merge_lineup_data(players, stale, [])
 
     assert result[0]["lineup_status"] == "UNKNOWN"
-    assert "No player matched a projected forward line" in caplog.text
+    assert "No lineup data matched" in caplog.text
     assert "not on this slate" in caplog.text
 
 
@@ -515,3 +547,28 @@ def test_partial_payload_keeps_prior_projection_for_unmatched_player():
     assert result[0]["lineup_position_group"] == "F"
     assert result[0]["pp_unit"] == "POWER PLAY #2"
     assert result[0]["lineup_status"] == "PROJECTED"
+
+
+def test_no_zero_match_warning_when_pp_units_matched(caplog):
+    """S3: a stale forward-line slate with valid PP units is not a total zero-match."""
+    players = [{"name": "Adam Fantilli", "team_name": "Blue Jackets"}]
+
+    with caplog.at_level("WARNING"):
+        result = merge_lineup_data(players, [], _rotowire_games())
+
+    assert result[0]["pp_unit"] == "POWER PLAY #1"
+    assert "No lineup data matched" not in caplog.text
+
+
+def test_coverage_counts_nyr_and_nyi_as_two_clubs(caplog):
+    """NIT: the two New York clubs must not collapse in the coverage log."""
+    players = [
+        {"name": "J.T. Miller", "team_name": "New York", "team_id": 1},
+        {"name": "Bo Horvat", "team_name": "New York", "team_id": 2},
+    ]
+    teams = [{"team_id": 1, "team_abbr": "NYR"}, {"team_id": 2, "team_abbr": "NYI"}]
+
+    with caplog.at_level("INFO"):
+        merge_lineup_data(players, [], [], teams=teams)
+
+    assert "2 player clubs" in caplog.text

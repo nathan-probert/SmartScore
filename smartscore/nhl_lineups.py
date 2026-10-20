@@ -187,11 +187,20 @@ _TEAM_NAMES = (
 
 _TEAM_ALIASES = {}
 _TEAM_ABBREVIATIONS = {}
+_place_abbreviations: Dict[str, Set[str]] = {}
 for _place_name, _common_name, _abbr in _TEAM_NAMES:
     _TEAM_ALIASES[normalize_team_name(_common_name)] = _place_name
     _TEAM_ALIASES[normalize_team_name(_abbr)] = _place_name
     _TEAM_ABBREVIATIONS[normalize_team_name(_common_name)] = _abbr
     _TEAM_ABBREVIATIONS[normalize_team_name(_abbr)] = _abbr
+    _place_abbreviations.setdefault(normalize_team_name(_place_name), set()).add(_abbr)
+
+# Place names are usable only when they identify one club. "New York" maps to
+# both NYR and NYI, so it is deliberately left unresolved; callers that have the
+# schedule disambiguate it with team_id/team_abbr instead.
+for _place_key, _abbrs in _place_abbreviations.items():
+    if len(_abbrs) == 1:
+        _TEAM_ABBREVIATIONS[_place_key] = next(iter(_abbrs))
 
 
 def canonical_team_name(name: str) -> str:
@@ -208,10 +217,20 @@ def canonical_team_name(name: str) -> str:
 def team_abbreviation(name: str) -> str:
     """Official NHL abbreviation for a source team name, or "" if unknown.
 
-    Unlike :func:`canonical_team_name`, this keeps the two New York clubs
-    distinct (NYR vs NYI), which slate matching needs.
+    Understands common names ("Rangers"), abbreviations ("NYR") and unambiguous
+    place names ("Toronto", "Los Angeles", "Montréal"). "New York" is
+    deliberately ambiguous (NYR/NYI) and returns ""; use the schedule's
+    ``team_id``/``team_abbr`` to resolve those clubs.
     """
     return _TEAM_ABBREVIATIONS.get(normalize_team_name(name), "")
+
+
+def club_key(name: str) -> str:
+    """Unambiguous club key for a name: abbreviation when known, else the name.
+
+    The lookup must never collapse NYR and NYI onto one "New York" key.
+    """
+    return team_abbreviation(name) or canonical_team_name(name)
 
 
 def _game_pair(game: Dict) -> frozenset:
@@ -466,7 +485,7 @@ def get_nhl_com_lineups(  # noqa: PLR0911 - each early return is a distinct pars
             skipped = [f"{game.get('away')}@{game.get('home')}" for game in games if game not in matched]
             logger.warning(
                 "forward lines skipped: stale slate; "
-                f"forward_lines_skipped_stale_slate={parsed_count - len(matched)} "
+                f"stale_slate_games_skipped={parsed_count - len(matched)} "
                 f"target_date={target_date} article_modified={article.get('dateModified')} "
                 f"parsed_slate={parsed_slate} skipped_games={skipped} "
                 f"applying={len(matched)}/{parsed_count}"
@@ -526,6 +545,7 @@ def get_rotowire_lineups(url: str = ROTOWIRE_LINEUPS_URL) -> List[Dict]:
 
     soup = BeautifulSoup(response.text, "html.parser")
     games: List[Dict] = []
+    skipped_no_lineup = 0
     # The page carries one non-game promo box with the same class, so only
     # count matchup blocks that actually have two team links.
     matchup_count = sum(
@@ -554,15 +574,27 @@ def get_rotowire_lineups(url: str = ROTOWIRE_LINEUPS_URL) -> List[Dict]:
 
         away = next((t["name"] for t in teams if t["is_visit"]), None)
         home = next((t["name"] for t in teams if not t["is_visit"]), None)
-        if away and home:
-            games.append({"away": away, "home": home, "teams": teams})
+        if not (away and home):
+            continue
+        if not all(team.get("has_lineup") for team in teams):
+            # A matchup with no lineup__list is incomplete (usually the page has
+            # not rendered that game yet). Drop it so the gap is visible in the
+            # parsed-vs-matchup warning instead of silently adding an empty team.
+            skipped_no_lineup += 1
+            continue
+        games.append({"away": away, "home": home, "teams": teams})
 
     pp_total = sum(len(u["players"]) for g in games for t in g["teams"] for u in t["pp_units"])
     logger.info(
         f"RotoWire lineups: {len(games)} games, {sum(len(g['teams']) for g in games)} teams, "
         f"{sum(len(t['pp_units']) for g in games for t in g['teams'])} PP units, {pp_total} PP skaters"
     )
-    if len(games) < matchup_count:
+    if skipped_no_lineup:
+        logger.warning(
+            f"RotoWire lineups: skipped {skipped_no_lineup} matchup(s) with no lineup__list "
+            f"({len(games)} of {matchup_count} matchups usable)"
+        )
+    elif len(games) < matchup_count:
         logger.warning(
             f"RotoWire lineups: parsed {len(games)} of {matchup_count} matchups (missing team or lineup list)"
         )
@@ -575,6 +607,7 @@ def _parse_rotowire_team(main: Tag, list_class: str, team_name: str) -> Dict:
     result: Dict = {
         "name": team_name,
         "is_visit": list_class == "is-visit",
+        "has_lineup": listing is not None,
         "starting_goalie": None,
         "pp_units": [],
         "injuries": [],

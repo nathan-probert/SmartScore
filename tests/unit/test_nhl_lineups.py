@@ -161,6 +161,7 @@ def _rotowire_game_html():
           <span class="lineup__inj">IR</span>
         </li>
       </ul>
+      <ul class="lineup__list is-home"></ul>
     </div>
     """
 
@@ -277,7 +278,7 @@ def test_get_nhl_com_lineups_skips_previous_slate_article(monkeypatch, caplog):
 
     assert games == []
     assert "forward lines skipped: stale slate" in caplog.text
-    assert "forward_lines_skipped_stale_slate=2" in caplog.text
+    assert "stale_slate_games_skipped=2" in caplog.text
     assert "target_date=2026-10-20" in caplog.text
     assert "FLYERS@DEVILS" in caplog.text
 
@@ -293,7 +294,7 @@ def test_get_nhl_com_lineups_applies_only_matching_games_from_partial_slate(monk
 
     assert len(games) == 1
     assert (games[0]["away"], games[0]["home"]) == ("FLYERS", "DEVILS")
-    assert "forward_lines_skipped_stale_slate=1" in caplog.text
+    assert "stale_slate_games_skipped=1" in caplog.text
     assert "applying=1/2" in caplog.text
 
 
@@ -436,3 +437,59 @@ def test_repair_mojibake_leaves_clean_text_alone():
 def test_repair_mojibake_survives_unencodable_text():
     """Text that is not latin-1 mojibake must come back unchanged, not raise."""
     assert _repair_mojibake("John �|NAME") == "John �|NAME"
+
+
+@pytest.mark.parametrize(
+    ("name", "abbr"),
+    [
+        ("Los Angeles", "LAK"),
+        ("New Jersey", "NJD"),
+        ("Tampa Bay", "TBL"),
+        ("Montréal", "MTL"),
+        ("Montreal", "MTL"),
+        ("Utah", "UTA"),
+        ("Seattle", "SEA"),
+        ("Vegas", "VGK"),
+        ("Anaheim", "ANA"),
+        ("San Jose", "SJS"),
+    ],
+)
+def test_team_abbreviation_maps_place_names(name, abbr):
+    """S1: article headers may use the place name, not the common name."""
+    assert team_abbreviation(name) == abbr
+
+
+def test_team_abbreviation_leaves_ambiguous_new_york_unresolved():
+    """A bare "New York" cannot identify NYR vs NYI; the schedule must."""
+    assert team_abbreviation("New York") == ""
+    assert team_abbreviation("Rangers") == "NYR"
+    assert team_abbreviation("Islanders") == "NYI"
+
+
+def test_get_rotowire_lineups_skips_matchup_missing_a_lineup_list(monkeypatch, caplog):
+    """S2: a matchup without a lineup__list is skipped and counted, not appended empty."""
+    markup = """
+    <div class="lineup__matchup">
+      <a href="/x" class="lineup__mteam is-visit">Sabres</a>
+      <a href="/x" class="lineup__mteam is-home">Blue Jackets</a>
+    </div>
+    <div class="lineup__main">
+      <ul class="lineup__list is-visit">
+        <li class="lineup__player"><a title="Tage Thompson" href="/x">T. Thompson</a></li>
+      </ul>
+    </div>
+    """
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        text = markup
+
+    monkeypatch.setattr("nhl_lineups.requests.get", lambda *a, **kw: Response())
+
+    with caplog.at_level("WARNING"):
+        games = get_rotowire_lineups()
+
+    assert games == []
+    assert "skipped 1 matchup(s) with no lineup__list" in caplog.text
