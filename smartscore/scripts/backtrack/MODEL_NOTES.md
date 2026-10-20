@@ -11,6 +11,11 @@
 `lineup_unit`/`pp_unit` from the same game's shift chart. Those columns are
 removed; corrected LGBM is **29.06%**.
 
+**Tims era:** challenge starts **2021-12-09** (243 pre-2023 dates; owner’s
+2023 claim is wrong). Ensemble **29.71%** all 1,053 challenge dates
+(29.87% strict 2023-24+); LGBM 29.14/29.84; hgpg 28.05/28.14; GPG
+26.50/27.09.
+
 **Lineup check:** projected ensemble **29.88%** seed 1 (end-to-end) and
 **29.60%** seed 3 (mean **29.74%**); oracle-lineup LGBM 4-seed mean
 **30.33% ± 0.26** (seeds 0/1/2/3: 30.36/30.61/30.39/29.98). V11 sensitivity:
@@ -1457,6 +1462,54 @@ tims_x_club_rest_days #47, tims_x_five_gpg #50).
 Verdict: **reverted**. No overall +0.5pp on both seeds and the group-3 rule
 failed; `--interactions` code removed.
 
+### V14 — Tims-era re-evaluation and pre-2017 feasibility
+
+**True Tims start:** earliest date with `tims in {1,2,3}` is **2021-12-09**,
+not 2023. There are **243 pre-2023 challenge dates** (729 picks); the owner’s
+2023 claim is wrong. Challenge dates/picks by season:
+
+| season | dates | picks |
+|---|---:|---:|
+| 2021-22 | 164 | 492 |
+| 2022-23 | 222 | 666 |
+| 2023-24 | 232 | 696 |
+| 2024-25 | 224 | 672 |
+| 2025-26 | 211 | 633 |
+| **total** | **1,053** | **3,159** |
+
+**All Tims-era challenge dates (n=3,159):** no-lineup ensemble seeds 0/1/3 =
+**29.946 / 29.408 / 29.788%**, mean **29.714%**; LGBM seeds 0/1/3 =
+29.060 / 29.376 / 28.997%, mean **29.144%**; hgpg **28.047%**; gpg **26.496%**.
+**Strict 2023-24+ (n=2,001, 667 dates):** ensemble **29.868%** mean
+(29.735 / 29.835 / 30.035), LGBM **29.835%** mean (29.685 / 30.285 / 29.535),
+hgpg 28.136%, gpg 27.086%. The owner-facing Tims-era headline is therefore
+**~29.7% all challenge dates, ~29.9% strict 2023+** — below 30%.
+
+| season | ensemble mean | LGBM mean | hgpg | gpg |
+|---|---:|---:|---:|---:|
+| 2021-22 | 28.32% | 27.24% | 24.80% | 22.97% |
+| 2022-23 | 30.28% | 28.48% | 30.18% | 27.33% |
+| 2023-24 | 29.17% | 28.54% | 23.99% | 23.85% |
+| 2024-25 | 29.41% | 29.86% | 30.36% | 29.32% |
+| 2025-26 | 31.12% | 31.23% | 30.33% | 28.28% |
+
+**Training strategy on identical 2023-24+ dates** (LGBM seed 1, k=5 over the
+667 test dates): all seasons **614/2001 = 30.685%** vs train-2023+ only
+**590/2001 = 29.485%**; all seasons +1.200pp, McNemar 159-135, p=0.180.
+Full-era training wins; keep it.
+
+**Pre-2017 feasibility (investigation only, no scrape):** the endpoints serve
+older seasons — one 2013-14 game log returned 78 games, `schedule/2013-10-01`
+returned a 7-day window, and shiftcharts for game 2013021223 returned 730 rows.
+Per season the pipeline would use `local_store.py --build/--derive/--lineups/
+--feeds/--publish` (or `reconstruct.py --season <season> --write`) plus
+`dump_store.py --export --season`. Four seasons (2013-14..2016-17) are roughly
+190k extra player-games (+45% over 427k), ~0.7GB cache + ~0.7GB raw DB, and
+~10k requests — about 1-2h at the 0.34s throttle plus parsing. They carry
+`scored` labels and all feature inputs, but **no Tims groups before 2021-12**
+(tims=0), so they can only augment pointwise training, not challenge
+evaluation; era/style drift makes the expected value uncertain.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -1532,6 +1585,9 @@ failed; `--interactions` code removed.
   narrower teammate-only block is the only follow-up worth trying.
 - V12-interactions (tims × rates) did not help (+0.10/0.00pp) and group 3 got
   worse; reverted.
+- Tims era starts 2021-12-09 (not 2023): headline 29.71% all challenge
+  dates / 29.87% strict 2023-24+; all-season training beats 2023+ by 1.2pp
+  on identical dates. Pre-2017 ingest is feasible but has no Tims labels.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
 - Update this file after every experiment: config used, split mode, pooled
