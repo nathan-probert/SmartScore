@@ -61,7 +61,7 @@ USAGE
 
     cd SmartScore-backtrack
     uv run python smartscore/scripts/backtrack/model.py --env dev \
-        [--refresh] [--split kfold|seasons] [--splits 5] \
+        [--refresh] [--split kfold|seasons] [--splits 5] [--test-start DATE] [--min-season YEAR] \
         [--train-subset challenge|all] [--model ensemble|hgb|lgbm|extratrees] [--lgbm-config a|b|c] [--lineup none|projected|oracle] [--seed N] [--ranker none|lambdarank] [--model-file PATH]
 
 Defaults: kfold k=5, train-subset all (strongest under CV; see MODEL_NOTES.md).
@@ -878,7 +878,8 @@ def run_folds(frame, args):
     challenge = frame["tims"].isin([1, 2, 3]) & frame["scored"].notna()
 
     if args.split == "seasons":
-        blocks = [frame.loc[frame["date"] >= TEST_START, "date"].unique()]
+        test_start = getattr(args, "test_start", TEST_START)
+        blocks = [frame.loc[frame["date"] >= test_start, "date"].unique()]
     else:
         challenge_dates = frame.loc[challenge, "date"].unique()
         blocks = fold_blocks(challenge_dates, args.splits, args.seed)
@@ -904,7 +905,12 @@ def run_folds(frame, args):
         if args.split == "kfold":
             train_all = frame[~frame["date"].isin(test_dates) & frame["scored"].notna()]
         else:
-            train_all = frame[(frame["date"] < TEST_START) & frame["scored"].notna()]
+            train_all = frame[(frame["date"] < getattr(args, "test_start", TEST_START)) & frame["scored"].notna()]
+            if getattr(args, "min_season", None) is not None:
+                season_start = pd.to_numeric(
+                    train_all["season"].astype(str).str[:4], errors="coerce"
+                )
+                train_all = train_all[season_start >= args.min_season]
         train = train_all[train_all["tims"].isin([1, 2, 3])] if args.train_subset == "challenge" else train_all
 
         sim = test.copy()
@@ -1016,6 +1022,17 @@ def main():
     )
     parser.add_argument("--split", choices=["kfold", "seasons"], default="kfold", help="evaluation split")
     parser.add_argument("--splits", type=int, default=5, help="number of k-fold blocks (kfold mode)")
+    parser.add_argument(
+        "--test-start",
+        default=TEST_START,
+        help="seasons split: first held-out date (default 2024-08-01).",
+    )
+    parser.add_argument(
+        "--min-season",
+        type=int,
+        default=None,
+        help="seasons split: drop training seasons starting before this year.",
+    )
     parser.add_argument(
         "--seed",
         type=int,

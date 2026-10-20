@@ -35,6 +35,7 @@ with units forward.
 | V8-tune (LGBM configs b/d) | +0.19 / -0.03 and -0.06 / +0.19pp vs a | rejected (mixed) |
 | V9-projected-lineups (prior-games projector) | hard b +0.98 / -0.25pp; probabilistic -0.41 / 0.00pp; projected ensemble +0.48 / -0.22pp; oracle LGBM 4-seed 30.33%; oracle ensemble -0.16 / +0.38 | rejected (mixed) |
 | V12-identity (player/team/age) | -1.49 / -0.29pp | rejected |
+| V12-era recent training (2021-22+) | LGBM -1.07 / -0.95pp, ensemble -0.15 / +0.08 vs full-era | rejected |
 
 **Conclusion:** with the currently available historical raw data, **~29.7% is
 the ceiling**. ≥30% was reachable only with same-game lookahead leakage.
@@ -63,7 +64,7 @@ calendar/schedule, V3c blends, V3e LGBM as default, V3f LGBM+baseline blends,
 V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged lineup
 replacements, V7-objective, V7-context, V7-shots, V7 MoneyPuck xG,
 V8-own-xG, V8-shrinkage, V8-tune configs b/d, V9-projected-lineups,
-V12-identity,
+V12-identity, V12-era recent training,
 injury filter (fields empty).
 V4 shot/TOI features are retained.
 
@@ -1323,6 +1324,28 @@ Identity importances (fold-1 gain rank/46; permutation AUC): `player_id` #2
 - Top pick equals the hgpg leader in **1,531/3,159 = 48.5%** of groups
   (g1 46.9%, g2 45.2%, g3 53.3%).
 
+### V12-era — recent-era deployment backtest (full-era kept)
+
+Added `--test-start` and `--min-season`; training restricted to seasons
+2021-22+. Two windows, LGBM and default ensemble, challenge picks only.
+
+| window | model | recent-era | full-era seed 1 | full-era seed 3 | hgpg | gpg |
+|---|---|---:|---:|---:|---:|---:|
+| train <2024-08-01, test 2024-25+25-26 (n=1305, 435 dates) | LGBM | 388 / 29.732% | 406 / 31.111% | 398 / 30.498% | 396 / 30.345% | 376 / 28.812% |
+| same | ensemble | 395 / 30.268% | 391 / 29.962% | 403 / 30.881% | 396 / 30.345% | 376 / 28.812% |
+| train <2025-08-01, test 2025-26 (n=633, 211 dates) | LGBM | 195 / 30.806% | 200 / 31.596% | 202 / 31.912% | 192 / 30.332% | 179 / 28.278% |
+| same | ensemble | 200 / 31.596% | 191 / 30.174% | 208 / 32.859% | 192 / 30.332% | 179 / 28.278% |
+
+Against the mean full-era k-fold on identical dates: A LGBM -1.07pp,
+A ensemble -0.15pp; B LGBM -0.95pp, B ensemble +0.08pp. No model beats the
+full-era benchmark by >= +0.5pp consistently, so **full-era training remains
+the recommended default**; the flags are retained for future backtests.
+
+Recent-era per-season: A LGBM 28.87/30.65 (2024-25/2025-26), A ensemble
+28.87/31.75; B both only 2025-26 (LGBM 30.81, ensemble 31.60).
+Per tims group: A LGBM 37.01/30.11/22.07, A ensemble 36.78/31.72/22.30;
+B LGBM 32.23/31.75/28.44, B ensemble 34.60/30.81/29.38.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -1380,6 +1403,9 @@ Identity importances (fold-1 gain rank/46; permutation AUC): `player_id` #2
 - V12 identity/age hurt both seeds (-1.49/-0.29pp); reverted. Baseline
   calibration is ~2.2pp overconfident (maxp 31.5% vs 29.3% realized), and the
   top pick matches the hgpg leader only 48.5% of the time.
+- V12-era recent training (2021-22+) did not beat full-era consistently
+  (LGBM -1.07/-0.95pp; ensemble -0.15/+0.08pp), so full-era stays the default.
+  `--test-start` / `--min-season` are retained for future backtests.
 - V7 team form / special teams / goalie rest did not help (+0.06pp seed 1,
   -0.25pp seed 3) and was reverted. Historical anytime-goal-scorer odds are
   not available free before 2023-05; forward collection or a paid backfill
