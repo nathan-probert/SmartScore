@@ -2,32 +2,51 @@
 
 ## FINAL RESULT — corrected, leak-free (2026-10-19)
 
-- **Default:** fixed equal-weight rank ensemble `hgb+logreg+lgbm`
-  (`--model ensemble`). Mean **29.71%** pooled OOF across seeds 0/1/3
-  (29.92 / 29.41 / 29.82; std **0.28**), vs hgpg **28.05%** and straight GPG
-  **26.50%**.
-- **≥30% is invalid:** the only ≥30% result was LGBM **30.36%** using
-  `lineup_unit`/`pp_unit` from the same game's shift chart. Those columns are
-  removed; corrected LGBM is **29.06%**.
-- **Reproduce:**
-  ```bash
-  cd SmartScore-backtrack
-  for s in 0 1 3; do
-    OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
-      smartscore/scripts/backtrack/model.py --env dev --model ensemble \
-      --seed "$s" --split kfold --splits 5 --train-subset all
-  done
-  ```
-- **Deployment caveat:** projected lineups and confirmed starting goalies are
-  legitimately available pre-game and may recover part of the ~1.3pp gap
-  between corrected LGBM (29.06%) and the leaky 30.36%, but this cannot be
-  verified from the historical archive.
-- **Audit:** `docs/backtrack_model_audit.md` (+ `docs/backtrack_audit.py`,
-  `docs/backtrack_ablation.py`). Rejected/negative: V3a lambdarank, V3b
-  calendar/schedule, V3c blends, V3e LGBM as default, V3f LGBM+baseline
-  blends, V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged
-  lineup replacements, V8 shrinkage, V8-tune configs b/d, injury filter (fields empty). V4 shot/TOI
-  features are retained.
+**Default:** fixed equal-weight rank ensemble `hgb+logreg+lgbm`
+(`--model ensemble`). Mean **29.71%** pooled OOF across seeds 0/1/3
+(29.92 / 29.41 / 29.82; std **0.28**), vs hgpg **28.05%** and straight GPG
+**26.50%**.
+
+**≥30% is invalid:** the only ≥30% result was LGBM **30.36%** using
+`lineup_unit`/`pp_unit` from the same game's shift chart. Those columns are
+removed; corrected LGBM is **29.06%**.
+
+**Post-correction experiments — all rejected:**
+
+| experiment | result | verdict |
+|---|---|---|
+| V7-objective (Poisson LGBM / conditional softmax) | Poisson +0.25 / +0.09pp; softmax below binary | rejected (tie) |
+| V7-context (team form / special teams / goalie rest) | +0.06 / -0.25pp | rejected |
+| V7-shots (raw distance/angle/HD/slot/rebound/PP features) | -0.13 / +0.57pp, McNemar p>=0.37 | rejected (mixed) |
+| V8-own-xG (first-party per-shot xG model) | -0.16 / -0.35pp, p=0.82/0.57 | rejected |
+| V8-shrinkage (empirical-Bayes rate features) | -0.67 / -0.54pp | rejected |
+| V8-tune (LGBM configs b/d) | +0.19 / -0.03 and -0.06 / +0.19pp vs a | rejected (mixed) |
+
+**Conclusion:** with the currently available historical raw data, **~29.7% is
+the ceiling**. ≥30% was reachable only with same-game lookahead leakage.
+
+**Legitimate deployment levers, unverifiable historically:** (1) projected
+lineups and confirmed starting goalies are available pre-game in the live
+pipeline; (2) forward-collect market anytime-goal-scorer odds (no free
+historical source exists before 2023-05).
+
+**Reproduce:**
+```bash
+cd SmartScore-backtrack
+for s in 0 1 3; do
+  OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
+    smartscore/scripts/backtrack/model.py --env dev --model ensemble \
+    --seed "$s" --split kfold --splits 5 --train-subset all
+done
+```
+
+**Audit:** `docs/backtrack_model_audit.md` (+ `docs/backtrack_audit.py`,
+`docs/backtrack_ablation.py`). Rejected/negative: V3a lambdarank, V3b
+calendar/schedule, V3c blends, V3e LGBM as default, V3f LGBM+baseline blends,
+V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged lineup
+replacements, V7-objective, V7-context, V7-shots, V7 MoneyPuck xG,
+V8-own-xG, V8-shrinkage, V8-tune configs b/d, injury filter (fields empty).
+V4 shot/TOI features are retained.
 
 Working log for the goal-probability model built on the backtracked archive.
 Purpose: record what was tried, what worked, what broke, and the data gotchas,
@@ -698,6 +717,56 @@ was +0.19pp; mean -0.21pp) and neither seed's McNemar is close to significant
 season rates plus opponent team/goalie context. No `--opp-history` flag or
 feature code retained; notes only.
 
+### V7-objective — Poisson LGBM and conditional-softmax logit (reverted)
+
+Protocol: date-blocked k=5, train=all, seeds 1/3, `OMP_NUM_THREADS=2`,
+`LGBM_N_JOBS=2`, `timeout 300`, 3,159 pooled picks. The corrected binary
+baseline reproduced exactly in this worktree: seed 1 **928 = 29.376%**, seed 3
+**916 = 28.997%**. Both arms use the same 42-feature set and the same folds.
+
+**A. Poisson LGBM.** Added `--objective {binary,poisson}`. The Poisson arm fits
+`LGBMRegressor(objective="poisson")` on the raw `player_games.goals` count
+(identical tree config) and scores `1 - exp(-lambda)`. All 92,440 challenge
+rows join a goal count, and `goals >= 1` matches `scored = 1` exactly (no
+mismatch).
+
+| seed | binary | poisson | delta | McNemar vs binary | McNemar vs hgpg |
+|---|---:|---:|---:|---|---|
+| 1 | 928 / 29.376% | 936 / 29.630% | +0.254pp | 153-145, p=0.685 | 326-276, p=0.046 |
+| 3 | 916 / 28.997% | 919 / 29.091% | +0.094pp | 131-128, p=0.901 | 310-277, p=0.187 |
+| pooled | 1,844 / 29.186% | 1,855 / 29.361% | +0.174pp | 284-273, p=0.672 | 636-553, p=0.017 |
+
+Held-out AUC 0.6929 (both seeds) vs 0.6924 / 0.6922 for binary. Runtime ~150s
+per seed with both seeds running concurrently, under the 300s cap.
+
+Verdict: rejected — positive on both seeds but only +0.09pp on seed 3, well
+short of +0.5pp, and the paired McNemar vs binary is a tie.
+
+**B. Conditional softmax.** Added `--model csoftmax`: a within-`(date, tims)`
+conditional logit on the same features, fitted by scipy L-BFGS on challenge
+rows only (PyTorch was not installed). Design matrix: 40 numeric features
+median-imputed and standardised on the training rows, `lineup_position_group`
+one-hot (F / D / missing) = 43 columns; `tims` is constant within a group and
+cancels exactly in the softmax. Groups average 29.3 rows and 5.05 scorers (223
+of 3,159 have none), so the likelihood sums the log probability of every
+scored row in the group (multiple-choice conditional logit). Returned score is
+the within-group softmax probability.
+
+| seed | binary | csoftmax | delta | McNemar vs binary | McNemar vs hgpg |
+|---|---:|---:|---:|---|---|
+| 1 | 928 / 29.376% | 888 / 28.110% | -1.266pp | 228-268, p=0.080 | 328-326, p=0.969 |
+| 3 | 916 / 28.997% | 894 / 28.300% | -0.697pp | 229-251, p=0.338 | 336-328, p=0.786 |
+| pooled | 1,844 / 29.186% | 1,782 / 28.205% | -0.981pp | 457-519, p=0.051 | 664-654, p=0.804 |
+
+Training time 1.9-6.4s per fold (143-300 L-BFGS iterations; one seed-3 fold
+hit the 300 cap), ~64s per seed end-to-end including the 14s frame build.
+Held-out AUC 0.569 — far below LGBM's 0.692. The linear group-softmax cannot
+represent the GBDT's nonlinear interactions, and it optimises within-slate rank
+rather than the global 0/1 calibration the pointwise models exploit.
+
+Verdict: rejected — worse than binary on both seeds and no better than hgpg.
+No code changes retained; the default remains `--model ensemble`.
+
 ### V7-context — team form / special teams / goalie rest (reverted)
 
 Hypothesis: the corrected baseline has player rates and opponent-goalie
@@ -774,103 +843,6 @@ usually with paid historical tiers. Practical options: (a) collect current
 anytime-goal-scorer snapshots forward via a free-tier odds API, or (b) pay
 for a 2023+ player-prop backfill; neither helps the current 2017-2026
 backtest at zero cost.
-
-### V7-objective — Poisson LGBM and conditional-softmax logit (reverted)
-
-Protocol: date-blocked k=5, train=all, seeds 1/3, `OMP_NUM_THREADS=2`,
-`LGBM_N_JOBS=2`, `timeout 300`, 3,159 pooled picks. The corrected binary
-baseline reproduced exactly in this worktree: seed 1 **928 = 29.376%**, seed 3
-**916 = 28.997%**. Both arms use the same 42-feature set and the same folds.
-
-**A. Poisson LGBM.** Added `--objective {binary,poisson}`. The Poisson arm fits
-`LGBMRegressor(objective="poisson")` on the raw `player_games.goals` count
-(identical tree config) and scores `1 - exp(-lambda)`. All 92,440 challenge
-rows join a goal count, and `goals >= 1` matches `scored = 1` exactly (no
-mismatch).
-
-| seed | binary | poisson | delta | McNemar vs binary | McNemar vs hgpg |
-|---|---:|---:|---:|---|---|
-| 1 | 928 / 29.376% | 936 / 29.630% | +0.254pp | 153-145, p=0.685 | 326-276, p=0.046 |
-| 3 | 916 / 28.997% | 919 / 29.091% | +0.094pp | 131-128, p=0.901 | 310-277, p=0.187 |
-| pooled | 1,844 / 29.186% | 1,855 / 29.361% | +0.174pp | 284-273, p=0.672 | 636-553, p=0.017 |
-
-Held-out AUC 0.6929 (both seeds) vs 0.6924 / 0.6922 for binary. Runtime ~150s
-per seed with both seeds running concurrently, under the 300s cap.
-
-Verdict: rejected — positive on both seeds but only +0.09pp on seed 3, well
-short of +0.5pp, and the paired McNemar vs binary is a tie.
-
-**B. Conditional softmax.** Added `--model csoftmax`: a within-`(date, tims)`
-conditional logit on the same features, fitted by scipy L-BFGS on challenge
-rows only (PyTorch was not installed). Design matrix: 40 numeric features
-median-imputed and standardised on the training rows, `lineup_position_group`
-one-hot (F / D / missing) = 43 columns; `tims` is constant within a group and
-cancels exactly in the softmax. Groups average 29.3 rows and 5.05 scorers (223
-of 3,159 have none), so the likelihood sums the log probability of every
-scored row in the group (multiple-choice conditional logit). Returned score is
-the within-group softmax probability.
-
-| seed | binary | csoftmax | delta | McNemar vs binary | McNemar vs hgpg |
-|---|---:|---:|---:|---|---|
-| 1 | 928 / 29.376% | 888 / 28.110% | -1.266pp | 228-268, p=0.080 | 328-326, p=0.969 |
-| 3 | 916 / 28.997% | 894 / 28.300% | -0.697pp | 229-251, p=0.338 | 336-328, p=0.786 |
-| pooled | 1,844 / 29.186% | 1,782 / 28.205% | -0.981pp | 457-519, p=0.051 | 664-654, p=0.804 |
-
-Training time 1.9-6.4s per fold (143-300 L-BFGS iterations; one seed-3 fold
-hit the 300 cap), ~64s per seed end-to-end including the 14s frame build.
-Held-out AUC 0.569 — far below LGBM's 0.692. The linear group-softmax cannot
-represent the GBDT's nonlinear interactions, and it optimises within-slate rank
-rather than the global 0/1 calibration the pointwise models exploit.
-
-Verdict: rejected — worse than binary on both seeds and no better than hgpg.
-No code changes retained; the default remains `--model ensemble`.
-
-### V8-shrinkage — empirical-Bayes rate features (reverted)
-
-Eight prior-only features on the corrected 42-feature set:
-`shrunk_gpg_{5,15,40}` (career goals/games shrunk to the prior league mean),
-`shrunk_season_gpg_{5,15}` (season rate shrunk to `hgpg`),
-`shrunk_five_gpg_{3,10}` (last-5 goals shrunk to the season rate), and
-`shrunk_sh_pct_50` (career shooting shrunk to the prior league shooting rate).
-League means are cumulative through the previous date; all player counts are
-prefix sums excluding the current row.
-
-Leakage/merge checks: 427,240 rows, no duplicate `(date, player_id)`, no
-suffix columns; manual recomputation matched for five sampled players on
-`shrunk_gpg_5`/`shrunk_season_gpg_5`/`shrunk_five_gpg_3`/`shrunk_sh_pct_50`.
-Nulls: gpg/shot features 144 (first date), season blends 97,668, five-game
-blends 8,355.
-
-LGBM, k=5, train=all, seeds 1/3, 300s cap (112s/117s):
-
-| seed | baseline hits/acc | shrinkage hits/acc | delta | vs baseline | vs hgpg |
-|---|---:|---:|---:|---|---|
-| 1 | 928 / 29.376% | 907 / 28.712% | **-0.665pp** | 128-149, p=0.229 | 320-299, p=0.422 |
-| 3 | 916 / 28.997% | 899 / 28.458% | **-0.538pp** | 124-141, p=0.326 | 306-293, p=0.624 |
-
-Per-fold std: seed 1 3.272, seed 3 1.651. Both seeds got worse, so the code
-was reverted (feature set back to 42). LGBM gain ranks were high —
-`shrunk_gpg_40` #1 (179,958; perm 0.0079), `shrunk_gpg_15` #2 (75,879; 0.0011),
-`shrunk_gpg_5` #9, `shrunk_season_gpg_15` #15, `shrunk_sh_pct_50` #17,
-`shrunk_season_gpg_5` #28, `shrunk_five_gpg_10` #29, `shrunk_five_gpg_3` #30 —
-but the signal is redundant with the existing rates and hurt pick accuracy.
-
-### V8-tune — LGBM hyperparameter sweep (reverted)
-
-Config d = 600 trees / lr 0.015 / 31 leaves / min_child_samples 30 /
-reg_lambda 2; config b = 600 / 0.02 / 15 / reg5. Seed 1/3, k=5, train=all,
-300s cap (105-123s each; b finally completed — its earlier timeouts were CPU
-contention). Reference is config a (400/0.03/31).
-
-| config | seed 1 | seed 3 | delta vs a | McNemar vs a | per-fold std |
-|---|---:|---:|---:|---|---|
-| a | 928 / 29.376% | 916 / 28.997% | — | — | 2.351 / 1.315 |
-| b | 934 / 29.566% | 915 / 28.965% | +0.190 / -0.032pp | 131-125 p=0.755; 129-130 p=1.0 | 2.790 / 0.750 |
-| d | 926 / 29.313% | 922 / 29.186% | -0.063 / +0.190pp | 105-107 p=0.945; 106-100 p=0.728 | 2.916 / 0.428 |
-
-Verdict: neither config beats a on **both** seeds by +0.5pp; each is mixed
-(b/d win one seed by ~0.19pp and lose the other). Defaults unchanged
-(config a; ensemble default). Config d was reverted, notes only.
 
 ### V7-shots — own raw shot-event quality block (reverted)
 
@@ -1064,6 +1036,53 @@ The `own_xg.py` builder and `--own-xg-features` flag were removed; the
 per-shot xG files and player-game feature tables stay on disk under
 `data/moneypuck/shots/` for a follow-up (e.g. shrink the block to xG-per-attempt
 or use a player-season re-fit rather than game rolling).
+
+### V8-shrinkage — empirical-Bayes rate features (reverted)
+
+Eight prior-only features on the corrected 42-feature set:
+`shrunk_gpg_{5,15,40}` (career goals/games shrunk to the prior league mean),
+`shrunk_season_gpg_{5,15}` (season rate shrunk to `hgpg`),
+`shrunk_five_gpg_{3,10}` (last-5 goals shrunk to the season rate), and
+`shrunk_sh_pct_50` (career shooting shrunk to the prior league shooting rate).
+League means are cumulative through the previous date; all player counts are
+prefix sums excluding the current row.
+
+Leakage/merge checks: 427,240 rows, no duplicate `(date, player_id)`, no
+suffix columns; manual recomputation matched for five sampled players on
+`shrunk_gpg_5`/`shrunk_season_gpg_5`/`shrunk_five_gpg_3`/`shrunk_sh_pct_50`.
+Nulls: gpg/shot features 144 (first date), season blends 97,668, five-game
+blends 8,355.
+
+LGBM, k=5, train=all, seeds 1/3, 300s cap (112s/117s):
+
+| seed | baseline hits/acc | shrinkage hits/acc | delta | vs baseline | vs hgpg |
+|---|---:|---:|---:|---|---|
+| 1 | 928 / 29.376% | 907 / 28.712% | **-0.665pp** | 128-149, p=0.229 | 320-299, p=0.422 |
+| 3 | 916 / 28.997% | 899 / 28.458% | **-0.538pp** | 124-141, p=0.326 | 306-293, p=0.624 |
+
+Per-fold std: seed 1 3.272, seed 3 1.651. Both seeds got worse, so the code
+was reverted (feature set back to 42). LGBM gain ranks were high —
+`shrunk_gpg_40` #1 (179,958; perm 0.0079), `shrunk_gpg_15` #2 (75,879; 0.0011),
+`shrunk_gpg_5` #9, `shrunk_season_gpg_15` #15, `shrunk_sh_pct_50` #17,
+`shrunk_season_gpg_5` #28, `shrunk_five_gpg_10` #29, `shrunk_five_gpg_3` #30 —
+but the signal is redundant with the existing rates and hurt pick accuracy.
+
+### V8-tune — LGBM hyperparameter sweep (reverted)
+
+Config d = 600 trees / lr 0.015 / 31 leaves / min_child_samples 30 /
+reg_lambda 2; config b = 600 / 0.02 / 15 / reg5. Seed 1/3, k=5, train=all,
+300s cap (105-123s each; b finally completed — its earlier timeouts were CPU
+contention). Reference is config a (400/0.03/31).
+
+| config | seed 1 | seed 3 | delta vs a | McNemar vs a | per-fold std |
+|---|---:|---:|---:|---|---|
+| a | 928 / 29.376% | 916 / 28.997% | — | — | 2.351 / 1.315 |
+| b | 934 / 29.566% | 915 / 28.965% | +0.190 / -0.032pp | 131-125 p=0.755; 129-130 p=1.0 | 2.790 / 0.750 |
+| d | 926 / 29.313% | 922 / 29.186% | -0.063 / +0.190pp | 105-107 p=0.945; 106-100 p=0.728 | 2.916 / 0.428 |
+
+Verdict: neither config beats a on **both** seeds by +0.5pp; each is mixed
+(b/d win one seed by ~0.19pp and lose the other). Defaults unchanged
+(config a; ensemble default). Config d was reverted, notes only.
 
 ## Lessons learned this phase
 
