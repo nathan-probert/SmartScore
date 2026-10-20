@@ -21,7 +21,7 @@ removed; corrected LGBM is **29.06%**.
 | V8-own-xG (first-party per-shot xG model) | -0.16 / -0.35pp, p=0.82/0.57 | rejected |
 | V8-shrinkage (empirical-Bayes rate features) | -0.67 / -0.54pp | rejected |
 | V8-tune (LGBM configs b/d) | +0.19 / -0.03 and -0.06 / +0.19pp vs a | rejected (mixed) |
-| V9-projected-lineups (prior-games projector) | method b LGBM +0.98 / -0.25pp; oracle +1.24 / +0.98 | rejected (mixed) |
+| V9-projected-lineups (prior-games projector) | hard b +0.98 / -0.25pp; probabilistic -0.41 / 0.00pp; oracle +1.24 / +0.98 | rejected (mixed) |
 
 **Conclusion:** with the currently available historical raw data, **~29.7% is
 the ceiling**. ≥30% was reachable only with same-game lookahead leakage.
@@ -1162,6 +1162,36 @@ information is worth ~+1.0 to +1.2pp, but projection quality is not reliable
 enough. `--lineup projected` is retained as an opt-in; default remains
 `--lineup none` and the rank ensemble.
 
+**Stage 3 — probabilistic lineups.** Prior-only decayed shares over the last
+10 games for F1-F4, D1-D3 and PP1-PP2, plus expected line quality, expected
+linemate gpg/ppg and PP expected ppg. No hard labels; all from prior games.
+
+Trio-continuity projector (most common prior trios/pairs over the last 10,
+then method b for unassigned): **F 48.66%, D 55.56%** (coverage 81.0%/85.5%),
+which does **not** beat method b (59.6%/63.5%).
+
+| variant | seed 1 | seed 3 |
+|---|---:|---:|
+| no-lineup LGBM | 928 / 29.376% | 916 / 28.997% |
+| hard projected method b | 959 / 30.358% | 908 / 28.743% |
+| probabilistic | 915 / 28.965% | 916 / 28.997% |
+| probabilistic delta | **-0.412pp** | **0.000pp** |
+| probabilistic McNemar | 172-185, p=0.525 | 169-169, p=1.0 |
+| probabilistic per-fold std | 2.656 | 1.140 |
+| oracle (actual units) | 967 / 30.611% | 947 / 29.978% |
+
+Probabilistic feature importances (fold-1 LGBM gain rank/55; permutation AUC):
+`expected_line_quality` #2 (33,808; 0.0028), `f1_prob` #3 (26,850; 0.0011),
+`d3_prob` #6 (12,934; -0.0019), `f2_prob` #8 (11,279; 0.0009), `pp1_prob` #10
+(10,283; 0.0036), `pp_unit_expected_ppg` #12 (9,461; -0.0008),
+`expected_linemate_gpg` #21, `expected_linemate_ppg` #24, `f3_prob` #26,
+`f4_prob` #28, `pp2_prob` #29, `d2_prob` #31, `d1_prob` #46.
+
+Verdict: **reverted**. Probabilistic features lose 0.41pp on seed 1 and tie
+seed 3; the condition to run the ensemble was not met. The projector functions
+remain in `lineup_project.py` for analysis, but `model.py` keeps the stage-2
+`--lineup projected` opt-in only and defaults to no lineup.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -1212,9 +1242,9 @@ enough. `--lineup projected` is retained as an opt-in; default remains
   were reverted; the information is already in the existing rates.
 - V8-tune configs b/d were mixed (+0.19pp on one seed, negative/low on the
   other); config a stays the reference.
-- V9 projected lineups: method b is mixed (+0.98pp seed 1, -0.25pp seed 3);
-  oracle is +1.2/+1.0pp, so projection quality is the blocker. Opt-in only,
-  default remains no-lineup.
+- V9 lineup work: hard projected +0.98/-0.25pp, probabilistic -0.41/0.00pp,
+  trio continuity F 48.7% (below method b 59.6%); oracle +1.2/+1.0pp. Keep
+  projected as opt-in; default remains no-lineup.
 - V7 team form / special teams / goalie rest did not help (+0.06pp seed 1,
   -0.25pp seed 3) and was reverted. Historical anytime-goal-scorer odds are
   not available free before 2023-05; forward collection or a paid backfill

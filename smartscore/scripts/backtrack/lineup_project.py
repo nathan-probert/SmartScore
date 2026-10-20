@@ -179,6 +179,207 @@ def project(frame):
     return out
 
 
+PROB_FEATURES = [
+    "f1_prob",
+    "f2_prob",
+    "f3_prob",
+    "f4_prob",
+    "d1_prob",
+    "d2_prob",
+    "d3_prob",
+    "pp1_prob",
+    "pp2_prob",
+    "expected_line_quality",
+    "expected_linemate_gpg",
+    "expected_linemate_ppg",
+    "pp_unit_expected_ppg",
+]
+
+
+def probabilistic_features(frame):
+    """Prior-only unit probabilities and expected linemate quality.
+
+    Probabilities are decayed shares over the player's last 10 prior games.
+    Expected linemate means use the current team's pre-game gpg/ppg, weighted
+    by each player's prior probability of occupying each unit. Candidate
+    players are the archive's dressed roster for that team-date.
+    """
+    f = frame.sort_values(["player_id", "date"]).reset_index(drop=True)
+    n = len(f)
+    pos = f["lineup_position_group"].to_numpy(dtype=object)
+    gpg = pd.to_numeric(f["gpg"], errors="coerce").to_numpy(dtype=float)
+    ppg = pd.to_numeric(f["ppg"], errors="coerce").to_numpy(dtype=float)
+    units = f["lineup_unit"].to_numpy(dtype=object)
+    pps = f["pp_unit"].to_numpy(dtype=object)
+    date = f["date"].to_numpy(dtype=object)
+    team = f["team"].to_numpy(dtype=object)
+
+    all_units = LINE_UNITS + PP_UNITS
+    probs = {unit: np.full(n, np.nan) for unit in all_units}
+    for _, positions in f.groupby("player_id", sort=False).indices.items():
+        player_u = units[positions]
+        player_p = pps[positions]
+        for i, row in enumerate(positions):
+            recent_u = player_u[max(0, i - 10) : i]
+            recent_p = player_p[max(0, i - 10) : i]
+            weights = [DECAY ** (len(recent_u) - 1 - j) for j in range(len(recent_u))]
+            for unit in LINE_UNITS:
+                total = sum(
+                    w
+                    for w, value in zip(weights, recent_u)
+                    if pd.notna(value)
+                )
+                if total:
+                    probs[unit][row] = sum(
+                        w
+                        for w, value in zip(weights, recent_u)
+                        if value == unit
+                    ) / total
+            weights = [DECAY ** (len(recent_p) - 1 - j) for j in range(len(recent_p))]
+            for unit in PP_UNITS:
+                total = sum(
+                    w
+                    for w, value in zip(weights, recent_p)
+                    if pd.notna(value)
+                )
+                if total:
+                    probs[unit][row] = sum(
+                        w
+                        for w, value in zip(weights, recent_p)
+                        if value == unit
+                    ) / total
+
+    line_gpg = np.full(n, np.nan)
+    line_ppg = np.full(n, np.nan)
+    pp_ppg = np.full(n, np.nan)
+    line_quality = np.full(n, np.nan)
+    for _, positions in f.groupby(["date", "team"], sort=False).indices.items():
+        rows = list(positions)
+        forwards = [r for r in rows if pos[r] == "F"]
+        defense = [r for r in rows if pos[r] == "D"]
+        for row in rows:
+            if pos[row] == "F":
+                group_units, mates, count = ["F1", "F2", "F3", "F4"], forwards, 2
+            else:
+                group_units, mates, count = ["D1", "D2", "D3"], defense, 1
+            total = 0.0
+            g_sum = 0.0
+            p_sum = 0.0
+            q_sum = 0.0
+            for unit in group_units:
+                p = probs[unit][row]
+                if pd.isna(p) or p <= 0:
+                    continue
+                other = [x for x in mates if x != row]
+                other.sort(
+                    key=lambda x: probs[unit][x] if pd.notna(probs[unit][x]) else -1,
+                    reverse=True,
+                )
+                other = other[:count]
+                if not other:
+                    continue
+                mean_g = np.nanmean(gpg[other])
+                mean_p = np.nanmean(ppg[other])
+                total += p
+                g_sum += p * mean_g
+                p_sum += p * mean_p
+                q_sum += p * (gpg[row] + mean_g)
+            if total:
+                line_gpg[row] = g_sum / total
+                line_ppg[row] = p_sum / total
+                line_quality[row] = q_sum / total
+
+            total = 0.0
+            pp_sum = 0.0
+            for unit in ("PP1", "PP2"):
+                p = probs[unit][row]
+                if pd.isna(p) or p <= 0:
+                    continue
+                other = [x for x in rows if x != row]
+                other.sort(
+                    key=lambda x: probs[unit][x] if pd.notna(probs[unit][x]) else -1,
+                    reverse=True,
+                )
+                other = other[:4]
+                if not other:
+                    continue
+                total += p
+                pp_sum += p * np.nanmean(ppg[other])
+            if total:
+                pp_ppg[row] = pp_sum / total
+
+    out = {"date": date, "player_id": f["player_id"].to_numpy()}
+    for unit in all_units:
+        out[f"{unit.lower()}_prob"] = probs[unit]
+    out["expected_line_quality"] = line_quality
+    out["expected_linemate_gpg"] = line_gpg
+    out["expected_linemate_ppg"] = line_ppg
+    out["pp_unit_expected_ppg"] = pp_ppg
+    return pd.DataFrame(out)
+
+
+def trio_project(frame):
+    """Hard projector with trio/pair continuity from the prior 10 games."""
+    f = frame.sort_values(["player_id", "date"]).reset_index(drop=True)
+    n = len(f)
+    unit = f["lineup_unit"].to_numpy(dtype=object)
+    pp = f["pp_unit"].to_numpy(dtype=object)
+    pos = f["lineup_position_group"].to_numpy(dtype=object)
+    date = f["date"].to_numpy(dtype=object)
+    team = f["team"].to_numpy(dtype=object)
+    pid = f["player_id"].to_numpy()
+
+    team_dates = {}
+    team_date_rows = {}
+    for (club, day), positions in f.groupby(["team", "date"], sort=False).indices.items():
+        team_dates.setdefault(club, []).append(day)
+        team_date_rows[(club, day)] = list(positions)
+    for club in team_dates:
+        team_dates[club] = sorted(team_dates[club])
+    projected = np.full(n, np.nan, dtype=object)
+    for (day, club), positions in f.groupby(["date", "team"], sort=False).indices.items():
+        rows = list(positions)
+        prior_dates = [d for d in team_dates[club] if d < day][-10:]
+        if not prior_dates:
+            continue
+        trios = {}
+        for age, prior_day in enumerate(reversed(prior_dates)):
+            weight = DECAY**age
+            prior_rows = team_date_rows[(club, prior_day)]
+            for group, size, capacity in (("F", 3, 3), ("D", 2, 2)):
+                members = [r for r in prior_rows if pos[r] == group]
+                by_unit = {}
+                for r in members:
+                    if pd.notna(unit[r]):
+                        by_unit.setdefault(unit[r], []).append(pid[r])
+                for label, players in by_unit.items():
+                    if len(players) != size:
+                        continue
+                    key = tuple(sorted(players))
+                    entry = trios.setdefault(key, {"weight": 0.0, "units": {}})
+                    entry["weight"] += weight
+                    entry["units"][label] = entry["units"].get(label, 0.0) + weight
+        current = set(pid[rows])
+        assigned = {}
+        counts = {}
+        for key, entry in sorted(
+            trios.items(), key=lambda item: item[1]["weight"], reverse=True
+        ):
+            if not set(key) <= current:
+                continue
+            label = max(entry["units"], key=entry["units"].get)
+            if counts.get(label, 0) + len(key) > (3 if label.startswith("F") else 2):
+                continue
+            if any(p in assigned for p in key):
+                continue
+            for p in key:
+                assigned[p] = label
+            counts[label] = counts.get(label, 0) + len(key)
+        for row in rows:
+            projected[row] = assigned.get(pid[row], np.nan)
+    return projected
+
+
 def accuracy_table(table):
     rows = []
     for method in ("a", "b", "c"):
