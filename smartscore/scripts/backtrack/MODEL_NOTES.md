@@ -26,7 +26,7 @@
   `docs/backtrack_ablation.py`). Rejected/negative: V3a lambdarank, V3b
   calendar/schedule, V3c blends, V3e LGBM as default, V3f LGBM+baseline
   blends, V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged
-  lineup replacements, V8 shrinkage, injury filter (fields empty). V4 shot/TOI
+  lineup replacements, V8 shrinkage, V8-tune configs b/d, injury filter (fields empty). V4 shot/TOI
   features are retained.
 
 Working log for the goal-probability model built on the backtracked archive.
@@ -728,6 +728,23 @@ was reverted (feature set back to 42). LGBM gain ranks were high —
 `shrunk_season_gpg_5` #28, `shrunk_five_gpg_10` #29, `shrunk_five_gpg_3` #30 —
 but the signal is redundant with the existing rates and hurt pick accuracy.
 
+### V8-tune — LGBM hyperparameter sweep (reverted)
+
+Config d = 600 trees / lr 0.015 / 31 leaves / min_child_samples 30 /
+reg_lambda 2; config b = 600 / 0.02 / 15 / reg5. Seed 1/3, k=5, train=all,
+300s cap (105-123s each; b finally completed — its earlier timeouts were CPU
+contention). Reference is config a (400/0.03/31).
+
+| config | seed 1 | seed 3 | delta vs a | McNemar vs a | per-fold std |
+|---|---:|---:|---:|---|---|
+| a | 928 / 29.376% | 916 / 28.997% | — | — | 2.351 / 1.315 |
+| b | 934 / 29.566% | 915 / 28.965% | +0.190 / -0.032pp | 131-125 p=0.755; 129-130 p=1.0 | 2.790 / 0.750 |
+| d | 926 / 29.313% | 922 / 29.186% | -0.063 / +0.190pp | 105-107 p=0.945; 106-100 p=0.728 | 2.916 / 0.428 |
+
+Verdict: neither config beats a on **both** seeds by +0.5pp; each is mixed
+(b/d win one seed by ~0.19pp and lose the other). Defaults unchanged
+(config a; ensemble default). Config d was reverted, notes only.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -776,6 +793,8 @@ but the signal is redundant with the existing rates and hurt pick accuracy.
   head-to-head form is evidently covered by the existing rates.
 - V8 empirical-Bayes shrinkage rates hurt both seeds (-0.67 / -0.54pp) and
   were reverted; the information is already in the existing rates.
+- V8-tune configs b/d were mixed (+0.19pp on one seed, negative/low on the
+  other); config a stays the reference.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
 - Update this file after every experiment: config used, split mode, pooled
