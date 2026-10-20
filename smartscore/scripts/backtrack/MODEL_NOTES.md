@@ -1537,6 +1537,38 @@ refresh/evaluation commands are in the runbook. Blocker: pre-2021 rows have
 **no Tims groups** (`tims=0`), so they are pointwise training rows only; verify
 `pre-2021 rows with tims group = 0` and keep `rows in tims groups = 92,440`.
 
+### V15 — augmented pre-2017 training (not adopted)
+
+`Player-Snapshots-backtrack-dev` now has **617,310 rows** (427,240 + 190,070
+published 2013-17 skaters), dates **2013-10-01 .. 2026-06-14**; team cache
+34,300 and goalie cache 36,696 rows. Total scored rows **617,310**; per-fold
+train size **567,430–572,421** (mean **570,391**).
+
+`--refresh` failed on `Player-Snapshots-backtrack-dev` with PostgREST
+`57014 canceling statement due to statement timeout` after **254s** (ordered
+offset pagination at 617k rows). Cache was refreshed with date-windowed REST
+queries instead. **Follow-up:** fix `fetch_table` pagination (keyset pagination
+or per-season/date windows) rather than increasing the statement timeout.
+
+Augmented LGBM: seed 1 **931/3159 = 29.471%** (+0.095pp vs `oof_v6_baseline`
+29.376%); seed 3 **929/3159 = 29.408%** (+0.412pp vs 28.997%); mean +0.253pp,
+neither McNemar significant (p=0.91 / 0.52).
+
+Augmented ensemble (end-to-end, timeout 420): seed 0 **933/3159 = 29.535%**
+(−0.380pp vs 29.915%); seed 3 **935/3159 = 29.598%** (−0.222pp vs 29.820%).
+Both lower overall, so seed 1 was not run.
+
+Restricted metrics (complete component-OOF reconstruction; ±1–3 picks vs the
+end-to-end runs):
+- seed 0: 2023-24+ **608/2001 = 30.385%** (+0.650pp vs pre 29.735%); 2025-26
+  **200/633 = 31.596%** (+1.264pp vs 30.332%).
+- seed 3: 2023-24+ **598/2001 = 29.885%** (−0.150pp vs 30.035%); 2025-26
+  **195/633 = 30.806%** (−2.054pp vs 32.859%).
+
+Verdict: **do not adopt** the augmented training set for the ensemble; overall
+accuracy is slightly worse and the recent-era seed-0 gain is not consistent
+across seeds. Keep the 2017+ training default.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
