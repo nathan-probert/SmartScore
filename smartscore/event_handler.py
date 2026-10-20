@@ -9,6 +9,7 @@ from player_archive import save_player_snapshots
 from service import (
     backfill_dates,
     build_goalies_with_team_id,
+    build_slate_pairs,
     calculate_metrics,
     calculate_season_metrics,
     check_db_for_date,
@@ -21,6 +22,7 @@ from service import (
     get_injury_data,
     get_players_from_team,
     get_published_picks,
+    get_schedule_slate_pairs,
     get_teams,
     get_tims,
     get_todays_schedule,
@@ -541,8 +543,15 @@ def handle_get_lineups(event, context):
     # Each source is fetched independently so one being down still lets the other
     # contribute. Any unexpected failure here preserves the lineup fields already
     # on the working set rather than rewriting good projections as UNKNOWN.
+    # The NHL.com article is edited in place and can lag a day, so it is filtered
+    # against the target date's actual schedule; RotoWire carries today's games.
+    date = event.get("date") or get_date()
+    slate_pairs = build_slate_pairs(event.get("teams"))
+    if not slate_pairs:
+        slate_pairs = get_schedule_slate_pairs(date)
+
     try:
-        nhl_games = get_nhl_com_lineups()
+        nhl_games = get_nhl_com_lineups(slate_pairs=slate_pairs, target_date=date)
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error fetching NHL.com lineups: {e}")
         nhl_games = []

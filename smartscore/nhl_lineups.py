@@ -23,7 +23,7 @@ import html
 import json
 import re
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import requests
 from aws_lambda_powertools import Logger
@@ -186,9 +186,12 @@ _TEAM_NAMES = (
 )
 
 _TEAM_ALIASES = {}
+_TEAM_ABBREVIATIONS = {}
 for _place_name, _common_name, _abbr in _TEAM_NAMES:
     _TEAM_ALIASES[normalize_team_name(_common_name)] = _place_name
     _TEAM_ALIASES[normalize_team_name(_abbr)] = _place_name
+    _TEAM_ABBREVIATIONS[normalize_team_name(_common_name)] = _abbr
+    _TEAM_ABBREVIATIONS[normalize_team_name(_abbr)] = _abbr
 
 
 def canonical_team_name(name: str) -> str:
@@ -200,6 +203,28 @@ def canonical_team_name(name: str) -> str:
     """
     key = normalize_team_name(name)
     return normalize_team_name(_TEAM_ALIASES.get(key, name))
+
+
+def team_abbreviation(name: str) -> str:
+    """Official NHL abbreviation for a source team name, or "" if unknown.
+
+    Unlike :func:`canonical_team_name`, this keeps the two New York clubs
+    distinct (NYR vs NYI), which slate matching needs.
+    """
+    return _TEAM_ABBREVIATIONS.get(normalize_team_name(name), "")
+
+
+def _game_pair(game: Dict) -> frozenset:
+    """The unordered team pair for a parsed game, keyed by abbreviation.
+
+    Used only to check a source game against the target date's schedule, so
+    Rangers and Islanders must not collapse into one "New York" key.
+    """
+    away = team_abbreviation(game.get("away") or "")
+    home = team_abbreviation(game.get("home") or "")
+    if not away or not home:
+        return frozenset()
+    return frozenset((away, home))
 
 
 def _fetch_text(url: str, max_retries: int = 3, base_delay: int = 1) -> Optional[str]:
@@ -348,15 +373,29 @@ def _parse_nhl_article_body(body: str) -> List[Dict]:
     return games
 
 
-def get_nhl_com_lineups(url: str = NHL_LINEUP_ARTICLE_URL) -> List[Dict]:
+def get_nhl_com_lineups(  # noqa: PLR0911 - each early return is a distinct parse failure
+    url: str = NHL_LINEUP_ARTICLE_URL,
+    slate_pairs: Optional[Set[frozenset]] = None,
+    target_date: Optional[str] = None,
+) -> List[Dict]:
     """
     Fetch and parse projected lineups from the NHL.com daily projections article.
 
     The lineup text is delivered as JSON-LD (``application/ld+json`` schema.org
     ``NewsArticle``), so this parses a JSON string field rather than scraping HTML.
 
+    The article is edited in place and can still describe the previous day's
+    slate (observed: the 2026-10-20 10:30 ET run got the 2026-10-19 article). When
+    ``slate_pairs`` is supplied, games whose two teams are not playing each other
+    on the target date are dropped; if none match, all forward lines are skipped
+    rather than stamping yesterday's combinations as today's projection.
+
     Args:
         url: Article URL. Override in tests to point at a fixture.
+        slate_pairs: Unordered canonical team pairs (``frozenset``) playing on
+            ``target_date``. ``None`` disables the guard (parser tests); an
+            empty set means the schedule is unknown and skips all forward lines.
+        target_date: ``YYYY-MM-DD`` the run is for, used in log messages.
 
     Returns:
         List of games; each has ``away``, ``home``, records, and per-team
@@ -410,6 +449,33 @@ def get_nhl_com_lineups(url: str = NHL_LINEUP_ARTICLE_URL) -> List[Dict]:
         f"(modified {article.get('dateModified')}): {len(games)} games, "
         f"{len(teams)} teams, {player_count} players"
     )
+
+    if slate_pairs is not None:
+        parsed_count = len(games)
+        parsed_slate = [f"{game.get('away')}@{game.get('home')}" for game in games]
+        if not slate_pairs:
+            logger.error(
+                "forward lines skipped: no target-date schedule to verify the article slate; "
+                f"forward_lines_skipped_no_schedule=1 target_date={target_date} "
+                f"article_modified={article.get('dateModified')} parsed_slate={parsed_slate}"
+            )
+            return []
+
+        matched = [game for game in games if _game_pair(game) in slate_pairs]
+        if len(matched) < parsed_count:
+            skipped = [f"{game.get('away')}@{game.get('home')}" for game in games if game not in matched]
+            logger.warning(
+                "forward lines skipped: stale slate; "
+                f"forward_lines_skipped_stale_slate={parsed_count - len(matched)} "
+                f"target_date={target_date} article_modified={article.get('dateModified')} "
+                f"parsed_slate={parsed_slate} skipped_games={skipped} "
+                f"applying={len(matched)}/{parsed_count}"
+            )
+        games = matched
+
+    teams = [team for game in games for team in game["teams"]]
+    player_count = sum(len(unit["players"]) for team in teams for unit in team["units"])
+    logger.info(f"NHL.com: applying {len(games)} games, {len(teams)} teams, {player_count} players")
     return games
 
 

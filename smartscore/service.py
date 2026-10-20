@@ -2,7 +2,7 @@ import datetime
 import json
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List
+from typing import Dict, List, Set
 
 import make_predictions_rust
 import pytz
@@ -1033,6 +1033,60 @@ def _iter_teams(games: List[Dict]) -> List[Dict]:
             continue
         teams.extend(team for team in game_teams if isinstance(team, dict))
     return teams
+
+
+def build_slate_pairs(teams: List[Dict] | None) -> Set[frozenset]:
+    """Unordered team pairs playing on the target date, keyed by abbreviation.
+
+    Built from the pipeline's ``teams`` payload (one entry per club, with
+    ``team_abbr``/``team_id``/``opponent_id``/``home``), which is itself derived
+    from the NHL schedule for that date. Used to reject a lineup article that
+    still describes the previous day's slate. Abbreviations are used because
+    the source names collapse both New York clubs onto "New York".
+    """
+    abbr_by_id = {}
+    for team in teams or []:
+        if isinstance(team, dict) and team.get("team_id") is not None:
+            abbr_by_id[team["team_id"]] = (team.get("team_abbr") or "").upper()
+
+    pairs: Set[frozenset] = set()
+    for team in teams or []:
+        if not isinstance(team, dict) or not team.get("home"):
+            continue
+        home = (team.get("team_abbr") or "").upper()
+        away = abbr_by_id.get(team.get("opponent_id"), "")
+        if home and away:
+            pairs.add(frozenset((home, away)))
+    return pairs
+
+
+def get_schedule_slate_pairs(date: str | None = None) -> Set[frozenset]:
+    """Team pairs playing on ``date`` from the NHL schedule, keyed by abbreviation.
+
+    Fallback for callers that do not carry the pipeline's ``teams`` payload.
+    Returns an empty set when the schedule cannot be read; callers treat that
+    as "unverified" and skip forward lines rather than guess.
+    """
+    date = date or get_date()
+    try:
+        schedule = get_nhl_client().get_schedule(date)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Could not fetch the NHL schedule for {date} to verify lineup slate: {e}")
+        return set()
+
+    pairs: Set[frozenset] = set()
+    for day in (schedule or {}).get("gameWeek") or []:
+        if day.get("date") != date:
+            continue
+        for game in day.get("games") or []:
+            away = ((game.get("awayTeam") or {}).get("abbrev") or "").upper()
+            home = ((game.get("homeTeam") or {}).get("abbrev") or "").upper()
+            if away and home:
+                pairs.add(frozenset((away, home)))
+
+    if not pairs:
+        logger.warning(f"No schedule games found for {date}; lineup slate cannot be verified")
+    return pairs
 
 
 def _build_lineup_lookup(nhl_games: List[Dict], rotowire_games: List[Dict]) -> Dict[str, Dict[str, Dict]]:
