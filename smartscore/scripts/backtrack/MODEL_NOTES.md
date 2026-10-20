@@ -11,6 +11,11 @@
 `lineup_unit`/`pp_unit` from the same game's shift chart. Those columns are
 removed; corrected LGBM is **29.06%**.
 
+**Lineup check:** projected ensemble **29.88%** seed 1 (end-to-end) and
+**29.60%** seed 3 (mean **29.74%**); oracle-lineup LGBM 4-seed mean
+**30.33% ± 0.26** (seeds 0/1/2/3: 30.36/30.61/30.39/29.98). Real morning
+projections should land roughly **29.7-30.3%**; default stays no-lineup.
+
 **Post-correction experiments — all rejected:**
 
 | experiment | result | verdict |
@@ -21,17 +26,18 @@ removed; corrected LGBM is **29.06%**.
 | V8-own-xG (first-party per-shot xG model) | -0.16 / -0.35pp, p=0.82/0.57 | rejected |
 | V8-shrinkage (empirical-Bayes rate features) | -0.67 / -0.54pp | rejected |
 | V8-tune (LGBM configs b/d) | +0.19 / -0.03 and -0.06 / +0.19pp vs a | rejected (mixed) |
-| V9-projected-lineups (prior-games projector) | hard b +0.98 / -0.25pp; probabilistic -0.41 / 0.00pp; ensemble +0.44 / -0.22pp; oracle LGBM +1.24 / +0.98; oracle ensemble -0.16 / +0.38 | rejected (mixed) |
+| V9-projected-lineups (prior-games projector) | hard b +0.98 / -0.25pp; probabilistic -0.41 / 0.00pp; projected ensemble +0.48 / -0.22pp; oracle LGBM 4-seed 30.33%; oracle ensemble -0.16 / +0.38 | rejected (mixed) |
 
 **Conclusion:** with the currently available historical raw data, **~29.7% is
 the ceiling**. ≥30% was reachable only with same-game lookahead leakage.
 
 **Legitimate deployment levers, unverifiable historically:** (1) projected
 lineups and confirmed starting goalies are available pre-game in the live
-pipeline — the crude V9 projector was neutral (ensemble 29.85/29.60), while the
-oracle was 29.25/30.20, so real morning projections should sit between them;
-test a real feed before switching the default. (2) forward-collect market
-anytime-goal-scorer odds (no free historical source exists before 2023-05).
+pipeline — the crude projector gave an ensemble 29.88/29.60 (seeds 1/3) and the
+oracle-lineup LGBM 4-seed mean is 30.33 ±0.26, so real morning projections
+should land roughly **29.7-30.3%**; test a real feed before switching the
+default. (2) forward-collect market anytime-goal-scorer odds (no free historical
+source exists before 2023-05).
 
 **Reproduce:**
 ```bash
@@ -1218,6 +1224,18 @@ stays `--lineup none`.** Oracle mean is also 29.72% (29.25/30.20), showing the
 crude projector is not the only limiter; real morning projections should sit
 between the crude projector and the oracle, but that is not verifiable here.
 
+**Stage 5 — final numbers.** Oracle LGBM seed 2 = **960/3159 = 30.389%**
+(123s). Four-seed oracle mean: **30.334% ± 0.263** (30.358 / 30.611 / 30.389 /
+29.978 for seeds 0/1/2/3).
+
+End-to-end projected ensemble seed 1 with `timeout 600` completed in **328s**:
+**944/3159 = 29.883%**, +0.475pp vs the 29.408% no-lineup ensemble; McNemar
+vs no-lineup 166-151, p=0.432; vs hgpg 343-285, p=0.023. Projected ensemble
+across available seeds: 29.883 (seed 1 end-to-end) and 29.598 (seed 3),
+mean **29.74%**. Not a clear win on the same seed (p=0.43), so the default
+stays `--lineup none`. Deployment estimate with real morning projections:
+roughly **29.7-30.3%**, between the crude projected ensemble and oracle.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -1269,9 +1287,9 @@ between the crude projector and the oracle, but that is not verifiable here.
 - V8-tune configs b/d were mixed (+0.19pp on one seed, negative/low on the
   other); config a stays the reference.
 - V9 lineup work: hard b +0.98/-0.25pp, probabilistic -0.41/0.00pp,
-  ensemble projected +0.44/-0.22pp; oracle ensemble -0.16/+0.38pp. Keep
-  projected as opt-in; default remains no-lineup. A real morning projection
-  feed sits between the crude projector and oracle and still needs testing.
+  projected ensemble +0.48/-0.22pp; oracle LGBM 4-seed mean 30.33%. Keep
+  projected as opt-in; default remains no-lineup. Deployment with a real
+  morning feed is ~29.7-30.3% and still needs testing.
 - V7 team form / special teams / goalie rest did not help (+0.06pp seed 1,
   -0.25pp seed 3) and was reverted. Historical anytime-goal-scorer odds are
   not available free before 2023-05; forward collection or a paid backfill
