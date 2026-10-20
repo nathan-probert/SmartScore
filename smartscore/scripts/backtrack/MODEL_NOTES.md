@@ -21,6 +21,7 @@ removed; corrected LGBM is **29.06%**.
 | V8-own-xG (first-party per-shot xG model) | -0.16 / -0.35pp, p=0.82/0.57 | rejected |
 | V8-shrinkage (empirical-Bayes rate features) | -0.67 / -0.54pp | rejected |
 | V8-tune (LGBM configs b/d) | +0.19 / -0.03 and -0.06 / +0.19pp vs a | rejected (mixed) |
+| V9-projected-lineups (prior-games projector) | projected LGBM -0.38 / -0.25pp; ensemble -0.44 / -0.29 / -0.76; oracle +1.24 / +0.98 | rejected |
 
 **Conclusion:** with the currently available historical raw data, **~29.7% is
 the ceiling**. ≥30% was reachable only with same-game lookahead leakage.
@@ -45,7 +46,8 @@ done
 calendar/schedule, V3c blends, V3e LGBM as default, V3f LGBM+baseline blends,
 V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged lineup
 replacements, V7-objective, V7-context, V7-shots, V7 MoneyPuck xG,
-V8-own-xG, V8-shrinkage, V8-tune configs b/d, injury filter (fields empty).
+V8-own-xG, V8-shrinkage, V8-tune configs b/d, V9-projected-lineups,
+injury filter (fields empty).
 V4 shot/TOI features are retained.
 
 Working log for the goal-probability model built on the backtracked archive.
@@ -1084,6 +1086,48 @@ Verdict: neither config beats a on **both** seeds by +0.5pp; each is mixed
 (b/d win one seed by ~0.19pp and lose the other). Defaults unchanged
 (config a; ensemble default). Config d was reverted, notes only.
 
+### V9-projected-lineups — prior-games lineup projector (reverted)
+
+Projector uses only games before the target date: (a) last prior unit,
+(b) exponentially weighted mode over the last 10 games, (c) team-constrained
+greedy assignment into F1-F4 / D1-D3 / PP1-PP2 slots. Model features use (c)
+plus confidence (share of last 5 at the projected unit) and linemate quality
+(mean prior gpg/ppg of line/PP mates, line_intact). Candidate players per
+team-date are the archive's dressed roster; a live run would use the projected
+roster, but no current-game unit label enters any feature.
+
+Projection match vs ACTUAL units (rows with actual non-null):
+
+| position | method a | method b | method c |
+|---|---:|---:|---:|
+| Forwards, unit | 58.11% | 59.63% | 59.44% |
+| Defence, unit | 61.03% | 63.52% | 63.41% |
+| PP unit | 67.04% | 76.43% | 70.98% |
+
+By season (method c): F 59.4 / 60.6 / 58.6 / 56.0 / 58.3 / 59.7 / 60.8 /
+60.5 / 60.0%; D 63.7 / 61.7 / 61.9 / 63.3 / 63.6 / 62.6 / 63.4 / 65.4 / 65.0%;
+PP 66.3 / 69.1 / 69.1 / 66.7 / 69.6 / 74.0 / 74.2 / 74.5 / 74.0% for
+2017-18 through 2025-26. Method b was best overall (F 59.63, D 63.52,
+PP 76.43).
+
+Model results (k=5, train=all; baselines no-lineup LGBM 29.376/28.997,
+ensemble 29.915/29.408/29.820):
+
+| run | seed | hits / 3159 | acc | delta | McNemar vs baseline | per-fold std |
+|---|---:|---:|---:|---:|---|---:|
+| LGBM projected | 1 | 916 | 28.997% | -0.380 | 176-164, p=0.551 | 3.354 |
+| LGBM projected | 3 | 908 | 28.743% | -0.253 | 167-159, p=0.698 | 1.362 |
+| LGBM oracle | 1 | 967 | 30.611% | +1.235 | 178-217, p=0.056 | 3.298 |
+| LGBM oracle | 3 | 947 | 29.978% | +0.981 | 163-194, p=0.112 | 0.532 |
+| ensemble projected | 0 | 931 | 29.471% | -0.444 | 171-156, p=0.439 | 2.044 |
+| ensemble projected | 1 | 920 | 29.123% | -0.285 | 169-160, p=0.659 | 3.219 |
+| ensemble projected | 3 | 918 | 29.060% | -0.760 | 167-146, p=0.258 | 1.155 |
+
+(OOF re-picks for the ensemble differ by 1-2 ties from the logged totals.)
+Projected lineups hurt every model/seed; the oracle shows the information is
+worth ~+1.0 to +1.2pp, but projection accuracy (~60% line, ~71% PP for method
+c) is too low. Reverted; feature set back to 42, notes only.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -1134,6 +1178,8 @@ Verdict: neither config beats a on **both** seeds by +0.5pp; each is mixed
   were reverted; the information is already in the existing rates.
 - V8-tune configs b/d were mixed (+0.19pp on one seed, negative/low on the
   other); config a stays the reference.
+- V9 projected lineups hurt both models/seeds; the oracle is +1.2/+1.0pp, so
+  projection quality (~60% line / 71% PP) is the blocker. Reverted.
 - V7 team form / special teams / goalie rest did not help (+0.06pp seed 1,
   -0.25pp seed 3) and was reverted. Historical anytime-goal-scorer odds are
   not available free before 2023-05; forward collection or a paid backfill
