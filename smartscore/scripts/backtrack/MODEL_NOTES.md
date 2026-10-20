@@ -36,9 +36,23 @@ with units forward.
 | V9-projected-lineups (prior-games projector) | hard b +0.98 / -0.25pp; probabilistic -0.41 / 0.00pp; projected ensemble +0.48 / -0.22pp; oracle LGBM 4-seed 30.33%; oracle ensemble -0.16 / +0.38 | rejected (mixed) |
 | V12-identity (player/team/age) | -1.49 / -0.29pp | rejected |
 | V12-era recent training (2021-22+) | LGBM -1.07 / -0.95pp, ensemble -0.15 / +0.08 vs full-era | rejected |
+| V12-qoc (shift-chart QoC/QoT) | +0.51 / +0.03pp | rejected (mixed) |
+
+**Post-roadmap findings:** identity features were negative; recent-era
+training did not beat full-era on identical dates, but per-season accuracy
+rises (2025-26 ensemble **31.6-32.9%** vs hgpg **30.3%**). QoC/QoT was mixed
+(+0.51/+0.03pp) and reverted. Baseline per-group accuracy is **g1 39.9% /
+g2 27.2% / g3 20.9%**; mean max predicted probability **0.315** vs realized
+**0.293**.
 
 **Conclusion:** with the currently available historical raw data, **~29.7% is
-the ceiling**. ≥30% was reachable only with same-game lookahead leakage.
+the pooled all-era expectation** (and **~30-32% on recent-era dates**),
+contingent on real projection fidelity; V11 puts realistic 80-90% fidelity at
+**~29.3-29.9%**. ≥30% was reachable only with same-game lookahead leakage.
+
+**Data priorities:** (1) persist real **PROJECTED** lineups with units;
+(2) start logging market anytime-goal-scorer odds now. Both are needed before
+a real deployment-accuracy claim is possible.
 
 **Legitimate deployment levers, unverifiable historically:** (1) projected
 lineups and confirmed starting goalies are available pre-game in the live
@@ -64,7 +78,7 @@ calendar/schedule, V3c blends, V3e LGBM as default, V3f LGBM+baseline blends,
 V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged lineup
 replacements, V7-objective, V7-context, V7-shots, V7 MoneyPuck xG,
 V8-own-xG, V8-shrinkage, V8-tune configs b/d, V9-projected-lineups,
-V12-identity, V12-era recent training,
+V12-identity, V12-era recent training, V12-qoc,
 injury filter (fields empty).
 V4 shot/TOI features are retained.
 
