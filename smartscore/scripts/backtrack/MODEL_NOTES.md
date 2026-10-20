@@ -976,6 +976,95 @@ removed and `model.py` is back to the corrected baseline. The per-player
 table and raw caches stay on disk under `data/moneypuck/shots/` for a follow-up
 (shot distance/angle look more promising than the counting features).
 
+### V8-own-xG — our own per-shot expected-goals model (reverted)
+
+Hypothesis: the external MoneyPuck xG block was collinear with V4's volume
+features, but **our own** per-shot model could isolate finishing skill from
+shot quality without importing an external model. The label is the raw goal
+flag, so this is a first-party model and allowed.
+
+**Per-shot model.**
+
+- **1,025,191** unblocked shot events, 2017-18 .. 2025-26; label `goal`
+  (**71,617** positives, 6.99%).
+- Raw features only: `shotDistance`, `abs(shotAngle)`, `shotType` (one-hot),
+  `shotRebound`, `shotRush`, `homeSkatersOnIce - awaySkatersOnIce`,
+  `timeSinceLastEvent`, `period`, `shotOnEmptyNet`. No MoneyPuck `xGoal`,
+  `xFroze`, `xRebound`, `xShotWasOnGoal`, `shotGoalProbability` or any other
+  model output is read.
+- **Fold assignment:** `model.fold_blocks` replicated exactly and verified
+  equal for seeds 1 and 3. Five shuffled date blocks over the **1,053**
+  challenge dates. For each fold F the classifier trains on every shot whose
+  date is **not** in F and predicts the shots in F; an assertion checks the
+  train/test date sets are disjoint. The 886 non-challenge dates get their own
+  five date blocks, trained only on non-challenge dates, so all 1,025,191
+  shots have out-of-fold xG.
+- OOF per-shot **AUC 0.7692 / logloss 0.2193** (seed 1) and **0.7691 /
+  0.2194** (seed 3). Sum xG 71,941 vs 71,617 goals (mean 0.0702 per shot).
+  Per-shot files: `data/moneypuck/shots/shot_xg_seed{1,3}.csv`.
+
+**Player-game features** (aggregate `xg_sum`, `xg_per_attempt`,
+`goals_minus_xg`, then shift(1) per player before every window):
+
+| feature | definition |
+|---|---|
+| `rs_xg_pg_5/10` | mean xG per game, prior 5 / 10 |
+| `rs_xg_per_att_5/10` | sum(prior xG) / sum(prior attempts) |
+| `rs_finishing_5/10` | sum(goals - xG) over prior 5 / 10 |
+| `rs_xg_trend` | `rs_xg_pg_5` / season-to-date prior xG per game |
+
+Zero-attempt games stay in the grid: 0 xG, 0 attempts, 1 game played.
+
+**Merge / leakage checks.**
+
+- Shot grid 427,402 player-games; 425,462 have own-xG features (first career
+  games NaN). Model frame stays **427,240 rows**; no duplicate
+  `(date, player_id)`, no `_x`/`_y` columns.
+- `fold_blocks` output for seeds 1/3 is byte-identical to `model.fold_blocks`.
+- Fold assertions passed: no fold's model trained on any of its fold dates.
+- Perturbing the target row's own game xG to 9999 left that row's
+  `rs_xg_pg_5` unchanged (0.27368485103188367 before and after), proving the
+  current game never enters its own rolling features.
+
+**Protocol.** LGBM config a, date-blocked k=5, `--train-subset all`,
+`OMP_NUM_THREADS=2`, `LGBM_N_JOBS=2`, `timeout 300`. Baselines are the
+corrected V7 base (`oof_v7_base_lgbm_seed{1,3}.csv`): seed 1 **928/3159 =
+29.376%**, seed 3 **916/3159 = 28.997%**; hgpg **886 = 28.047%**.
+
+| model | seed | baseline | + own-xG | delta | McNemar vs base | McNemar vs hgpg | AUC |
+|---|---|---:|---:|---:|---|---|---:|
+| LGBM | 1 | 928 = 29.376% | **923 = 29.218%** | **-0.158pp** | 158-163, p=0.823 | 338-301, p=0.154 | 0.6921 ± 0.0050 |
+| LGBM | 3 | 916 = 28.997% | **905 = 28.648%** | **-0.349pp** | 147-158, p=0.567 | 313-294, p=0.465 | 0.6924 ± 0.0014 |
+| LGBM mean | | 29.186% | 28.933% | -0.254pp | | | |
+
+Per-fold: seed 1 33.3/28.0/26.5/31.1/27.1 (std 2.897); seed 3
+31.3/28.0/28.8/27.6/27.6 (std 1.543). The ensemble was not run because both
+LGBM seeds did not improve.
+
+**Importances** (fold-1 LGBM, seed 1, gain rank among 49 features):
+
+| feature | gain | rank |
+|---|---:|---:|
+| `rs_xg_pg_10` | 439 | 4 |
+| `rs_xg_trend` | 419 | 9 |
+| `rs_xg_per_att_10` | 395 | 13 |
+| `rs_xg_per_att_5` | 374 | 14 |
+| `rs_finishing_5` | 330 | 19 |
+| `rs_finishing_10` | 293 | 20 |
+| `rs_xg_pg_5` | 289 | 21 |
+
+All seven features land in the top 21 and the per-shot model is well
+calibrated (AUC 0.769), but the block still reduces pick accuracy — the signal
+is either already carried by V4/V6 features or the rolling xG is too noisy at
+the player-game grain.
+
+**Verdict: reverted.** Both seeds are negative (-0.16pp, -0.35pp) and both
+McNemar tests are non-significant (p=0.82/0.57 vs the same-seed baseline).
+The `own_xg.py` builder and `--own-xg-features` flag were removed; the
+per-shot xG files and player-game feature tables stay on disk under
+`data/moneypuck/shots/` for a follow-up (e.g. shrink the block to xG-per-attempt
+or use a player-season re-fit rather than game rolling).
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -1033,6 +1122,8 @@ table and raw caches stay on disk under `data/moneypuck/shots/` for a follow-up
 - V7-shots (18 raw distance/angle/HD/slot/rebound/PP columns) was mixed:
   LGBM -0.13pp seed 1 / +0.57pp seed 3, both McNemar p>=0.37; reverted.
   V7 MoneyPuck individual xG was also negative and collinear with V4.
+- V8-own-xG (per-shot LightGBM, AUC 0.769) was negative on both seeds
+  (-0.16 / -0.35pp, McNemar p=0.82/0.57) and reverted.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
 - Update this file after every experiment: config used, split mode, pooled
