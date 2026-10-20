@@ -37,6 +37,7 @@ with units forward.
 | V12-identity (player/team/age) | -1.49 / -0.29pp | rejected |
 | V12-era recent training (2021-22+) | LGBM -1.07 / -0.95pp, ensemble -0.15 / +0.08 vs full-era | rejected |
 | V12-qoc (shift-chart QoC/QoT) | +0.51 / +0.03pp | rejected (mixed) |
+| V12-interactions (tims x rates) | +0.10 / 0.00pp; g3 -0.57pp | rejected |
 
 **Post-roadmap findings:** identity features were negative; recent-era
 training did not beat full-era on identical dates, but per-season accuracy
@@ -78,7 +79,7 @@ calendar/schedule, V3c blends, V3e LGBM as default, V3f LGBM+baseline blends,
 V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged lineup
 replacements, V7-objective, V7-context, V7-shots, V7 MoneyPuck xG,
 V8-own-xG, V8-shrinkage, V8-tune configs b/d, V9-projected-lineups,
-V12-identity, V12-era recent training, V12-qoc,
+V12-identity, V12-era recent training, V12-qoc, V12-interactions,
 injury filter (fields empty).
 V4 shot/TOI features are retained.
 
@@ -1434,6 +1435,28 @@ builder and `--qoc-features` flag were removed; the QoC cache stays in
 `data/moneypuck/qoc_player_game.csv` for a follow-up (e.g. QoT-relative only,
 or smoothed prior-season rates with a minimum-TOI floor).
 
+### V12-interactions — explicit tims-group interactions (reverted)
+
+Added nine numeric interactions: `tims` (1/2/3; 0 for non-challenge) times
+gpg, hgpg, five_gpg, ppg, rank_gpg, rank_hgpg, games_since_goal,
+days_since_game, club_rest_days. Verified 427,240 rows, no duplicate/suffixed
+columns, all inputs pre-game.
+
+| seed | baseline | interactions | delta | McNemar vs base | vs hgpg | per-fold std |
+|---|---:|---:|---:|---|---:|---:|
+| 1 | 928 / 29.376% | 931 / 29.471% | +0.095pp | 138-135, p=0.904 | 337-292, p=0.079 | 2.784 |
+| 3 | 916 / 28.997% | 916 / 28.997% | 0.000pp | 140-140, p=1.0 | 326-296, p=0.245 | 0.736 |
+
+Per-group (combined seeds): baseline g1 39.89 / g2 27.16 / g3 20.89;
+interactions g1 39.98 / g2 27.40 / g3 20.32 — **group 3 got worse by 0.57pp**.
+Interaction importances were low (fold-1 gain rank/51: tims_x_rank_hgpg #29,
+tims_x_rank_gpg #33, tims_x_hgpg #34, tims_x_gpg #36, tims_x_ppg #40,
+tims_x_games_since_goal #43, tims_x_days_since_game #45,
+tims_x_club_rest_days #47, tims_x_five_gpg #50).
+
+Verdict: **reverted**. No overall +0.5pp on both seeds and the group-3 rule
+failed; `--interactions` code removed.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
@@ -1507,6 +1530,8 @@ or smoothed prior-season rates with a minimum-TOI floor).
   (p=0.41 vs baseline) and +0.032pp seed 3 (p=1.0); reverted. Zone starts are
   not in the raw layer. QoT-relative features ranked highly (top 10-20), so a
   narrower teammate-only block is the only follow-up worth trying.
+- V12-interactions (tims × rates) did not help (+0.10/0.00pp) and group 3 got
+  worse; reverted.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
 - Update this file after every experiment: config used, split mode, pooled
