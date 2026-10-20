@@ -75,12 +75,12 @@ Outputs:
 sqlite3 data/raw_nhl.sqlite <<'SQL'
 -- row counts, date range, label sanity
 SELECT season, COUNT(*) AS player_games, MIN(game_date), MAX(game_date),
-       SUM(scored) AS goals
+       SUM(goals) AS goals
 FROM player_games WHERE season='20132014' GROUP BY season;
 
 SELECT COUNT(*) AS bad_labels
 FROM player_games
-WHERE season='20132014' AND (scored IS NULL OR scored NOT IN (0,1));
+WHERE season='20132014' AND (goals IS NULL OR goals < 0);
 
 -- derived feature coverage and null rates
 SELECT COUNT(*) AS derived_rows,
@@ -111,6 +111,17 @@ lineup coverage near the other seasons. `hgpg` nulls are expected in 2013-14 and
 
 Quick summary: `uv run python smartscore/scripts/backtrack/local_store.py --stats`
 and `uv run python smartscore/scripts/backtrack/dump_store.py --list`.
+
+**Ordering caveat:** seasons are ingested newest-first here, so `hgpg`/`hppg`
+are null for 2016-17/2015-16/2014-15 until their prior seasons exist. After all
+four seasons finish, run a second ascending pass so the 3-year windows fill:
+
+```bash
+for SEASON in 20132014 20142015 20152016 20162017; do
+  uv run python smartscore/scripts/backtrack/local_store.py --derive "$SEASON"
+  uv run python smartscore/scripts/backtrack/local_store.py --publish "$SEASON"
+done
+```
 
 ## 4. Model data load and re-evaluation
 
