@@ -296,34 +296,38 @@ def test_create_cron_schedule_new_year():
     assert result == "cron(0 0 1 1 ? 2025)"
 
 
+@patch("utility.count_picks_for_date", return_value=1)
 @patch("utility.exponential_backoff_supabase_request")
-def test_save_to_db_scopes_the_delete_to_the_published_date(mock_request):
-    """S3: replacing today's Picks must not wipe another date's rows."""
-    mock_request.side_effect = [[{"id": 0}], None]  # max id, then POST
+def test_save_to_db_wipes_everything_and_reinserts_from_id_1(mock_request, mock_count):
+    """The table must hold ONLY today's picks: full wipe + ids from 1."""
+    save_to_db([{"id": 99, "date": "2026-04-15", "player_id": 1}], "2026-04-15")
 
-    save_to_db([{"id": 1, "date": "2026-04-15", "player_id": 1, "opp_goalie_name": "G"}], "2026-04-15")
-
-    assert mock_request.call_args.kwargs["eq"] == ("date", "2026-04-15")
-
-
-@patch("utility.exponential_backoff_supabase_request")
-def test_save_to_db_allocates_ids_above_other_dates(mock_request):
-    """Picks' conflict key is ``id``; a scoped delete must not reuse other dates' ids."""
-    mock_request.side_effect = [[{"id": 700}], None]  # max id, then POST
-
-    players = [{"id": 1, "date": "2026-04-15", "player_id": 11, "opp_goalie_name": "G"}]
-    save_to_db(players, "2026-04-15")
-
+    # unscoped POST is the write helper's full-wipe branch
+    assert mock_request.call_args.kwargs["method"] == "post"
+    assert mock_request.call_args.kwargs.get("eq") is None
     posted = mock_request.call_args.kwargs["json_data"]
-    assert [row["id"] for row in posted] == [701]
-    assert 700 not in {row["id"] for row in posted}
+    assert [row["id"] for row in posted] == [1]
 
 
+@patch("utility.count_picks_for_date", return_value=1)
 @patch("utility.exponential_backoff_supabase_request")
-def test_save_to_db_carries_forward_goalie_values_on_fetch_failure(mock_request):
+def test_save_to_db_verifies_the_write(mock_request, mock_count):
+    """A partial write must surface as an error, not a silently stale table."""
+    mock_count.return_value = 0  # wipe+insert happened? no rows published
+
+    try:
+        save_to_db([{"id": 1, "date": "2026-04-15", "player_id": 1}], "2026-04-15")
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as err:
+        assert "published 0 rows, expected 1" in str(err)
+
+
+@patch("utility.count_picks_for_date", return_value=1)
+@patch("utility.exponential_backoff_supabase_request")
+def test_save_to_db_carries_forward_goalie_values_on_fetch_failure(mock_request, mock_count):
     """The publish is a delete+reinsert, so a failed goalie fetch must copy prior values."""
     prior = [{"player_id": 11, "opp_goalie_name": "Starter", "opp_goalie_status": "CONFIRMED"}]
-    mock_request.side_effect = [prior, [{"id": 700}], None]  # prior read, max id, POST
+    mock_request.side_effect = [prior, None]  # prior read, POST
 
     players = [{"id": 1, "date": "2026-04-15", "player_id": 11}]
     save_to_db(players, "2026-04-15")
@@ -331,10 +335,3 @@ def test_save_to_db_carries_forward_goalie_values_on_fetch_failure(mock_request)
     posted = mock_request.call_args.kwargs["json_data"]
     assert posted[0]["opp_goalie_name"] == "Starter"
     assert posted[0]["opp_goalie_status"] == "CONFIRMED"
-
-
-@patch("utility.exponential_backoff_supabase_request")
-def test_save_to_db_without_a_date_keeps_the_legacy_wipe(mock_request):
-    save_to_db([{"id": 1}])
-
-    assert mock_request.call_args.kwargs["eq"] is None
