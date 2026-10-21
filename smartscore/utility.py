@@ -63,30 +63,13 @@ def get_tims_players():
     return ids
 
 
-def _max_picks_id():
-    """Highest id currently in Picks, so new rows never collide with other dates.
-
-    Picks predates the migrations and has no unique (date, player_id) constraint;
-    PostgREST's default conflict target is the primary key ``id``. Because the
-    publish delete is scoped to today, rows for another date can still be in the
-    table, so ids must start above them.
-    """
-    rows = exponential_backoff_supabase_request(
-        f"Picks-{ENV}",
-        select="id",
-        order=("id", True),
-        limit=1,
-    )
-    rows = rows or []
-    return int(rows[0]["id"]) if rows and rows[0].get("id") is not None else 0
-
-
 def _prior_goalie_values(date):
     """Today's existing opp_goalie_* values, keyed by player_id.
 
-    The publish is a delete+reinsert, so a column omitted from the payload is
-    lost (unlike an upsert). When the goalie fetch failed the new rows have no
-    opp_goalie_* keys, so copy them forward from the rows being replaced.
+    The publish is a full wipe + reinsert, so a column omitted from the payload
+    is lost (unlike an upsert). When the goalie fetch failed the new rows have
+    no opp_goalie_* keys, so copy them forward from the rows being replaced.
+    Must be called BEFORE the wipe deletes those rows.
     """
     select = "player_id," + ",".join(OPP_GOALIE_COLUMNS)
     rows = exponential_backoff_supabase_request(f"Picks-{ENV}", select=select, eq=("date", date)) or []
@@ -94,12 +77,17 @@ def _prior_goalie_values(date):
 
 
 def save_to_db(players, date=None):
-    """Replace the Picks rows for one date.
+    """Replace the entire Picks table with the new roster.
 
-    The delete is scoped to ``date`` so a failed or overlapping publish cannot
-    empty another date's picks (the old ``delete().neq("id", 0)`` wiped the
-    whole table). When ``date`` is omitted the legacy full wipe is kept for
-    callers that do not know the date.
+    Deletes ALL rows then inserts the payload starting at id 1: the write helper
+    treats an unscoped POST as "clear the table before inserting new data", and
+    the downstream reader (and the site) assume the table holds only today's
+    picks. ``date`` is only used to carry prior goalie values forward when the
+    goalie fetch failed.
+
+    After the write the published row count is verified against the payload so
+    a partial/failed write surfaces as a hard error (failing the AWS step)
+    instead of a silently stale table.
     """
     # remove fields that aren't currently show in frontend, plus relational
     # join keys (team_id etc.) which never existed on the Picks table --
@@ -107,9 +95,9 @@ def save_to_db(players, date=None):
     has_goalie_data = any(any(column in player for column in OPP_GOALIE_COLUMNS) for player in players)
     prior_goalies = {}
     if date and players and not has_goalie_data:
+        # read the rows being replaced before the wipe takes them away
         prior_goalies = _prior_goalie_values(date)
 
-    next_id = (_max_picks_id() + 1) if date else 1
     for i, player in enumerate(players):
         player.pop("home", None)
         player.pop("hppg", None)
@@ -125,9 +113,28 @@ def save_to_db(players, date=None):
                 for column in OPP_GOALIE_COLUMNS:
                     if column in prior:
                         player[column] = prior[column]
-        player["id"] = next_id + i
-    eq = ("date", date) if date else None
-    exponential_backoff_supabase_request(f"Picks-{ENV}", method="post", json_data=players, eq=eq)
+        player["id"] = 1 + i
+    # unscoped POST: the write helper full-wipes the table before upserting
+    exponential_backoff_supabase_request(f"Picks-{ENV}", method="post", json_data=players)
+    _verify_picks_write(players, date)
+
+
+def _verify_picks_write(players, date):
+    """Fail loudly when the publish did not fully land.
+
+    Reads back the published row count for ``date`` and compares it with the
+    payload: a mismatch means the delete+insert went wrong. Raising propagates
+    through the Lambda handler into a Step Functions TaskFailed instead of
+    leaving a silently stale/partial table.
+    """
+    expected = len(players)
+    published = (
+        count_picks_for_date(date)
+        if date
+        else exponential_backoff_supabase_request(f"Picks-{ENV}", select="id", count_only=True)
+    )
+    if published != expected:
+        raise RuntimeError(f"Picks write incomplete: published {published} rows, expected {expected}")
 
 
 def get_today_db(eq=None):

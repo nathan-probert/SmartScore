@@ -562,8 +562,8 @@ Resources:
   # Later refreshes for archive/site correctness. The projections article can
   # lag a full slate (observed still serving the previous day at 11:24 ET), so
   # these re-run the normal_run path after it updates. They are not used for
-  # the email; Picks replacement is date-scoped and the archive upserts, so a
-  # repeated run is safe.
+  # the email; Picks replacement is a full wipe followed by a verified
+  # reinsert, and the archive upserts, so a repeated run is safe.
   LineupRefreshStepFunctionTrigger:
     Type: AWS::Events::Rule
     Properties:
