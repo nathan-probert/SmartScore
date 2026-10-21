@@ -1599,6 +1599,74 @@ window: **4,680 rows in 1.72s**, columns identical to cache, key diff 0/0.
 CSV format is unchanged; model behavior is unchanged. Full refresh was not
 rerun (the chunked cache already has 617,310 rows).
 
+### V16- collect: projected-lineup persistence
+
+Shipped `smartscore/scripts/backtrack/snapshot_projected.py` (worktree
+`SmartScore-backtrack`, branch `backtrack-recon`): a standalone collector that
+reads the two public pre-game lineup sources the live pipeline reads (NHL.com's
+daily lineup-projections article and RotoWire), matches both onto that date's
+NHL schedule, resolves every player to an NHL id via `roster/{team}/current`,
+and writes `Player-Snapshots-{ENV}` rows with
+`lineup_status='PROJECTED'`, `lineup_unit` (F1-F4 **and** D1-D3; the live
+product's merge nulls defence), `lineup_position_group` and `pp_unit`
+(normalized to PP1/PP2; the pipeline persists RotoWire's verbatim
+"POWER PLAY #1/#2" - both vocabularies now exist side-by-side in prod).
+
+Writes are idempotent on the `(date, player_id)` PK, in two modes:
+
+- `append` - inserts only pairs not yet stored (`Prefer: resolution=ignore-duplicates`); an existing row is never merged or overwritten.
+- `refresh` - PATCHes **only the four lineup columns** on stored rows whose
+  `lineup_status` is null or `UNKNOWN` (i.e. a source failure stamp). Rows with
+  PROJECTED/CONFIRMED/ACTUAL are never touched, and no stats/scored column is ever in the batch.
+
+Safety gates: the article `datePublished` must equal the requested game date
+(ET) or writes are refused (prevents filing yesterday's lineups under today,
+and makes the pre-publish morning runs collect nothing instead of wrong data);
+`--env prod` is explicit; `--limit` and `--dry-run` are available.
+
+Verified on dev 2026-10-20 (388 collected F258/D128, pp 217) and then run
+against **prod the same evening**: `UNKNOWN` 4,900 -> 4,765, `PROJECTED` 255 ->
+390 (all 2026-10-20) - the pipeline's own 15:42 ET first-run had already
+persisted 255 forward rows; the collector filled 135 more (incl. defence).
+Idempotent re-run: 0 appended, 0 refreshed. Nothing overwritten (full-row
+reads before/after: stats untouched).
+
+Known source noise (stored verbatim): the article occasionally numbers extra
+defence pairs (label "D4" for a 4th pair) and a handful of projected players
+are not on the current roster feed (logged, skipped). PP labels are mixed
+vocabulary until historical rows are rewritten (owner decision).
+
+Scheduling (10:30 / 13:00 / 16:00 ET, the challenge's three pick times):
+
+```
+# crontab -e   (server box has the worktree and .venv at /home/nathan/code/SmartScore)
+TZ=America/Toronto
+30 10,13,16 * * * cd /home/nathan/code/SmartScore && umask 077 && .venv/bin/python smartscore/scripts/backtrack/snapshot_projected.py --env prod >> smartscore/scripts/backtrack/snapshot_projected.log 2>&1
+```
+
+(With a worktree checked out instead: same line with
+`cd /home/nathan/code/SmartScore-backtrack` and its own `.venv`.) One execution
+per date is sufficient idempotently; three are run so the 13:00/16:00 picks
+carry the freshest RotoWire PP units and any morning re-uploads are overwritten
+with the same values only. Verify accumulation:
+
+```
+.venv/bin/python - <<'EOF'
+import os; os.environ['ENV']='prod'
+import sys; sys.path.insert(0,'smartscore')
+from config import SUPABASE_ADMIN_CLIENT as c
+r=(c.table('Player-Snapshots-prod')
+   .select('date').eq('lineup_status','PROJECTED').order('date')
+   .execute().data)
+dates=sorted({x['date'] for x in r})
+print('PROJECTED dates:', dates[-10:], 'count:', len(dates))
+EOF
+```
+
+PROJECTED dates accumulating under this heading is the health check; 0 new
+dates on successive game days means the sources stopped (article moved hosts
+or slug changed) and the collector refuses to write by design.
+
 ## Lessons learned this phase
 
 1. **Train on ALL rows, not just challenge rows.** Challenge-only training
