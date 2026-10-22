@@ -103,7 +103,7 @@ archive/site but are not used for the email.
 ```
 first_run  -> Backfill -> GetPlayers -> EnsureFirstRunStatus -> GetInjuries -> GetGoalies -> GetLineups -> MakePredictions -> GetTims -> SaveToDb -> UpdateHistory -> PublishToDb
 normal_run -> LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> SaveToDb -> PublishToDb   # skips UpdateHistory
-last_run   -> LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> PublishToDb               # no archive
+last_run   -> LoadWorkingSet -> PublishToDb               # every game has started; tims cleared, no enrichment reads
 ```
 
 `EnsureFirstRunStatus` restores the `status` the `GetPlayers` sub-machine does not
@@ -114,6 +114,14 @@ same date is idempotent; `PublishToDb` rewrites the day's `Picks` rows (delete
 scoped to that date) and `write_historic_db` is a no-op once the date exists. A
 failed lineup/injury/goalie fetch keeps the previous values in both `Picks` and
 `Player-Snapshots` instead of overwriting them with UNKNOWN/HEALTHY/nulls.
+
+`last_run` goes straight to `PublishToDb` after `LoadWorkingSet`, skipping the
+enrichment chain: every game has started by then, the picks API is locked, and a
+`GetTims` read can only fail (the 30s Lambda timeout hits before its locked-picks
+fallback can run), so the publish clears the tims groups (all 0) itself -- the
+frontend renders that as its "All games have started today" state. Skipping
+GetGoalies is safe for the published `Picks` rows: `save_to_db` carries the
+prior `opp_goalie_*` values forward when the payload has no goalie data.
 
 Two more caveats that came out of the port:
 

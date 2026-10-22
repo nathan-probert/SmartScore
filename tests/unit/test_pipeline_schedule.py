@@ -217,12 +217,18 @@ def test_status_survives_the_whole_handler_chain(status):
 @pytest.mark.parametrize("status", ["first_run", "normal_run", "last_run"])
 def test_status_routes_to_the_expected_archive_branch(status):
     pipeline = _asl("player_processing_pipeline.asl.json")["States"]
-    initial = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckInitialRun"]["Choices"]}
 
     if status == "last_run":
-        assert initial[status] == "PublishToDb"
-    else:
-        assert initial[status] == "SaveToDb"
+        # last_run is routed at CheckLastRun, before the enrichment chain;
+        # CheckInitialRun must be unreachable for it.
+        last_run_routing = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckLastRun"]["Choices"]}
+        assert last_run_routing["last_run"] == "PublishToDb"
+        initial = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckInitialRun"]["Choices"]}
+        assert "last_run" not in initial
+        return
+
+    initial = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckInitialRun"]["Choices"]}
+    assert initial[status] == "SaveToDb"
 
     history = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckSaveHistory"]["Choices"]}
     assert history["first_run"] == "UpdateHistory"

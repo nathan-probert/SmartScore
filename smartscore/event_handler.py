@@ -264,9 +264,12 @@ def handle_get_tims(event, context):
 
     Args:
         event (dict): A dictionary of all player data.
-            - "status" (str): The run status. On the day's ``last_run`` the
-              picks API may already be locked, so a failed/empty read is
-              published as all-tims-0 instead of failing the execution.
+            - "status" (str): The run status. The pipeline routes the day's
+              ``last_run`` straight to PublishToDb (which clears tims itself),
+              so GetTims normally never sees it; the all-tims-0 tolerance on
+              ``last_run`` remains as a defensive fallback for direct
+              invocations, since the picks API is locked once every game has
+              started.
         context (dict): Unused Lambda context.
 
     Returns:
@@ -302,8 +305,15 @@ def handle_publish_db(event, context):
     Joins relational ``players`` + ``teams`` + ``goalies`` into full rows
     for the write only; the state itself stays lean.
 
+    On the day's ``last_run`` every game has started, so the pipeline skips
+    the enrichment chain (the picks API is locked by then and the Tims read
+    can only fail) and the tims groups are cleared here instead: every player
+    is published at tims=0, which the frontend renders as its "All games have
+    started today" state. No external API is called on this branch.
+
     Args:
         event (dict): A dictionary of all player data.
+            - "status" (str): The run status; ``last_run`` clears tims.
         context (dict): Unused Lambda context.
 
     Returns:
@@ -315,6 +325,10 @@ def handle_publish_db(event, context):
     entries = event.get("players")
     if not entries:
         entries = []
+
+    if event.get("status") == "last_run":
+        for player in entries:
+            player["tims"] = 0
 
     if event.get("teams") or event.get("goalies"):
         entries = denormalize_players_for_db(entries, event.get("teams"), event.get("goalies"))

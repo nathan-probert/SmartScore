@@ -1,5 +1,5 @@
 {
-    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit. normal_run and last_run reload the day's lean players/teams slices (Working-* tables) via LoadWorkingSet and re-enter the chain at GetInjuries, so the state always carries separated slices, never denormalized rows. On first_run the lineup/goalie/injury steps run before MakePredictions and SaveToDb; normal_run also archives (SaveToDb) so the mid-morning projections refresh Player-Snapshots, but skips UpdateHistory.",
+    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit. normal_run and last_run reload the day's lean players/teams slices (Working-* tables) via LoadWorkingSet so the state always carries separated slices, never denormalized rows. On first_run the lineup/goalie/injury steps run before MakePredictions and SaveToDb; normal_run also archives (SaveToDb) so the mid-morning projections refresh Player-Snapshots, but skips UpdateHistory. last_run skips that chain entirely (every game has started, so the picks API is locked and the Tims read can only fail) and goes straight to PublishToDb, whose tims=0 write flips the frontend to its 'All games have started' state; save_to_db carries the prior opp_goalie_* values forward, and CheckSaveHistory's Default sends it to PublishToDb without UpdateHistory.",
     "StartAt": "GetDate",
     "States": {
         "GetDate": {
@@ -30,7 +30,19 @@
         "LoadWorkingSet": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:LoadWorkingSet-${ENV}",
-            "Next": "GetInjuries"
+            "Next": "CheckLastRun"
+        },
+        "CheckLastRun": {
+            "Type": "Choice",
+            "Comment": "last_run exits before the enrichment chain: every game has started, so the picks API is locked and a GetTims read can only fail (the 30s Lambda timeout hits before its locked-picks fallback can run). PublishToDb clears the tims groups itself.",
+            "Choices": [
+                {
+                    "Variable": "$.status",
+                    "StringEquals": "last_run",
+                    "Next": "PublishToDb"
+                }
+            ],
+            "Default": "GetInjuries"
         },
         "Backfill": {
             "Type": "Task",
@@ -121,13 +133,9 @@
                     "Variable": "$.status",
                     "StringEquals": "normal_run",
                     "Next": "SaveToDb"
-                },
-                {
-                    "Variable": "$.status",
-                    "StringEquals": "last_run",
-                    "Next": "PublishToDb"
                 }
-            ]
+            ],
+            "Default": "SaveToDb"
         },
         "SaveToDb": {
             "Type": "Task",
