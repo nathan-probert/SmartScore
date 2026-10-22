@@ -20,19 +20,33 @@ def test_handle_save_players_archives_with_date(mock_save, mock_working_set):
     """Players are archived under the run's date."""
     players = [{"id": 1, "name": "Player 1", "tims": 1}]
 
-    result = handle_save_players({"players": players, "date": "2026-04-15"}, {})
+    result = handle_save_players({"players": players, "date": "2026-04-15", "status": "first_run"}, {})
 
-    assert result == {"statusCode": 200, "players": players}
+    assert result == {"statusCode": 200, "status": "first_run", "players": players}
     mock_save.assert_called_once_with(players, date="2026-04-15")
+
+
+@patch("event_handler.get_date")
+@patch("event_handler.save_working_set")
+@patch("event_handler.save_player_snapshots")
+def test_handle_save_players_falls_back_to_today(mock_save, mock_working_set, mock_get_date):
+    """A normal_run working set carries no date; the handler supplies today's."""
+    mock_get_date.return_value = "2026-04-16"
+    players = [{"id": 1, "name": "Player 1", "team_id": 10}]
+
+    handle_save_players({"players": players, "status": "normal_run"}, {})
+
+    mock_save.assert_called_once_with(players, date="2026-04-16")
+    mock_working_set.assert_called_once_with(players, [])
 
 
 @patch("event_handler.save_working_set")
 @patch("event_handler.save_player_snapshots")
 def test_handle_save_players_skips_upload_when_empty(mock_save, mock_working_set):
     """An empty player list must not hit Supabase (an empty upsert is a no-op error)."""
-    result = handle_save_players({"players": [], "date": "2026-04-15"}, {})
+    result = handle_save_players({"players": [], "date": "2026-04-15", "status": "first_run"}, {})
 
-    assert result == {"statusCode": 200, "players": []}
+    assert result == {"statusCode": 200, "status": "first_run", "players": []}
     mock_save.assert_not_called()
     mock_working_set.assert_not_called()
 
@@ -44,7 +58,7 @@ def test_handle_save_players_persists_working_set(mock_save, mock_working_set):
     players = [{"id": 1, "name": "Player 1", "team_id": 10}]
     teams = [{"team_id": 10, "opponent_id": 11}]
 
-    handle_save_players({"players": players, "teams": teams, "date": "2026-04-15"}, {})
+    handle_save_players({"players": players, "teams": teams, "date": "2026-04-15", "status": "first_run"}, {})
 
     mock_working_set.assert_called_once_with(players, teams)
 
@@ -91,9 +105,11 @@ def test_handle_check_completed_never_returns_the_roster(mock_check_db):
     assert "players" not in result
 
 
+@patch("event_handler.get_date")
 @patch("event_handler.load_working_set")
-def test_handle_load_working_set_returns_separated_slices(mock_load):
-    """normal_run gets the lean players/teams slices plus the run status."""
+def test_handle_load_working_set_returns_separated_slices(mock_load, mock_get_date):
+    """normal_run gets the lean players/teams slices plus the run status and date."""
+    mock_get_date.return_value = "2026-04-15"
     players = [{"id": 1, "name": "Player 1", "team_id": 10, "stat": 0.8}]
     teams = [{"team_id": 10, "opponent_id": 11}]
     mock_load.return_value = (players, teams)
@@ -103,6 +119,7 @@ def test_handle_load_working_set_returns_separated_slices(mock_load):
     assert result == {
         "statusCode": 200,
         "status": "normal_run",
+        "date": "2026-04-15",
         "players": players,
         "teams": teams,
     }
@@ -420,3 +437,14 @@ def test_handle_emails_prefers_players_from_state(mock_get_picks, mock_get_email
 
     mock_get_picks.assert_not_called()
     assert [p["name"] for p in mock_send.call_args[0][1]] == ["Player 2", "Player 3", "Player 4"]
+
+
+@patch("event_handler.send_emails")
+@patch("event_handler.get_all_emails", return_value=[{"email": "test@example.com", "display_name": "Tester"}])
+@patch("event_handler.get_published_picks", return_value=[])
+def test_handle_emails_skips_softly_when_picks_are_empty(mock_get_picks, mock_get_emails, mock_send):
+    """A racing/failed publish must not fail NotifyUsers; log and skip."""
+    result = handle_emails({"status": "normal_run"}, {})
+
+    assert result == {"statusCode": 200, "skipped": True}
+    mock_send.assert_not_called()

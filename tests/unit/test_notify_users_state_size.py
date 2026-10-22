@@ -106,14 +106,23 @@ def test_pipeline_normal_and_last_run_reload_separated_slices():
 
     # CheckInitialRun is now only reachable for first_run/normal_run, so
     # last_run must no longer be routed there; unexpected statuses degrade
-    # to a normal publish rather than hanging the machine.
+    # to the normal-run archive+publish rather than hanging the machine.
+    # normal_run goes through SaveToDb so the mid-morning refresh also
+    # updates Player-Snapshots.
     initial_routing = {
         choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckInitialRun"]["Choices"]
     }
     assert "last_run" not in initial_routing
-    assert initial_routing["normal_run"] == "PublishToDb"
+    assert initial_routing["normal_run"] == "SaveToDb"
     assert initial_routing["first_run"] == "SaveToDb"
-    assert pipeline["States"]["CheckInitialRun"]["Default"] == "PublishToDb"
+    assert pipeline["States"]["CheckInitialRun"]["Default"] == "SaveToDb"
+
+    assert pipeline["States"]["SaveToDb"]["Next"] == "CheckSaveHistory"
+    history_routing = {
+        choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckSaveHistory"]["Choices"]
+    }
+    assert history_routing["first_run"] == "UpdateHistory"
+    assert pipeline["States"]["CheckSaveHistory"]["Default"] == "PublishToDb"
 
     # GetDate must not trim anything for these branches any more -- its
     # result is already just the status, verified in test_handle_check_completed.

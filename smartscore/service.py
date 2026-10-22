@@ -2,7 +2,7 @@ import datetime
 import json
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List
+from typing import Dict, List, Set
 
 import make_predictions_rust
 import pytz
@@ -17,7 +17,7 @@ from constants import DAYS_TO_KEEP_HISTORIC_DATA, NUM_EXPECTED_PLAYERS, WEIGHTS
 from email_utility import send_email
 from feature_flags import NHL_MOCK_FLAG, is_feature_enabled
 from mock_nhl_client import MockNHLClient
-from nhl_lineups import normalize_player_name
+from nhl_lineups import club_key, normalize_player_name, team_abbreviation
 from player_archive import backfill_scored, delete_game_snapshots, get_players_for_date, get_unscored_dates
 from utility import (
     count_picks_for_date,
@@ -335,7 +335,7 @@ def publish_public_db(players):
         if not player.get("player_id"):
             player["player_id"] = player.pop("id")
 
-    save_to_db(players)
+    save_to_db(players, date)
 
 
 def check_db_for_date():
@@ -550,7 +550,7 @@ def normalize_rotowire_team_abbr(abbr: str | None) -> str:
     return ROTOWIRE_TEAM_ABBR_MAP.get(abbr.upper(), abbr.upper())
 
 
-def get_injury_data() -> List[Dict[str, str]]:
+def get_injury_data() -> List[Dict[str, str]] | None:
     """
     Get current injury data from RotoWire.
 
@@ -559,6 +559,9 @@ def get_injury_data() -> List[Dict[str, str]]:
         - player: Name of the injured player
         - injury: Injury description
         - status: Injury status
+
+        ``None`` when the fetch/parse failed, so callers can distinguish an
+        outage from a genuinely empty injury report (``[]``).
     """
     url = "https://www.rotowire.com/hockey/tables/injury-report.php?team=ALL&pos=ALL"
 
@@ -568,10 +571,10 @@ def get_injury_data() -> List[Dict[str, str]]:
         data = response.json()
     except requests.RequestException as e:
         logger.error(f"Error fetching injury data: {e}")
-        return []
+        return None
     except json.JSONDecodeError as e:
         logger.error(f"Error parsing injury JSON: {e}")
-        return []
+        return None
 
     injuries = []
     for item in data:
@@ -597,17 +600,23 @@ def get_injury_data() -> List[Dict[str, str]]:
     return injuries
 
 
-def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]]) -> List[Dict]:
+def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]] | None) -> List[Dict]:
     """
     Merge injury data into the player list.
 
     Args:
         players: List of player dictionaries
-        injuries: List of injury dictionaries from RotoWire
+        injuries: List of injury dictionaries from RotoWire, or ``None`` when
+            the fetch failed. A failure leaves the existing injury fields
+            untouched instead of marking every skater HEALTHY.
 
     Returns:
         List of players with added injury information
     """
+    if injuries is None:
+        logger.error("No injury payload (fetch failed); keeping existing injury fields")
+        return players
+
     injury_dict = {injury["player"].lower(): injury for injury in injuries}
 
     for player in players:
@@ -623,7 +632,7 @@ def merge_injury_data(players: List[Dict], injuries: List[Dict[str, str]]) -> Li
     return players
 
 
-def get_starting_goalies(date: str | None = None) -> List[Dict]:
+def get_starting_goalies(date: str | None = None) -> List[Dict] | None:
     """
     Get projected/confirmed starting goalies for a date from RotoWire.
 
@@ -637,6 +646,9 @@ def get_starting_goalies(date: str | None = None) -> List[Dict]:
         List of starter dictionaries with keys:
         - date, team_abbr (NHL-normalized), home (bool),
           goalie_name, rotowire_id, status (e.g. Confirmed/Expected/Unknown)
+
+        ``None`` when the fetch failed or returned an unexpected shape, so
+        callers can distinguish an outage from a valid empty slate (``[]``).
     """
     date = date or get_date()
     url = f"{ROTOWIRE_GOALIE_TABLE_URL}?date={date}"
@@ -645,11 +657,11 @@ def get_starting_goalies(date: str | None = None) -> List[Dict]:
         data = exponential_backoff_request(url, headers=ROTOWIRE_HEADERS)
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error fetching starting goalie data: {e}")
-        return []
+        return None
 
     if not isinstance(data, list):
         logger.error(f"Unexpected starting goalie payload type: {type(data)}")
-        return []
+        return None
 
     starters = []
     for game in data:
@@ -762,7 +774,7 @@ def get_goalie_stats_for_team(team_abbr: str) -> Dict[str, Dict]:
     return stats
 
 
-def enrich_starting_goalies(date: str | None = None) -> List[Dict]:
+def enrich_starting_goalies(date: str | None = None) -> List[Dict] | None:
     """
     Get starting goalies for a date enriched with official NHL stats.
 
@@ -772,9 +784,12 @@ def enrich_starting_goalies(date: str | None = None) -> List[Dict]:
         date: Date in YYYY-MM-DD format. Defaults to today (Toronto time).
 
     Returns:
-        List of starter dictionaries including gaa, save_pct, record, etc.
+        List of starter dictionaries including gaa, save_pct, record, etc.,
+        or ``None`` when the underlying fetch failed.
     """
     starters = get_starting_goalies(date)
+    if starters is None:
+        return None
     teams = sorted({starter["team_abbr"] for starter in starters})
     stats_by_team = {team: get_goalie_stats_for_team(team) for team in teams}
 
@@ -984,7 +999,10 @@ def denormalize_players_for_db(
         if team:
             opp_id = team.get("opponent_id")
             opp = goalies_by_team.get(opp_id, {}) if opp_id is not None else {}
-        if opp or teams is not None:
+        # goalies is None when the starting-goalie fetch failed: leave the
+        # opp_goalie_* columns out of the payload so a Picks upsert keeps the
+        # previous values instead of writing None/UNKNOWN.
+        if teams is not None and goalies is not None:
             row["opp_goalie_name"] = opp.get("goalie_name")
             row["opp_goalie_team"] = opp.get("team_abbr")
             row["opp_goalie_status"] = (opp.get("status") or "UNKNOWN").upper() if opp else "UNKNOWN"
@@ -1019,6 +1037,60 @@ def _iter_teams(games: List[Dict]) -> List[Dict]:
     return teams
 
 
+def build_slate_pairs(teams: List[Dict] | None) -> Set[frozenset]:
+    """Unordered team pairs playing on the target date, keyed by abbreviation.
+
+    Built from the pipeline's ``teams`` payload (one entry per club, with
+    ``team_abbr``/``team_id``/``opponent_id``/``home``), which is itself derived
+    from the NHL schedule for that date. Used to reject a lineup article that
+    still describes the previous day's slate. Abbreviations are used because
+    the source names collapse both New York clubs onto "New York".
+    """
+    abbr_by_id = {}
+    for team in teams or []:
+        if isinstance(team, dict) and team.get("team_id") is not None:
+            abbr_by_id[team["team_id"]] = (team.get("team_abbr") or "").upper()
+
+    pairs: Set[frozenset] = set()
+    for team in teams or []:
+        if not isinstance(team, dict) or not team.get("home"):
+            continue
+        home = (team.get("team_abbr") or "").upper()
+        away = abbr_by_id.get(team.get("opponent_id"), "")
+        if home and away:
+            pairs.add(frozenset((home, away)))
+    return pairs
+
+
+def get_schedule_slate_pairs(date: str | None = None) -> Set[frozenset]:
+    """Team pairs playing on ``date`` from the NHL schedule, keyed by abbreviation.
+
+    Fallback for callers that do not carry the pipeline's ``teams`` payload.
+    Returns an empty set when the schedule cannot be read; callers treat that
+    as "unverified" and skip forward lines rather than guess.
+    """
+    date = date or get_date()
+    try:
+        schedule = get_nhl_client().get_schedule(date)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Could not fetch the NHL schedule for {date} to verify lineup slate: {e}")
+        return set()
+
+    pairs: Set[frozenset] = set()
+    for day in (schedule or {}).get("gameWeek") or []:
+        if day.get("date") != date:
+            continue
+        for game in day.get("games") or []:
+            away = ((game.get("awayTeam") or {}).get("abbrev") or "").upper()
+            home = ((game.get("homeTeam") or {}).get("abbrev") or "").upper()
+            if away and home:
+                pairs.add(frozenset((away, home)))
+
+    if not pairs:
+        logger.warning(f"No schedule games found for {date}; lineup slate cannot be verified")
+    return pairs
+
+
 def _build_lineup_lookup(nhl_games: List[Dict], rotowire_games: List[Dict]) -> Dict[str, Dict[str, Dict]]:
     """
     Build ``team name -> {normalized player name: unit info}`` from both sources.
@@ -1028,18 +1100,20 @@ def _build_lineup_lookup(nhl_games: List[Dict], rotowire_games: List[Dict]) -> D
     publishes them where NHL.com does not. The two are kept as separate keys so a
     player can carry both, which is the normal case for a top-six forward.
 
-    Team names are keyed exactly as the sources report them ("Blue Jackets"), and
-    players are matched on ``team_name`` from the same NHL schedule, so no
-    cross-source team-name translation is needed.
+    Team names are folded onto an unambiguous club key (the NHL abbreviation
+    when known) because the player payload's ``team_name`` is the schedule
+    ``placeName`` ("Toronto", "New York") while both sources report the
+    ``commonName`` ("Maple Leafs", "Rangers"). The abbreviation is what keeps
+    the two New York clubs (NYR/NYI) from collapsing into one "New York" key.
 
     Returns:
-        Mapping of team name to a mapping of normalized player name to
+        Mapping of club key to a mapping of normalized player name to
         ``{"unit": str|None, "pp_unit": str|None}``.
     """
     lookup: Dict[str, Dict[str, Dict]] = {}
 
     def team_entry(team_name: str) -> Dict[str, Dict]:
-        return lookup.setdefault(team_name, {})
+        return lookup.setdefault(club_key(team_name), {})
 
     def assign_unit(team_name: str, player_name: str, label: str) -> None:
         key = normalize_player_name(player_name)
@@ -1103,6 +1177,7 @@ def merge_lineup_data(
     players: List[Dict],
     nhl_games: List[Dict],
     rotowire_games: List[Dict],
+    teams: List[Dict] | None = None,
 ) -> List[Dict]:
     """
     Annotate each player with their projected starting lineup units.
@@ -1111,6 +1186,10 @@ def merge_lineup_data(
         players: List of player dictionaries (must include name and team_name).
         nhl_games: Games from get_nhl_com_lineups.
         rotowire_games: Games from get_rotowire_lineups.
+        teams: The pipeline's schedule teams (``team_id``/``team_abbr``), used to
+            resolve a player's club unambiguously. Players may carry ``team_abbr``
+            already, and normally carry ``team_id``; the place name alone cannot
+            distinguish NYR from NYI.
 
     Returns:
         List of players with added ``lineup_unit``, ``lineup_position_group``,
@@ -1119,33 +1198,86 @@ def merge_lineup_data(
         ``lineup_unit`` is only set for forwards (F1-F4); defence pairings and
         goalie designations are parsed and available on the source payload but not
         stored per skater, since the picks table is skater-scoped. ``lineup_status``
-        is PROJECTED when a forward line matched and UNKNOWN otherwise, so an empty
-        fetch is distinguishable from a genuine miss.
+        is PROJECTED when a forward line matched and UNKNOWN otherwise. A player
+        who is missing from a partial payload keeps the values already on the row
+        (the 03:00 working set) instead of being reset to UNKNOWN.
     """
     lookup = _build_lineup_lookup(nhl_games, rotowire_games)
 
-    matched = total = 0
+    abbr_by_id = {
+        team["team_id"]: (team.get("team_abbr") or "").upper()
+        for team in teams or []
+        if isinstance(team, dict) and team.get("team_id") is not None and team.get("team_abbr")
+    }
+
+    def _team_key(team_name):
+        return club_key(team_name or "")
+
+    def _player_key(player):
+        abbr = (player.get("team_abbr") or "").upper()
+        if abbr:
+            return team_abbreviation(abbr) or abbr
+        team_id = player.get("team_id")
+        if team_id is not None and team_id in abbr_by_id:
+            return abbr_by_id[team_id]
+        return _team_key(player.get("team_name"))
+
+    player_clubs = {_player_key(p) for p in players if p.get("team_name") or p.get("team_id") is not None}
+    source_clubs = {_team_key(t.get("name")) for t in _iter_teams(nhl_games)}
+    source_clubs |= {_team_key(t.get("name")) for t in _iter_teams(rotowire_games)}
+    player_clubs.discard("")
+    source_clubs.discard("")
+    uncovered = sorted(player_clubs - source_clubs)
+    off_slate = sorted(source_clubs - player_clubs)
+    logger.info(
+        f"Lineup coverage: {len(player_clubs)} player clubs, {len(player_clubs) - len(uncovered)} with source data; "
+        f"nhl.com={len(_iter_teams(nhl_games))} teams, rotowire={len(_iter_teams(rotowire_games))} teams"
+    )
+    if uncovered:
+        logger.warning(f"Lineup sources have no team for {len(uncovered)} club(s): {uncovered}")
+    if off_slate:
+        # The usual cause is a source still serving the previous day's slate.
+        logger.warning(f"Lineup sources cover {len(off_slate)} club(s) not on this slate: {off_slate}")
+
+    matched = total = pp_matched = 0
     for player in players:
-        entries = lookup.get(player.get("team_name", ""), {})
+        entries = lookup.get(_player_key(player), {})
         entry = entries.get(normalize_player_name(player.get("name", "")), {})
 
         unit = entry.get("unit") or ""
         is_forward = unit.startswith("F")
         pp_unit = entry.get("pp_unit")
 
-        player["lineup_unit"] = unit if is_forward else None
-        player["lineup_position_group"] = unit[:1] if unit else None
-        player["pp_unit"] = pp_unit
-        player["lineup_status"] = "PROJECTED" if is_forward else "UNKNOWN"
+        if is_forward:
+            player["lineup_unit"] = unit
+            player["lineup_position_group"] = unit[:1]
+            player["lineup_status"] = "PROJECTED"
+        elif unit:
+            # Defence pair / goalie group: parsed but not stored as a forward line.
+            player["lineup_unit"] = None
+            player["lineup_position_group"] = unit[:1]
+            player["lineup_status"] = "UNKNOWN"
+        else:
+            # A partial source (e.g. RotoWire only, which has no forward lines)
+            # must not erase a projection already merged earlier in the day.
+            player.setdefault("lineup_unit", None)
+            player.setdefault("lineup_position_group", None)
+            player.setdefault("lineup_status", "UNKNOWN")
+
+        if pp_unit is not None:
+            player["pp_unit"] = pp_unit
+        else:
+            player.setdefault("pp_unit", None)
 
         total += 1
         matched += bool(is_forward)
+        pp_matched += pp_unit is not None
 
-    logger.info(f"Matched {matched}/{total} players to a projected forward line")
-    if total and matched < total:
+    logger.info(f"Matched {matched}/{total} players to a projected forward line, {pp_matched} to a PP unit")
+    if total and matched == 0 and pp_matched == 0:
         logger.warning(
-            f"Only {matched}/{total} players matched a projected line; check that the "
-            "NHL.com article and the player list refer to the same slate of games"
+            "No lineup data matched (0 forward lines, 0 PP units); check that the sources and the "
+            "player list refer to the same slate and club names"
         )
 
     return players

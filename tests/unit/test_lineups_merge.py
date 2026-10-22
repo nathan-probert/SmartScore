@@ -74,6 +74,108 @@ def test_merge_assigns_forward_line():
     assert result[0]["pp_unit"] is None
 
 
+def test_merge_matches_source_nickname_to_schedule_place_name():
+    """Production players carry the schedule ``placeName`` ("Philadelphia").
+
+    Both lineup sources report the ``commonName`` ("Flyers"). Keying the lookup
+    on the source name matched zero production players; both sides must fold
+    onto the same team key.
+    """
+    players = [{"name": "Owen Tippett", "team_name": "Philadelphia"}]
+
+    result = merge_lineup_data(players, _nhl_games(), [])
+
+    assert result[0]["lineup_unit"] == "F1"
+    assert result[0]["lineup_status"] == "PROJECTED"
+
+
+def test_merge_matches_rotowire_pp_unit_for_schedule_place_name():
+    players = [{"name": "Adam Fantilli", "team_name": "Columbus"}]
+
+    result = merge_lineup_data(players, [], _rotowire_games())
+
+    assert result[0]["pp_unit"] == "POWER PLAY #1"
+
+
+def test_merge_keeps_same_named_players_on_nyr_and_nyi_apart():
+    """NYR and NYI must be keyed by club abbreviation, not the "New York" placeName."""
+    players = [
+        {"name": "Same Name", "team_name": "New York", "team_id": 1},
+        {"name": "Same Name", "team_name": "New York", "team_id": 2},
+    ]
+    teams = [
+        {"team_id": 1, "team_abbr": "NYR"},
+        {"team_id": 2, "team_abbr": "NYI"},
+    ]
+    nhl = [
+        {
+            "teams": [
+                {"name": "Rangers", "units": [{"label": "F1", "players": ["Same Name"]}]},
+            ]
+        }
+    ]
+    rotowire = [
+        {
+            "teams": [
+                {
+                    "name": "Islanders",
+                    "pp_units": [{"label": "POWER PLAY #2", "players": [{"name": "Same Name"}]}],
+                },
+            ]
+        }
+    ]
+
+    result = merge_lineup_data(players, nhl, rotowire, teams=teams)
+
+    assert result[0]["lineup_unit"] == "F1"
+    assert result[0]["pp_unit"] is None
+    assert result[1]["lineup_unit"] is None
+    assert result[1]["pp_unit"] == "POWER PLAY #2"
+
+
+def test_single_new_york_placename_resolves_to_the_right_club_via_schedule():
+    """A player with only the "New York" placeName is disambiguated by team_id."""
+    players = [{"name": "J.T. Miller", "team_name": "New York", "team_id": 1}]
+    teams = [
+        {"team_id": 1, "team_abbr": "NYR"},
+        {"team_id": 2, "team_abbr": "NYI"},
+    ]
+    rotowire = [
+        {
+            "teams": [
+                {"name": "Rangers", "pp_units": [{"label": "POWER PLAY #1", "players": [{"name": "J.T. Miller"}]}]},
+                {"name": "Islanders", "pp_units": [{"label": "POWER PLAY #2", "players": [{"name": "Bo Horvat"}]}]},
+            ]
+        }
+    ]
+
+    result = merge_lineup_data(players, [], rotowire, teams=teams)
+
+    assert result[0]["pp_unit"] == "POWER PLAY #1"
+
+
+def test_merge_warns_when_source_covers_no_player_team(caplog):
+    """A zero-match run must say so; this is what made the dev outage silent."""
+    players = [{"name": "Owen Tippett", "team_name": "Philadelphia"}]
+    stale = [
+        {
+            "teams": [
+                {
+                    "name": "Rangers",
+                    "units": [{"label": "F1", "players": ["J.T. Miller", "Mika Zibanejad", "Will Cuylle"]}],
+                }
+            ]
+        }
+    ]
+
+    with caplog.at_level("WARNING"):
+        result = merge_lineup_data(players, stale, [])
+
+    assert result[0]["lineup_status"] == "UNKNOWN"
+    assert "No lineup data matched" in caplog.text
+    assert "not on this slate" in caplog.text
+
+
 def test_merge_assigns_defence_pair_as_non_forward_group():
     """D-pairing is parsed but not stored per skater; status stays UNKNOWN."""
     players = [{"name": "Travis Sanheim", "team_name": "Flyers"}]
@@ -244,23 +346,78 @@ def test_merge_warns_when_article_lists_player_on_two_lines(caplog):
     assert "F1" in caplog.text and "F2" in caplog.text
 
 
+def _teams():
+    """Pipeline ``teams`` payload for the Flyers/Devils game in ``_nhl_games``."""
+    return [
+        {"team_name": "Philadelphia", "team_abbr": "PHI", "team_id": 4, "opponent_id": 1, "home": False},
+        {"team_name": "New Jersey", "team_abbr": "NJD", "team_id": 1, "opponent_id": 4, "home": True},
+    ]
+
+
 @patch("event_handler.get_nhl_com_lineups")
 @patch("event_handler.get_rotowire_lineups")
 def test_handle_get_lineups_merges(mock_rotowire, mock_nhl):
     mock_nhl.return_value = _nhl_games()
     mock_rotowire.return_value = []
 
-    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None)
 
     assert result["statusCode"] == 200
     assert result["players"][0]["lineup_unit"] == "F1"
+
+
+@patch("event_handler.get_nhl_com_lineups")
+@patch("event_handler.get_rotowire_lineups")
+def test_handle_get_lineups_passes_slate_and_target_date(mock_rotowire, mock_nhl):
+    mock_nhl.return_value = _nhl_games()
+    mock_rotowire.return_value = []
+
+    handle_get_lineups(
+        {
+            "players": [{"name": "Owen Tippett", "team_name": "Flyers"}],
+            "date": "2026-10-20",
+            "teams": _teams(),
+        },
+        None,
+    )
+
+    kwargs = mock_nhl.call_args.kwargs
+    assert kwargs["target_date"] == "2026-10-20"
+    assert frozenset(("PHI", "NJD")) in kwargs["slate_pairs"]
+
+
+@patch("event_handler.get_nhl_com_lineups")
+@patch("event_handler.get_rotowire_lineups")
+@patch("event_handler.get_schedule_slate_pairs", return_value={frozenset(("PHI", "NJD"))})
+def test_handle_get_lineups_falls_back_to_schedule_without_teams(mock_schedule, mock_rotowire, mock_nhl):
+    mock_nhl.return_value = _nhl_games()
+    mock_rotowire.return_value = []
+
+    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+
+    mock_schedule.assert_called_once()
+    assert result["players"][0]["lineup_unit"] == "F1"
+
+
+@patch("event_handler.get_nhl_com_lineups", return_value=[])
+@patch("event_handler.get_rotowire_lineups")
+def test_handle_get_lineups_keeps_pp_when_forward_lines_are_skipped(mock_rotowire, mock_nhl):
+    """A stale-slate article yields no forward lines; RotoWire PP still applies."""
+    mock_rotowire.return_value = _rotowire_games()
+
+    result = handle_get_lineups(
+        {"players": [{"name": "Adam Fantilli", "team_name": "Columbus"}], "teams": _teams()}, None
+    )
+
+    assert result["players"][0]["lineup_unit"] is None
+    assert result["players"][0]["pp_unit"] == "POWER PLAY #1"
 
 
 @patch("event_handler.get_nhl_com_lineups", return_value=[])
 @patch("event_handler.get_rotowire_lineups", return_value=[])
 def test_handle_get_lineups_survives_both_sources_failing(mock_rotowire, mock_nhl):
     """A lineup outage must not fail the pipeline; status UNKNOWN carries the signal."""
-    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None)
 
     assert result["statusCode"] == 200
     assert result["players"][0]["lineup_status"] == "UNKNOWN"
@@ -295,7 +452,9 @@ def test_handle_get_lineups_survives_source_failures(nhl, rotowire):
         patch("event_handler.get_nhl_com_lineups", side_effect=nhl),
         patch("event_handler.get_rotowire_lineups", side_effect=rotowire),
     ):
-        result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+        result = handle_get_lineups(
+            {"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None
+        )
 
     assert result["statusCode"] == 200
     assert result["players"][0]["lineup_status"] == "UNKNOWN"
@@ -306,7 +465,7 @@ def test_handle_get_lineups_survives_source_failures(nhl, rotowire):
 @patch("event_handler.get_nhl_com_lineups", return_value=[])
 def test_handle_get_lineups_survives_merge_failure(mock_nhl, mock_rotowire, mock_merge):
     """A malformed source payload degrades to UNKNOWN rows, not a failed step."""
-    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
+    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None)
 
     assert result["statusCode"] == 200
     assert result["players"][0] == {
@@ -367,3 +526,49 @@ def test_mark_lineups_unknown_preserves_other_fields():
 
 def test_mark_lineups_unknown_empty():
     assert mark_lineups_unknown([]) == []
+
+
+def test_partial_payload_keeps_prior_projection_for_unmatched_player():
+    """NIT: an empty/partial source must not reset a player already projected."""
+    players = [
+        {
+            "name": "Owen Tippett",
+            "team_name": "Flyers",
+            "lineup_unit": "F1",
+            "lineup_position_group": "F",
+            "pp_unit": "POWER PLAY #2",
+            "lineup_status": "PROJECTED",
+        }
+    ]
+
+    result = merge_lineup_data(players, [], [])
+
+    assert result[0]["lineup_unit"] == "F1"
+    assert result[0]["lineup_position_group"] == "F"
+    assert result[0]["pp_unit"] == "POWER PLAY #2"
+    assert result[0]["lineup_status"] == "PROJECTED"
+
+
+def test_no_zero_match_warning_when_pp_units_matched(caplog):
+    """S3: a stale forward-line slate with valid PP units is not a total zero-match."""
+    players = [{"name": "Adam Fantilli", "team_name": "Blue Jackets"}]
+
+    with caplog.at_level("WARNING"):
+        result = merge_lineup_data(players, [], _rotowire_games())
+
+    assert result[0]["pp_unit"] == "POWER PLAY #1"
+    assert "No lineup data matched" not in caplog.text
+
+
+def test_coverage_counts_nyr_and_nyi_as_two_clubs(caplog):
+    """NIT: the two New York clubs must not collapse in the coverage log."""
+    players = [
+        {"name": "J.T. Miller", "team_name": "New York", "team_id": 1},
+        {"name": "Bo Horvat", "team_name": "New York", "team_id": 2},
+    ]
+    teams = [{"team_id": 1, "team_abbr": "NYR"}, {"team_id": 2, "team_abbr": "NYI"}]
+
+    with caplog.at_level("INFO"):
+        merge_lineup_data(players, [], [], teams=teams)
+
+    assert "2 player clubs" in caplog.text

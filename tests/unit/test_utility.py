@@ -14,6 +14,7 @@ from utility import (
     get_picks_for_date,
     get_tims_players,
     put_working_set,
+    save_to_db,
 )
 
 
@@ -293,3 +294,44 @@ def test_create_cron_schedule_new_year():
     result = create_cron_schedule(dt)
 
     assert result == "cron(0 0 1 1 ? 2025)"
+
+
+@patch("utility.count_picks_for_date", return_value=1)
+@patch("utility.exponential_backoff_supabase_request")
+def test_save_to_db_wipes_everything_and_reinserts_from_id_1(mock_request, mock_count):
+    """The table must hold ONLY today's picks: full wipe + ids from 1."""
+    save_to_db([{"id": 99, "date": "2026-04-15", "player_id": 1}], "2026-04-15")
+
+    # unscoped POST is the write helper's full-wipe branch
+    assert mock_request.call_args.kwargs["method"] == "post"
+    assert mock_request.call_args.kwargs.get("eq") is None
+    posted = mock_request.call_args.kwargs["json_data"]
+    assert [row["id"] for row in posted] == [1]
+
+
+@patch("utility.count_picks_for_date", return_value=1)
+@patch("utility.exponential_backoff_supabase_request")
+def test_save_to_db_verifies_the_write(mock_request, mock_count):
+    """A partial write must surface as an error, not a silently stale table."""
+    mock_count.return_value = 0  # wipe+insert happened? no rows published
+
+    try:
+        save_to_db([{"id": 1, "date": "2026-04-15", "player_id": 1}], "2026-04-15")
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as err:
+        assert "published 0 rows, expected 1" in str(err)
+
+
+@patch("utility.count_picks_for_date", return_value=1)
+@patch("utility.exponential_backoff_supabase_request")
+def test_save_to_db_carries_forward_goalie_values_on_fetch_failure(mock_request, mock_count):
+    """The publish is a delete+reinsert, so a failed goalie fetch must copy prior values."""
+    prior = [{"player_id": 11, "opp_goalie_name": "Starter", "opp_goalie_status": "CONFIRMED"}]
+    mock_request.side_effect = [prior, None]  # prior read, POST
+
+    players = [{"id": 1, "date": "2026-04-15", "player_id": 11}]
+    save_to_db(players, "2026-04-15")
+
+    posted = mock_request.call_args.kwargs["json_data"]
+    assert posted[0]["opp_goalie_name"] == "Starter"
+    assert posted[0]["opp_goalie_status"] == "CONFIRMED"

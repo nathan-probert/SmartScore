@@ -23,6 +23,20 @@ SEASON_CUTOFF_MONTH = 8
 # This includes the current day
 DAYS_TO_KEEP_HISTORIC_DATA = 8
 
+# Opponent-goalie columns carried per skater on Picks / Historic-Picks / snapshots.
+OPP_GOALIE_COLUMNS = (
+    "opp_goalie_name",
+    "opp_goalie_team",
+    "opp_goalie_status",
+    "opp_goalie_confirmed",
+    "opp_goalie_nhl_id",
+    "opp_goalie_gaa",
+    "opp_goalie_save_pct",
+    "opp_goalie_record",
+    "opp_goalie_shutouts",
+    "opp_goalie_games_played",
+)
+
 # Prediction weights
 WEIGHTS = make_predictions_rust.Weights(
     gpg=0.190,

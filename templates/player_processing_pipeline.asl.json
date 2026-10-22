@@ -1,5 +1,5 @@
 {
-    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit. normal_run and last_run reload the day's lean players/teams slices (Working-* tables) via LoadWorkingSet so the state always carries separated slices, never denormalized rows. normal_run re-enters the enrichment chain at GetInjuries; last_run skips that chain entirely (every game has started, so the picks API is locked and the Tims read can only fail) and goes straight to PublishToDb, which clears the tims groups (all 0) so the frontend flips to its 'All games have started' state.",
+    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit. normal_run and last_run reload the day's lean players/teams slices (Working-* tables) via LoadWorkingSet so the state always carries separated slices, never denormalized rows. On first_run the lineup/goalie/injury steps run before MakePredictions and SaveToDb; normal_run also archives (SaveToDb) so the mid-morning projections refresh Player-Snapshots, but skips UpdateHistory. last_run skips that chain entirely (every game has started, so the picks API is locked and the Tims read can only fail) and goes straight to PublishToDb, whose tims=0 write flips the frontend to its 'All games have started' state; save_to_db carries the prior opp_goalie_* values forward, and CheckSaveHistory's Default sends it to PublishToDb without UpdateHistory.",
     "StartAt": "GetDate",
     "States": {
         "GetDate": {
@@ -34,6 +34,7 @@
         },
         "CheckLastRun": {
             "Type": "Choice",
+            "Comment": "last_run exits before the enrichment chain: every game has started, so the picks API is locked and a GetTims read can only fail (the 30s Lambda timeout hits before its locked-picks fallback can run). PublishToDb clears the tims groups itself.",
             "Choices": [
                 {
                     "Variable": "$.status",
@@ -72,6 +73,16 @@
                     "BackoffRate": 5.0
                 }
             ],
+            "Next": "EnsureFirstRunStatus"
+        },
+        "EnsureFirstRunStatus": {
+            "Type": "Pass",
+            "Comment": "The GetPlayers sub-machine returns only players/teams. This branch is first_run by construction, so restore the status CheckInitialRun/CheckSaveHistory need.",
+            "Parameters": {
+                "players.$": "$.players",
+                "teams.$": "$.teams",
+                "status": "first_run"
+            },
             "Next": "CheckIfPlayersOutputIsEmpty"
         },
         "CheckIfPlayersOutputIsEmpty": {
@@ -83,12 +94,7 @@
                     "Next": "UpdateHistory"
                 }
             ],
-            "Default": "MakePredictions"
-        },
-        "MakePredictions": {
-            "Type": "Task",
-            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:MakePredictions-${ENV}",
-            "Next": "GetInjuries"
+            "Default": "GetInjuries"
         },
         "GetInjuries": {
             "Type": "Task",
@@ -103,6 +109,11 @@
         "GetLineups": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetLineups-${ENV}",
+            "Next": "MakePredictions"
+        },
+        "MakePredictions": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:MakePredictions-${ENV}",
             "Next": "GetTims"
         },
         "GetTims": {
@@ -121,15 +132,26 @@
                 {
                     "Variable": "$.status",
                     "StringEquals": "normal_run",
-                    "Next": "PublishToDb"
+                    "Next": "SaveToDb"
                 }
             ],
-            "Default": "PublishToDb"
+            "Default": "SaveToDb"
         },
         "SaveToDb": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:SavePlayers-${ENV}",
-            "Next": "UpdateHistory"
+            "Next": "CheckSaveHistory"
+        },
+        "CheckSaveHistory": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.status",
+                    "StringEquals": "first_run",
+                    "Next": "UpdateHistory"
+                }
+            ],
+            "Default": "PublishToDb"
         },
         "UpdateHistory": {
             "Type": "Task",

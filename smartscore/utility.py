@@ -10,7 +10,13 @@ from postgrest.exceptions import APIError
 from smartscore_info_client.utility import exponential_backoff_request
 
 from config import ENV, SUPABASE_ADMIN_CLIENT, SUPABASE_CLIENT
-from constants import CURRENT_PICK_ACCURACY, NUM_TIMS_GROUPS, SEASON_CUTOFF_MONTH, SEASON_PICK_ACCURACY_PREFIX
+from constants import (
+    CURRENT_PICK_ACCURACY,
+    NUM_TIMS_GROUPS,
+    OPP_GOALIE_COLUMNS,
+    SEASON_CUTOFF_MONTH,
+    SEASON_PICK_ACCURACY_PREFIX,
+)
 
 logger = Logger()
 
@@ -57,10 +63,41 @@ def get_tims_players():
     return ids
 
 
-def save_to_db(players):
+def _prior_goalie_values(date):
+    """Today's existing opp_goalie_* values, keyed by player_id.
+
+    The publish is a full wipe + reinsert, so a column omitted from the payload
+    is lost (unlike an upsert). When the goalie fetch failed the new rows have
+    no opp_goalie_* keys, so copy them forward from the rows being replaced.
+    Must be called BEFORE the wipe deletes those rows.
+    """
+    select = "player_id," + ",".join(OPP_GOALIE_COLUMNS)
+    rows = exponential_backoff_supabase_request(f"Picks-{ENV}", select=select, eq=("date", date)) or []
+    return {str(row.get("player_id")): row for row in rows}
+
+
+def save_to_db(players, date=None):
+    """Replace the entire Picks table with the new roster.
+
+    Deletes ALL rows then inserts the payload starting at id 1: the write helper
+    treats an unscoped POST as "clear the table before inserting new data", and
+    the downstream reader (and the site) assume the table holds only today's
+    picks. ``date`` is only used to carry prior goalie values forward when the
+    goalie fetch failed.
+
+    After the write the published row count is verified against the payload so
+    a partial/failed write surfaces as a hard error (failing the AWS step)
+    instead of a silently stale table.
+    """
     # remove fields that aren't currently show in frontend, plus relational
     # join keys (team_id etc.) which never existed on the Picks table --
     # Supabase rejects upserts with unknown columns.
+    has_goalie_data = any(any(column in player for column in OPP_GOALIE_COLUMNS) for player in players)
+    prior_goalies = {}
+    if date and players and not has_goalie_data:
+        # read the rows being replaced before the wipe takes them away
+        prior_goalies = _prior_goalie_values(date)
+
     for i, player in enumerate(players):
         player.pop("home", None)
         player.pop("hppg", None)
@@ -70,8 +107,34 @@ def save_to_db(players):
         player.pop("opponent_id", None)
         player.pop("season", None)
         player.pop("team_abbr", None)
-        player["id"] = i + 1
+        if prior_goalies:
+            prior = prior_goalies.get(str(player.get("player_id")))
+            if prior:
+                for column in OPP_GOALIE_COLUMNS:
+                    if column in prior:
+                        player[column] = prior[column]
+        player["id"] = 1 + i
+    # unscoped POST: the write helper full-wipes the table before upserting
     exponential_backoff_supabase_request(f"Picks-{ENV}", method="post", json_data=players)
+    _verify_picks_write(players, date)
+
+
+def _verify_picks_write(players, date):
+    """Fail loudly when the publish did not fully land.
+
+    Reads back the published row count for ``date`` and compares it with the
+    payload: a mismatch means the delete+insert went wrong. Raising propagates
+    through the Lambda handler into a Step Functions TaskFailed instead of
+    leaving a silently stale/partial table.
+    """
+    expected = len(players)
+    published = (
+        count_picks_for_date(date)
+        if date
+        else exponential_backoff_supabase_request(f"Picks-{ENV}", select="id", count_only=True)
+    )
+    if published != expected:
+        raise RuntimeError(f"Picks write incomplete: published {published} rows, expected {expected}")
 
 
 def get_today_db(eq=None):
@@ -206,7 +269,7 @@ def schedule_run(times):
         print(f"Scheduled event for {trigger_time} with rule name {rule_name}")
 
 
-def _supabase_get(table_name, select, eq, count_only):
+def _supabase_get(table_name, select, eq, count_only, order=None, limit=None):
     """GET branch of exponential_backoff_supabase_request."""
     if count_only:
         query = SUPABASE_CLIENT.table(table_name).select(select, count="exact", head=True)
@@ -216,6 +279,12 @@ def _supabase_get(table_name, select, eq, count_only):
         # eq should be a tuple: (column, value)
         col, val = eq
         query = query.eq(col, val)
+    if order is not None:
+        # order should be a tuple: (column, descending)
+        col, desc = order
+        query = query.order(col, desc=desc)
+    if limit is not None:
+        query = query.limit(limit)
     if count_only:
         return query.execute().count
     return query.execute().data
@@ -232,6 +301,8 @@ def exponential_backoff_supabase_request(  # noqa: PLR0913
     eq=None,
     *,
     count_only=False,
+    order=None,
+    limit=None,
 ):
     """
     Makes Supabase requests with exponential backoff retry strategy.
@@ -256,7 +327,7 @@ def exponential_backoff_supabase_request(  # noqa: PLR0913
     for attempt in range(max_retries):
         try:
             if method == "GET":
-                response = _supabase_get(table_name, select, eq, count_only)
+                response = _supabase_get(table_name, select, eq, count_only, order=order, limit=limit)
             elif method == "POST":
                 # Scoped delete when eq is given (e.g. Metrics rows share a table),
                 # otherwise legacy full-table wipe (e.g. Picks / Historic-Picks).

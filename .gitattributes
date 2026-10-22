@@ -1,0 +1,9 @@
+# Gzipped SQL dumps under data/dumps/ are committed (they are the versioned
+# source of truth for the raw store) and show as binary by default. To review
+# them as decompressed text, run once per clone:
+#
+#     git config --local diff.gzip.textconv "gunzip -c"
+#
+# The command lives in local config deliberately - it executes arbitrary code,
+# so it is opted into rather than inherited from the repository.
+*.sql.gz diff=gzip
