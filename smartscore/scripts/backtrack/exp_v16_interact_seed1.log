@@ -1,0 +1,80 @@
+
+=== interaction coverage (non-null / rows) ===
+  home_x_gpg               617,310 (100.0%)
+  home_x_hgpg              424,537 (68.8%)
+  home_x_five_gpg          617,310 (100.0%)
+  home_x_ppg               617,310 (100.0%)
+  home_x_rank_gpg          92,440 (15.0%)
+  home_x_rank_hgpg         92,440 (15.0%)
+  home_x_ewm_goals         614,884 (99.6%)
+  home_x_prev2_goals       614,884 (99.6%)
+  club_rest_days_F         407,911 (66.1%)
+  club_rest_days_D         206,642 (33.5%)
+  days_since_game_F        406,718 (65.9%)
+  days_since_game_D        206,033 (33.4%)
+  gpg_x_opp_gaa            593,506 (96.1%)
+  hgpg_x_opp_gaa           407,884 (66.1%)
+  five_gpg_x_opp_gaa       593,506 (96.1%)
+  gpg_x_opp_save_pct       593,506 (96.1%)
+  hgpg_x_opp_save_pct      407,884 (66.1%)
+  gpg_x_rel_opp_gaa        593,506 (96.1%)
+  hgpg_x_rel_opp_gaa       407,884 (66.1%)
+  gpg_x_opp_wins           593,506 (96.1%)
+
+=== interaction coverage on challenge rows (92,440) ===
+  home_x_gpg               92,440/92,440 (100.0%)
+  home_x_hgpg              92,440/92,440 (100.0%)
+  home_x_five_gpg          92,440/92,440 (100.0%)
+  home_x_ppg               92,440/92,440 (100.0%)
+  home_x_rank_gpg          92,440/92,440 (100.0%)
+  home_x_rank_hgpg         92,440/92,440 (100.0%)
+  home_x_ewm_goals         92,434/92,440 (100.0%)
+  home_x_prev2_goals       92,434/92,440 (100.0%)
+  club_rest_days_F         64,120/92,440 (69.4%)
+  club_rest_days_D         27,529/92,440 (29.8%)
+  days_since_game_F        64,125/92,440 (69.4%)
+  days_since_game_D        27,533/92,440 (29.8%)
+  gpg_x_opp_gaa            89,237/92,440 (96.5%)
+  hgpg_x_opp_gaa           89,237/92,440 (96.5%)
+  five_gpg_x_opp_gaa       89,237/92,440 (96.5%)
+  gpg_x_opp_save_pct       89,237/92,440 (96.5%)
+  hgpg_x_opp_save_pct      89,237/92,440 (96.5%)
+  gpg_x_rel_opp_gaa        89,237/92,440 (96.5%)
+  hgpg_x_rel_opp_gaa       89,237/92,440 (96.5%)
+  gpg_x_opp_wins           89,237/92,440 (96.5%)
+
+=== spot checks (independent recompute) ===
+  row 583296 (2025-03-04 player 8481641): OK
+  row 385876 (2022-10-30 player 8477447): OK
+  row 553859 (2025-04-01 player 8480803): OK
+  row 422350 (2026-01-01 player 8477940): OK
+
+frame built: 617,310 rows in 777s
+features: 60 numeric + 2 categorical (+20 interactions)
+  fold 1: 18,635 sim rows across 211 dates
+  fold 2: 18,756 sim rows across 211 dates
+  fold 3: 18,217 sim rows across 211 dates
+  fold 4: 18,494 sim rows across 210 dates
+  fold 5: 18,338 sim rows across 210 dates
+
+=== pooled out-of-fold picks (seed 1) ===
+AUC per fold: 0.6198, 0.5999, 0.6012, 0.6222, 0.6089 (mean 0.6104 +- 0.0092)
+lgbm      908/3159 = 28.743% (folds 28.746 +- 2.729) | g1=39.8(419/1053) g2=26.3(277/1053) g3=20.1(212/1053) | 2023-24+ 591/2001=29.54% | 2025-26 194/633=30.65%
+ensemble  941/3159 = 29.788% (folds 29.790 +- 2.152) | g1=41.1(433/1053) g2=26.7(281/1053) g3=21.6(227/1053) | 2023-24+ 606/2001=30.28% | 2025-26 199/633=31.44%
+hgb       933/3159 = 29.535% (folds 29.534 +- 2.715) | g1=40.7(429/1053) g2=27.1(285/1053) g3=20.8(219/1053) | 2023-24+ 607/2001=30.33% | 2025-26 186/633=29.38%
+logreg    891/3159 = 28.205% (folds 28.207 +- 2.188) | g1=38.4(404/1053) g2=26.9(283/1053) g3=19.4(204/1053) | 2023-24+ 565/2001=28.24% | 2025-26 190/633=30.02%
+hgpg      886/3159 = 28.047% (folds 28.045 +- 2.861) | g1=38.4(404/1053) g2=26.0(274/1053) g3=19.8(208/1053) | 2023-24+ 563/2001=28.14% | 2025-26 192/633=30.33%
+gpg       837/3159 = 26.496% (folds 26.494 +- 2.195) | g1=37.8(398/1053) g2=23.7(250/1053) g3=17.9(189/1053) | 2023-24+ 542/2001=27.09% | 2025-26 179/633=28.28%
+
+=== exact McNemar (pooled paired picks) ===
+lgbm      vs hgpg : 306-284, p=0.3873 (n=3159, changed picks=1613)
+lgbm      vs gpg  : 398-327, p=0.0093 (n=3159, changed picks=2005)
+ensemble  vs hgpg : 325-270, p=0.0268 (n=3159, changed picks=1579)
+ensemble  vs gpg  : 420-316, p=0.0001 (n=3159, changed picks=1975)
+reference = same-frame (oof_v16_calib_ens_seed1.csv); fold mismatch: 0/92440
+reference re-picks (same-frame (oof_v16_calib_ens_seed1.csv)): lgbm 931/3159, ensemble 925/3159
+lgbm      vs no-interact ref: 127-150, p=0.1861 (delta -0.728pp, n=3159, changed picks=722)
+ensemble  vs no-interact ref: 134-118, p=0.3447 (delta +0.506pp, n=3159, changed picks=660)
+
+saved 92,440 OOF rows -> /home/nathan/code/SmartScore-backtrack/data/ml/oof_v16interact_seed1.csv
+total 2424s
