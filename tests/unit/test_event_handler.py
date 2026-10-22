@@ -167,6 +167,38 @@ def test_handle_publish_db_empty_players(mock_publish):
 
 
 @patch("event_handler.publish_public_db")
+def test_handle_publish_db_last_run_clears_tims(mock_publish):
+    """The day's last run publishes every player at tims=0 without a Tims read.
+
+    By the last run every game has started, so the picks API is locked and a
+    GetTims read can only fail (the Lambda times out inside the backoff
+    retries). The state machine routes last_run straight here, and clearing
+    the tims groups is what makes the frontend render "All games have started
+    today".
+    """
+    players = [
+        {"name": "Player 1", "id": 1, "stat": 0.8, "tims": 2},
+        {"name": "Player 2", "id": 2, "stat": 0.9},
+    ]
+
+    handle_publish_db({"players": players, "status": "last_run"}, {})
+
+    published = mock_publish.call_args[0][0]
+    assert [player["tims"] for player in published] == [0, 0]
+
+
+@patch("event_handler.publish_public_db")
+def test_handle_publish_db_normal_run_preserves_tims(mock_publish):
+    """Only the last run clears tims; other runs publish whatever GetTims set."""
+    players = [{"name": "Player 1", "id": 1, "stat": 0.8, "tims": 2}]
+
+    handle_publish_db({"players": players, "status": "normal_run"}, {})
+
+    published = mock_publish.call_args[0][0]
+    assert published[0]["tims"] == 2
+
+
+@patch("event_handler.publish_public_db")
 def test_handle_publish_db_no_players_key(mock_publish):
     """Test publishing database when players key is missing."""
     event = {}

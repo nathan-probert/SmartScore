@@ -239,8 +239,10 @@ def get_tims(players, allow_empty=False):
         group_ids = get_tims_players()
     except Exception:
         # On the last run of the day the picks API is expected to be locked or
-        # gone once every game has started; publish everyone at tims=0 so the
-        # frontend flips to its "All games have started" state. Any other run
+        # gone once every game has started. The state machine now routes
+        # last_run straight to PublishToDb (which clears tims itself), so this
+        # all-tims-0 fallback only covers direct invocations; the pipeline
+        # itself never calls GetTims on the last run any more. Any other run
         # fails loudly so Step Functions retries it.
         if not allow_empty:
             raise

@@ -95,13 +95,22 @@ only reached from the `first_run` path in the state machine:
 
 ```
 first_run  -> Backfill -> GetPlayers -> MakePredictions -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> SaveToDb
-normal_run -> GetTims -> PublishToDb          # skips GetInjuries/GetGoalies/GetLineups entirely
+normal_run -> LoadWorkingSet -> GetInjuries -> GetGoalies -> GetLineups -> GetTims -> PublishToDb   # roster reloaded from Working-*
+last_run   -> LoadWorkingSet -> PublishToDb   # every game has started; tims cleared, no enrichment reads
 ```
 
-`CheckCompletion` routes `normal_run` straight to `GetTims`, so injuries, goalies
-and lineups are all only fetched on the **first** run of the day — and `SaveToDb`
-(`Player-Snapshots`) only runs on that same first run, while `normal_run` goes to
-`PublishToDb` (`Picks-{ENV}`) instead.
+`CheckCompletion` routes `normal_run` and `last_run` to `LoadWorkingSet`, which
+reloads the morning's roster from the `Working-*` tables instead of re-running
+GetPlayers. From there `normal_run` re-enters the enrichment chain, while
+`last_run` goes straight to `PublishToDb` (`Picks-{ENV}`): every game has
+started by then, the picks API is locked, and a `GetTims` read can only fail
+(the 30s Lambda timeout hits before its locked-picks fallback can run), so the
+publish clears the tims groups (all 0) itself -- the frontend renders that as
+its "All games have started today" state.
+
+`SaveToDb` (`Player-Snapshots`) still only runs on that first run: injuries,
+goalies and lineups are re-fetched fresh on later runs, but only the first run
+archives them.
 
 Practical consequence: the archive gets a lineup snapshot only on the first run of
 each date. That is the row training sees, so it is populated — but lineups are

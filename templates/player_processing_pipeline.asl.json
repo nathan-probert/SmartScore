@@ -1,5 +1,5 @@
 {
-    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit. normal_run and last_run reload the day's lean players/teams slices (Working-* tables) via LoadWorkingSet and re-enter the chain at GetInjuries, so the state always carries separated slices, never denormalized rows.",
+    "Comment": "A state machine to handle all player processing, predictions, and publishing. CheckCompleted returns only the run status: the published roster is over the Step Functions 256KB state limit. normal_run and last_run reload the day's lean players/teams slices (Working-* tables) via LoadWorkingSet so the state always carries separated slices, never denormalized rows. normal_run re-enters the enrichment chain at GetInjuries; last_run skips that chain entirely (every game has started, so the picks API is locked and the Tims read can only fail) and goes straight to PublishToDb, which clears the tims groups (all 0) so the frontend flips to its 'All games have started' state.",
     "StartAt": "GetDate",
     "States": {
         "GetDate": {
@@ -30,7 +30,18 @@
         "LoadWorkingSet": {
             "Type": "Task",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:LoadWorkingSet-${ENV}",
-            "Next": "GetInjuries"
+            "Next": "CheckLastRun"
+        },
+        "CheckLastRun": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.status",
+                    "StringEquals": "last_run",
+                    "Next": "PublishToDb"
+                }
+            ],
+            "Default": "GetInjuries"
         },
         "Backfill": {
             "Type": "Task",
@@ -111,13 +122,9 @@
                     "Variable": "$.status",
                     "StringEquals": "normal_run",
                     "Next": "PublishToDb"
-                },
-                {
-                    "Variable": "$.status",
-                    "StringEquals": "last_run",
-                    "Next": "PublishToDb"
                 }
-            ]
+            ],
+            "Default": "PublishToDb"
         },
         "SaveToDb": {
             "Type": "Task",

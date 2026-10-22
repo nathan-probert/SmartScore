@@ -10,8 +10,10 @@ and PlayerProcessingPipeline hit the same wall on its normal_run branch.
 ``CheckCompleted`` is now status-only. NotifyUsers additionally projects its
 result down to ``status`` and ``handle_emails`` re-reads the day's picks;
 PlayerProcessingPipeline routes normal_run/last_run to LoadWorkingSet, which
-reloads the day's separated lean slices and re-enters the enrichment chain.
-These assertions fail if any of those boundaries regress.
+reloads the day's separated lean slices. normal_run re-enters the enrichment
+chain at GetInjuries; last_run stops at PublishToDb, which clears the tims
+groups without calling the locked picks API. These assertions fail if any of
+those boundaries regress.
 """
 
 import json
@@ -77,9 +79,8 @@ def test_pipeline_normal_and_last_run_reload_separated_slices():
 
     CheckCompleted is status-only, so the normal_run and last_run branches
     land on LoadWorkingSet, which returns the day's lean players/teams slices
-    from the Working-* tables and re-enters the chain at GetInjuries. The
-    state always carries separated slices -- the same shape first_run uses --
-    and never denormalized rows.
+    from the Working-* tables. The state always carries separated slices --
+    the same shape first_run uses -- and never denormalized rows.
     """
     pipeline = _definition("player_processing_pipeline.asl.json")
 
@@ -91,16 +92,28 @@ def test_pipeline_normal_and_last_run_reload_separated_slices():
     load = pipeline["States"]["LoadWorkingSet"]
     assert load["Type"] == "Task"
     assert load["Resource"].endswith(":function:LoadWorkingSet-prod")
-    assert load["Next"] == "GetInjuries"
+    assert load["Next"] == "CheckLastRun"
 
-    # last_run now flows through the chain to CheckInitialRun and must route
-    # to PublishToDb, not fall through the Choice unhandled.
+    # last_run exits before the enrichment chain: every game has started, so
+    # the picks API is locked and a Tims read can only fail (the GetTims
+    # Lambda times out before its fallback can even run). PublishToDb clears
+    # the tims groups itself instead.
+    last_run_routing = {
+        choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckLastRun"]["Choices"]
+    }
+    assert last_run_routing["last_run"] == "PublishToDb"
+    assert pipeline["States"]["CheckLastRun"]["Default"] == "GetInjuries"
+
+    # CheckInitialRun is now only reachable for first_run/normal_run, so
+    # last_run must no longer be routed there; unexpected statuses degrade
+    # to a normal publish rather than hanging the machine.
     initial_routing = {
         choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckInitialRun"]["Choices"]
     }
-    assert initial_routing["last_run"] == "PublishToDb"
+    assert "last_run" not in initial_routing
     assert initial_routing["normal_run"] == "PublishToDb"
     assert initial_routing["first_run"] == "SaveToDb"
+    assert pipeline["States"]["CheckInitialRun"]["Default"] == "PublishToDb"
 
     # GetDate must not trim anything for these branches any more -- its
     # result is already just the status, verified in test_handle_check_completed.
