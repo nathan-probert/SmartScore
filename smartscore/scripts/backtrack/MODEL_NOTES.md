@@ -1657,25 +1657,30 @@ rows and 0 PP1** — the live pipeline's own signature (forwards only, verbatim
 "POWER PLAY #1"). The collector's post-state (PROJECTED rows carrying D units:
 **dev: 128 D / 22 PP1**; dev 390 PROJECTED / 105 UNKNOWN) appears on **dev
 only**. The prod-write claim printed earlier in this section (UNKNOWN
-4,900→4,765, PROJECTED 255→390 "incl. defence") was that **dev** post-state;
-a prod write is **not supported** by the current prod table.
+4,900→4,765, PROJECTED 255→390 "incl. defence") was that **dev** post-state.
 
 Known source noise (stored verbatim): the article occasionally numbers extra
 defence pairs (label "D4" for a 4th pair) and a handful of projected players
 are not on the current roster feed (logged, skipped). PP labels are mixed
 vocabulary until historical rows are rewritten (owner decision).
 
-Scheduling (10:30 / 13:00 / 16:00 ET at the challenge's three pick times) is
-**NOT installed**: the runbook cron pointed at `/home/nathan/code/SmartScore`,
-a checkout that does **not** contain `snapshot_projected.py` (the script
-exists only on `backtrack-recon`), and `crontab -l` returns "no crontab for
-nathan" — no collection is running and no log exists at the documented path.
-**Prospective projected-lineup validation therefore remains blocked pending a
-collect fix** (cron aimed at a checkout that actually has the script, plus
-the audit's refresh-path issues: the refresh PATCH is status-conditional only
-via a stale pre-read (TOCTOU), and there is no post-game / capture-time
-guard). A follow-up worker is on it; treat V10's "collect PROJECTED rows
-forward" as still open.
+FIXED 2026-10-22 (`d0ee9b9`): `snapshot_projected.py` now accumulates rows
+with units. Prod after first runs: **540 rows — 525 with `lineup_unit`**
+(D units 180, PP1 139, PP2 237), statuses **525 `PROJECTED_PROXY`**
+(prior-game proxy units, provenance-flagged) / **2 `PROJECTED`** (official
+article F/D + RotoWire PP) / **13 `UNKNOWN`** (no deployable history);
+idempotency verified (second run: 0 writes). Stats columns untouched
+(gpg/hgpg non-null on 539/540). Runbook: `PROJECTED_LINEUP_RUNBOOK.md`
+(correct worktree path, PATH fix, cron + systemd-timer, 10:30/13:00/16:00 ET,
+verification query).
+Limits: proxy units come from last-season final deployments until fresher
+shifts accumulate; on article-lag days RotoWire identity+PP still collects
+with proxy flags; PP3/PP4 proxy rows surface verbatim under PROJECTED_PROXY
+and the model boundary may need clamping. **Prospective projected-lineup
+validation can now begin:** watch fidelity vs actuals over the next 2-3
+weeks per the V11 sensitivity (81% fidelity ~ +0.1-0.3pp, 100% ~ +1.2pp);
+adopt only if fidelity >= 90% AND paired tests beat the no-lineup ensemble
+on both seeds.
 
 Health check: PROJECTED dates accumulating forward under this heading; 0 new
 dates on successive game days means the sources stopped (article moved hosts
