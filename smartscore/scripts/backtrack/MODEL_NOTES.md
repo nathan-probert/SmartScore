@@ -7,6 +7,17 @@
 (29.92 / 29.41 / 29.82; std **0.28**), vs hgpg **28.05%** and straight GPG
 **26.50%**.
 
+**V16 (2026-10-22) — no V16 change adopted.** Six follow-up experiments
+(exposure product, group-3 weights/dedicated model, PBP pass-context xG,
+calibration swap, interactions, ALS latent factors) all failed the
++0.5pp-on-both-seeds adoption gate; exact rows are in the rejected table
+below and `notes_v16_{exposure,group3,pbp,embed,calib,interact,audit}.md`.
+The **29.71%** mean pooled all-era result stands (seeds 0/1/3 = 29.92 / 29.41
+/ 29.82 on the 96f0ff2 cache); regenerating the ensemble on the current data
+cache (617,310 rows incl. the V15 2013-17 rows) gives **29.28% / 29.60%** for
+seeds 1/3. gpg **837/3159 = 26.496%** and hgpg **886/3159 = 28.047%**
+reproduce exactly in every V16 run, validating the fold wiring.
+
 **≥30% is invalid:** the only ≥30% result was LGBM **30.36%** using
 `lineup_unit`/`pp_unit` from the same game's shift chart. Those columns are
 removed; corrected LGBM is **29.06%**.
@@ -44,6 +55,20 @@ with units forward.
 | V12-qoc (shift-chart QoC/QoT) | +0.51 / +0.03pp | rejected (mixed) |
 | V12-interactions (tims x rates) | +0.10 / 0.00pp; g3 -0.57pp | rejected |
 | V15 pre-2017 data (2013-17) | LGBM +0.10 / +0.41pp; ensemble -0.38 / -0.22pp | rejected |
+| V16-exposure (prior xG/60 x projected-TOI product) | base ens 926→921 seed 1, 935→933 seed 3; LGBM 931→922, 929→924; McNemar p 0.8023/0.9508 and 0.6108/0.8067 vs paired base; product correlates r=0.94 with xg60_prior and 0.85 with hgpg | rejected |
+| V16-group3 (g3 weights w2/w4 + dedicated g3 model) | everything below the paired base on both seeds (w2 -0.38/-0.44pp, w4 -0.29/-0.66pp, g3blend -0.38/-0.19pp, g3pure -0.89/-0.48pp); dedicated g3 AUC lower than the shared model on all 5 folds | rejected |
+| V16-pbp (pass-context per-shot xG) | per-shot AUC +0.0007/+0.0009 over geometry-only 0.765; decisive matched-data pair LGBM -0.158/-0.127pp (6,993 games / 608,813 shots) | rejected |
+| V16-calib (confident-miss competitor swap) | seed 1 +0.35pp, seed 3 -0.16pp; McNemar vs ensemble p=0.51/0.78 | rejected |
+| V16-interact (home x form / rest x role / opponent-relative) | ensemble +0.506/+0.253pp vs paired arm, LGBM -0.728/+0.095pp; ens McNemar p=0.3447/0.6593 | rejected |
+| V16-embed (ALS latent factors) | seed 1 -0.03pp / seed 3 +0.57pp | **INVALID (leakage)** — see below |
+
+**INVALID — excluded (leakage):** the ALS latent-factor experiment
+(`493ba96`) built player x season aggregate cells over **ALL training dates**
+while the folds are shuffled date blocks, so a held-out game's factor includes
+the player's **LATER same-season games** — **97.85%** of challenge rows are
+affected; the seed-3 +0.57pp is lookahead, not signal (see
+`notes_v16_audit.md`). The latent-factor idea remains **UNTESTED**; if retried
+it must use only strictly prior games per row (expanding window).
 
 **Post-roadmap findings:** identity features were negative; recent-era
 training did not beat full-era on identical dates, but per-season accuracy
@@ -93,7 +118,9 @@ V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged lineup
 replacements, V7-objective, V7-context, V7-shots, V7 MoneyPuck xG,
 V8-own-xG, V8-shrinkage, V8-tune configs b/d, V9-projected-lineups,
 V12-identity, V12-era recent training, V12-qoc, V12-interactions,
+V16-exposure, V16-group3, V16-pbp, V16-calib, V16-interact (all rejected),
 injury filter (fields empty).
+INVALID / excluded (leakage): V16-embed (ALS latent factors, `493ba96`).
 V4 shot/TOI features are retained.
 
 Working log for the goal-probability model built on the backtracked archive.
@@ -1624,48 +1651,85 @@ Safety gates: the article `datePublished` must equal the requested game date
 and makes the pre-publish morning runs collect nothing instead of wrong data);
 `--env prod` is explicit; `--limit` and `--dry-run` are available.
 
-Verified on dev 2026-10-20 (388 collected F258/D128, pp 217) and then run
-against **prod the same evening**: `UNKNOWN` 4,900 -> 4,765, `PROJECTED` 255 ->
-390 (all 2026-10-20) - the pipeline's own 15:42 ET first-run had already
-persisted 255 forward rows; the collector filled 135 more (incl. defence).
-Idempotent re-run: 0 appended, 0 refreshed. Nothing overwritten (full-row
-reads before/after: stats untouched).
+**Audited state (`notes_v16_audit.md`, live Supabase check):** on **prod** as
+of 2026-10-20 there are **255 PROJECTED / 240 UNKNOWN** rows with **0 D-unit
+rows and 0 PP1** — the live pipeline's own signature (forwards only, verbatim
+"POWER PLAY #1"). The collector's post-state (PROJECTED rows carrying D units:
+**dev: 128 D / 22 PP1**; dev 390 PROJECTED / 105 UNKNOWN) appears on **dev
+only**. The prod-write claim printed earlier in this section (UNKNOWN
+4,900→4,765, PROJECTED 255→390 "incl. defence") was that **dev** post-state;
+a prod write is **not supported** by the current prod table.
 
 Known source noise (stored verbatim): the article occasionally numbers extra
 defence pairs (label "D4" for a 4th pair) and a handful of projected players
 are not on the current roster feed (logged, skipped). PP labels are mixed
 vocabulary until historical rows are rewritten (owner decision).
 
-Scheduling (10:30 / 13:00 / 16:00 ET, the challenge's three pick times):
+Scheduling (10:30 / 13:00 / 16:00 ET at the challenge's three pick times) is
+**NOT installed**: the runbook cron pointed at `/home/nathan/code/SmartScore`,
+a checkout that does **not** contain `snapshot_projected.py` (the script
+exists only on `backtrack-recon`), and `crontab -l` returns "no crontab for
+nathan" — no collection is running and no log exists at the documented path.
+**Prospective projected-lineup validation therefore remains blocked pending a
+collect fix** (cron aimed at a checkout that actually has the script, plus
+the audit's refresh-path issues: the refresh PATCH is status-conditional only
+via a stale pre-read (TOCTOU), and there is no post-game / capture-time
+guard). A follow-up worker is on it; treat V10's "collect PROJECTED rows
+forward" as still open.
 
-```
-# crontab -e   (server box has the worktree and .venv at /home/nathan/code/SmartScore)
-TZ=America/Toronto
-30 10,13,16 * * * cd /home/nathan/code/SmartScore && umask 077 && .venv/bin/python smartscore/scripts/backtrack/snapshot_projected.py --env prod >> smartscore/scripts/backtrack/snapshot_projected.log 2>&1
-```
-
-(With a worktree checked out instead: same line with
-`cd /home/nathan/code/SmartScore-backtrack` and its own `.venv`.) One execution
-per date is sufficient idempotently; three are run so the 13:00/16:00 picks
-carry the freshest RotoWire PP units and any morning re-uploads are overwritten
-with the same values only. Verify accumulation:
-
-```
-.venv/bin/python - <<'EOF'
-import os; os.environ['ENV']='prod'
-import sys; sys.path.insert(0,'smartscore')
-from config import SUPABASE_ADMIN_CLIENT as c
-r=(c.table('Player-Snapshots-prod')
-   .select('date').eq('lineup_status','PROJECTED').order('date')
-   .execute().data)
-dates=sorted({x['date'] for x in r})
-print('PROJECTED dates:', dates[-10:], 'count:', len(dates))
-EOF
-```
-
-PROJECTED dates accumulating under this heading is the health check; 0 new
+Health check: PROJECTED dates accumulating forward under this heading; 0 new
 dates on successive game days means the sources stopped (article moved hosts
 or slug changed) and the collector refuses to write by design.
+
+### V16 rejected experiments — reproduce commands
+
+Exact lines from `notes_v16_{exposure,group3,pbp,embed,calib,interact}.md`.
+None of these is needed for the default model; they reproduce the six
+REJECTED V16 arms. V16-embed is INVALID (leakage, see the FINAL RESULT block)
+— its command is kept only for a strictly-prior-games retry.
+
+```bash
+cd SmartScore-backtrack
+
+# V16-exposure (base + exposure arms, ensemble + lgbm, seeds 1/3)
+for s in 1 3; do
+  OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
+    smartscore/scripts/backtrack/exp_exposure.py --env dev --seed "$s"
+done
+
+# V16-group3 (w2/w4/g3blend/g3pure vs the paired base arm)
+for s in 1 3; do
+  OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
+    smartscore/scripts/backtrack/exp_group3.py --env dev --seed "$s" \
+    --oof-file data/ml/oof_v16_group3_seed"$s".csv
+done
+
+# V16-pbp: enriched arm (--with-pbp); base/reference arm = same command WITHOUT --with-pbp
+OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
+  smartscore/scripts/backtrack/exp_pbp.py --env dev --seed 1 --with-pbp \
+  --oof-file data/ml/oof_v16_pbp_seed1.csv
+
+# V16-embed — INVALID (leakage, 493ba96); only for a strictly-prior-rebuild retry
+for s in 1 3; do
+  OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with torch,lightgbm python \
+    smartscore/scripts/backtrack/exp_embed.py --env dev --seed "$s" \
+    --splits 5 --models lgbm \
+    --save-oof data/ml/oof_v16_embed_lgbm_seed"$s".csv
+done
+
+# V16-calib: current-cache ensemble OOF regen, then the stage-2 threshold-oof swap
+OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
+    smartscore/scripts/backtrack/model.py --env dev --model ensemble --seed S \
+    --split kfold --splits 5 --train-subset all \
+    --model-file data/ml/oof_v16_calib_ens_seedS.csv > data/ml/v16_calib_ens_seedS.log
+OMP_NUM_THREADS=1 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
+    smartscore/scripts/backtrack/exp_calib.py --env dev --mode threshold-oof \
+    --oof-tag v16_calib_ens --seed S
+
+# V16-interact (seed 1; rerun with --seed 3)
+OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
+    smartscore/scripts/backtrack/exp_interact.py --env dev --seed 1
+```
 
 ## Lessons learned this phase
 

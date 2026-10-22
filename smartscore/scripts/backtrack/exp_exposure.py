@@ -393,7 +393,10 @@ def main():
             summary_out.insert(0, "seed", args.seed)
             results.append(summary_out)
             pick_store[arm] = pooled_picks
-            out_csv = Path(__file__).resolve().parents[3] / "data" / "ml" / f"oof_v16_{arm}_seed{args.seed}.csv"
+            # name the base arm distinctly: it must not collide with exp_pbp.py's
+            # base dump oof_v16_base_seed{seed}.csv (which is a different frame)
+            arm_tag = f"exposure_{arm}" if arm == "base" else arm
+            out_csv = Path(__file__).resolve().parents[3] / "data" / "ml" / f"oof_v16_{arm_tag}_seed{args.seed}.csv"
             out_rows.to_csv(out_csv, index=False)
             log(f"saved OOF rows -> {out_csv.name}")
             log.flush()
