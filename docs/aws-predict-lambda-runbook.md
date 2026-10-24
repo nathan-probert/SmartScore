@@ -39,10 +39,12 @@ Lambda commits) and verified against `templates/template.yaml`,
 
 ## 2. Manual artifact refresh (on demand; NOT scheduled)
 
-    # a. refresh the store for recent seasons (local only)
-    make backtrack-store SEASON=2025   # (+ 2026 when the new season opens)
-    # b. publish the newest rows to the backtrack tables
-    make backtrack-publish ENV=prod SEASON=2025 SEASON=2026   # see Makefile note
+    # a. refresh the raw store for the recent seasons (local only)
+    make backtrack-store SEASON=2025   # runs local_store.py --build 2025
+    #    (+ SEASON=2026 when the new season opens)
+    # b. publish the newest rows to the backtrack tables (this is what feeds
+    #    the Lambda's 16 shot/TOI+club snapshot columns day-of)
+    make backtrack-publish ENV=prod SEASON=2025 SEASON=2026
     # c. local on-demand train + export + upload
     uv run python smartscore/scripts/backtrack/train_export.py \
       --env prod --source supabase --through-date <latest> --seed 0 --upload
@@ -113,12 +115,31 @@ Add (out of scope of this PR): a CloudWatch alarm on
 alarm on the MLPicksDailyTrigger scheduled target (the pass is silent on a
 quiet slate). RetentionInDays=1 keeps costs inside free tier.
 
-## 7. Open risks
+## 7. DANGER before first deploy: prod snapshot rows may be empty
+
+`Player-Snapshots-backtrack-prod` was recently observed EMPTY (the publish
+phases have not been run against prod recently). The Lambda hard-fails
+(fail-closed) the moment today's rows are missing or lack the 16 shot/TOI +
+club columns. Before ANY deploy or live invocation:
+
+  * run `make backtrack-publish ENV=prod SEASON=<year>` at least once and
+  * verify with any GBQ-free read, e.g. a tiny
+    `python -c` probe of `Player-Snapshots-backtrack-prod` for yesterday's
+    date, that rows exist AND carry sd_shots_pg / r10_toi_pg / team_abbrev /
+    opponent_abbrev etc. (all 16; see docs/supabase_shot_columns.md).
+  * the nightly scheduled MakePredictions pass keeps writing picks
+    independently; this ML pass writes only its own rows to Picks-{ENV}.
+
+## 8. Open risks
 
   * The 16 columns are backfilled on dev and populated-on-prod by a sibling —
     if a new game day lands before its backfill completes, the ML pass
     hard-fails naming the missing columns (intentional fail-closed).
   * `pick_rows_to_picks_db` whitelists Picks-{ENV} columns; a table schema
     change must be reflected in the whitelist + migration.
-  * Image size (built from wheels, ~530 MB unpacked) is under Lambda's 10 GB
-    limit but packaged per-region pull; first-pull cold starts pay it once.
+  * Image size: measured locally, the pure-CDN wheel set (pandas/numpy/scipy/
+    sklearn/lightgbm 4.7.0/boto3/supabase/joblib/pytz) unpacks to ~324 MB;
+    with the python:3.12-slim base (~130 MB unpacked) and the ~15 MB of
+    copied smartscore modules the image is ~490-540 MB unpacked (~190 MB
+    compressed) - well under Lambda's 10 GB image limit. First-pull cold
+    starts pay the transfer once per region.
