@@ -261,6 +261,79 @@ def test_load_artifact_empty_prefix_raises(env_vars, monkeypatch):
         mod.load_artifact(s3, "test-artifacts", "predict/ml")
 
 
+def make_contract_bundle(today=ON_DATE):
+    """The sibling's ARTIFACT CONTRACT design: ONLY the contract keys."""
+    return {
+        "version": 1,
+        "train_through": today,
+        "seed": 0,
+        "git_hash": "abc1234",
+        "generated_at": f"{today}T12:00:00+00:00",
+        "feature_order": ["gpg", "hgpg", "tims"],
+        "categorical_maps": {"tims": ["1", "2", "3"]},
+        "derived_params": {
+            "ensemble_recipe": "mean of within-(date,tims) rank(pct) of hgb/lgbm/logreg",
+        },
+        "models": {
+            "hgb": FakeProba([0.1, 0.8, 0.3, 0.6]),
+            "lgbm": FakeProba([0.2, 0.9, 0.4, 0.1]),
+            "logreg": FakeProba([0.3, 0.7, 0.5, 0.0]),
+            "ranker": FakeRanker([0.5, 0.4, 0.9, 0.2]),
+        },
+    }
+
+
+def test_normalise_bundle_reads_contract_design():
+    canon = mod.normalise_bundle(make_contract_bundle())
+    assert [c for c in canon["all_features"]] == ["gpg", "hgpg", "tims"]
+    assert canon["categorical_features"] == ["tims"]
+    assert canon["numeric_features"] == ["gpg", "hgpg"]  # feature_order minus cats
+    assert canon["categories"] == {"tims": ["1", "2", "3"]}
+    assert canon["metadata"]["train_through"] == ON_DATE
+    assert canon["metadata"]["version"] == 1
+    assert canon["ranker"] is not None
+    # identical predictions to the legacy design (same member models)
+    frame = pd.DataFrame({"gpg": [0.5], "hgpg": [0.1], "tims": [1]})
+    a, b = mod.encode_frame(canon, frame), mod.encode_frame(make_bundle(), frame)
+    pd.testing.assert_frame_equal(a, b, check_categorical=False)
+
+
+def test_normalise_bundle_reads_legacy_design():
+    legacy = make_bundle()
+    canon = mod.normalise_bundle(legacy)
+    assert canon["all_features"] == legacy["all_features"]
+    assert canon["categorical_features"] == legacy["categorical_features"]
+    assert canon["metadata"]["seed"] == 0
+
+
+def test_normalise_bundle_missing_key_clear_error():
+    contract = make_contract_bundle()
+    del contract["models"]
+    with pytest.raises(RuntimeError, match="missing ensemble member|malformed"):
+        mod.normalise_bundle(contract)
+    legacy = make_bundle()
+    del legacy["all_features"], legacy["categorical_features"], legacy["categories"]
+    with pytest.raises(RuntimeError, match="malformed"):
+        mod.normalise_bundle(legacy)
+    contract2 = make_contract_bundle()
+    del contract2["feature_order"]
+    with pytest.raises(RuntimeError, match="malformed"):
+        mod.normalise_bundle(contract2)
+
+
+def test_handler_runs_on_contract_design_artifact(env_vars, prediction_tables, monkeypatch):
+    """The sibling's artifact design drives the full path end to end."""
+    calls: list = []
+    fake_save(monkeypatch, calls)
+    s3 = fake_s3(monkeypatch, make_contract_bundle())
+    result = mod.handler({"date": ON_DATE}, None)
+    assert len(calls) == 3
+    assert {row["tims"] for row in calls} == {1, 2, 3}
+    assert result["artifact"]["seed"] == 0
+    assert result["artifact"]["through"] == ON_DATE
+    assert not s3.get_object.call_args_list[0].args  # reads the lexically latest key
+
+
 def test_staleness_note_warns_beyond_7_days(env_vars, capsys):
     stale = make_bundle()
     stale["metadata"]["train_through"] = (datetime.date.today() - datetime.timedelta(days=8)).isoformat()

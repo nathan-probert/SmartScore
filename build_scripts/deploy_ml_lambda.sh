@@ -11,7 +11,7 @@ ENV_VAL="${ENV:-prod}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 STACK_NAME="SmartScore-${ENV_VAL}"
 
-: "${MLECR_IMAGE_URI:?Run make build-ml-image first, or export MLECR_IMAGE_URI=acct.dkr.ecr.R.amazonaws.com/smartsscore/predict-picks:latest}"
+: "${MLECR_IMAGE_URI:?Run make build-ml-image first, or export MLECR_IMAGE_URI=acct.dkr.ecr.R.amazonaws.com/smartscore/predict-picks:latest}"
 for VAR in SUPABASE_URL SUPABASE_API_KEY SUPABASE_SERVICE_ROLE_KEY; do
   [ -n "${!VAR:-}" ] || { echo "Error: $VAR is not set (needed by the stack params)"; exit 1; }
 done
@@ -23,7 +23,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
     ENV="$ENV_VAL" \
-    MLS3Bucket="${MLS3_BUCKET:-smartsscore-ml-artifacts}" \
+    MLS3Bucket="${MLS3_BUCKET:-smartscore-ml-artifacts}" \
     MLEcrImageUri="$MLECR_IMAGE_URI" \
     SupabaseUrl="$SUPABASE_URL" \
     SupabaseApiKey="$SUPABASE_API_KEY" \

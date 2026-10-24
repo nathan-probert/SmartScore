@@ -17,12 +17,12 @@ Lambda commits) and verified against `templates/template.yaml`,
        export AWS_ACCOUNT_ID=<id>; ENV=prod make build-ml-image
    (builds `smartscore/lambda/predict_picks/Dockerfile`, python:3.12-slim +
    pandas/numpy/scipy/sklearn/lightgbm==4.7.0, pushes to
-   `$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/smartsscore/predict-picks:latest`).
+   `$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/smartscore/predict-picks:latest`).
 2. **Deploy the additive stack resources** (MLPicksFunction image Lambda,
    MemorySize 2048, Timeout 300, its log group, the 09:30 UTC trigger, and the
    artifact-read IAM too):
-       ENV=prod MLECR_IMAGE_URI=$ACCT.dkr.ecr.us-east-1.amazonaws.com/smartsscore/predict-picks:latest \
-       MLS3_BUCKET=smartsscore-ml-artifacts make deploy-ml-lambda
+       ENV=prod MLECR_IMAGE_URI=$ACCT.dkr.ecr.us-east-1.amazonaws.com/smartscore/predict-picks:latest \
+       MLS3_BUCKET=smartscore-ml-artifacts make deploy-ml-lambda
    This calls `build_scripts/deploy_ml_lambda.sh` -> `aws cloudformation deploy`
    on the existing `SmartScore-$ENV` stack (same conventions as
    `build_scripts/deploy.sh`; SUPABASE_URL / SUPABASE_API_KEY /

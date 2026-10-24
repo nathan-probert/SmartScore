@@ -111,8 +111,8 @@ backtrack-publish:
 # here is scheduled. The image ships feature inference + a Picks write; the
 # artifact always comes from this machine via train_export.py.
 #   docs: docs/aws-predict-lambda-runbook.md
-MLS3_BUCKET     ?= $(if $(ML_S3_BUCKET),$(ML_S3_BUCKET),smartsscore-ml-artifacts)
-MLECR_REPO      ?= smartsscore/predict-picks
+MLS3_BUCKET     ?= $(if $(ML_S3_BUCKET),$(ML_S3_BUCKET),smartscore-ml-artifacts)
+MLECR_REPO      ?= smartscore/predict-picks
 ML_ENV          ?= prod
 ML_REGION       ?= us-east-1
 

@@ -30,20 +30,30 @@ era table lives in the runbook (aws-predict-lambda-runbook.md).
 
 ARTIFACT
 
-``data/ml/artifact_<train_through>_<seed>.joblib`` (zlib-compressed joblib):
-    hgb, lgbm, logreg, ranker      fitted estimators
-    numeric_features / categorical_features / all_features
-                                   the EXACT ordered feature lists the frame
-                                   must be rebuilt in (the Lambda asserts
-                                   column-order/shape against these)
-    categories                     {col: [values]} per CATEGORICAL_FEATURE -
-                                   the trained vocabulary the Lambda's
-                                   categorise() step needs
-    required_snapshot_columns      the 16 Supabase columns the frame reads
-                                   (docs/supabase_shot_columns.md)
-    metadata                       train_through, seed, git hash, rows,
-                                   dates, fit seconds, library versions,
-                                   expected OOF accuracy table
+``data/ml/artifact_<train_through>_<seed>.joblib`` (zlib-compressed joblib),
+emitting BOTH agreed designs at once (the Lambda's normalise_bundle reads
+either; joblib dedupes the shared estimator references):
+
+    version                      1
+    train_through / seed
+    git_hash / generated_at
+    feature_order                the EXACT ordered feature list the frame must
+                                 be rebuilt in (the Lambda asserts this)
+    categorical_maps             {col: [values]} per CATEGORICAL_FEATURE -
+                                 the trained vocabulary the Lambda's encoding
+                                 step needs
+    derived_params               the documented ensemble scoring recipe:
+                                 mean of within-(date, tims) rank(pct=True)
+                                 across {hgb, lgbm, logreg}, fillna(0) before
+                                 ranking, ranker excluded, daily_picks takes
+                                 the per-group max
+    models                       {hgb, lgbm, logreg, ranker} fitted estimators
+
+    legacy aliases (same objects): hgb, lgbm, logreg, ranker,
+    numeric_features / categorical_features / all_features, categories,
+    required_snapshot_columns (the 16 Supabase columns the frame reads,
+    docs/supabase_shot_columns.md), metadata (train_through, seed, git hash,
+    rows, dates, fit seconds, library versions, expected OOF accuracy table)
 
 USAGE (owner-run, from the repo root; .env supplies Supabase config when
 --source supabase; sqlite uses data/raw_nhl.sqlite)
@@ -192,6 +202,43 @@ def fit_bundle(frame, args):
     logreg = captured["LogisticRegression"]
 
     bundle = {
+        # --- ARTIFACT CONTRACT keys (sibling-agreed; the Lambda reads both
+        # --- designs via normalise_bundle) ------------------------------
+        "version": 1,
+        "train_through": str(frame["date"].max()),
+        "seed": args.seed,
+        "git_hash": (g := git_commit()),
+        "generated_at": (generated_at := datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")),
+        "feature_order": list(model.DATASET_FEATURES),
+        "categorical_maps": {
+            col: sorted(str(value) for value in frame[col].dropna().astype(str).unique())
+            for col in model.CATEGORICAL_FEATURES
+        },
+        # The documented ensemble scoring recipe, verbatim the Lambda must
+        # reproduce: per model.run_folds' ensemble column - predict each
+        # member, fillna(0), rank(pct=True) within (date, tims), MEAN across
+        # the {hgb, lgbm, logreg} ranks (the ranker is exported for
+        # traceability only, never in the ensemble mean), then daily_picks
+        # takes each group's max - exactly one pick per tims group per date.
+        "derived_params": {
+            "ensemble_recipe": "mean of within-(date, tims) rank(pct=True) "
+            "across members {hgb, lgbm, logreg}",
+            "ensemble_members": ["hgb", "lgbm", "logreg"],
+            "ranker_in_ensemble": False,
+            "fillna_before_rank": 0.0,
+            "logreg_features": list(model.NUMERIC_FEATURES),
+            "pick_rule": "model.daily_picks: max ensemble value within each "
+            "(date, tims in {1,2,3}); exactly one pick per group per date",
+            "required_snapshot_columns": list(FRAME_SOURCE_COLUMNS[args.source]),
+        },
+        "models": {
+            "hgb": hgb,
+            "lgbm": lgbm,
+            "logreg": logreg,
+            "ranker": ranker,
+        },
+        # --- legacy envelope keys (same objects; the Lambda's legacy path
+        # --- and any older reader keep working) --------------------------
         "hgb": hgb,
         "lgbm": lgbm,
         "logreg": logreg,
@@ -207,6 +254,8 @@ def fit_bundle(frame, args):
         "metadata": {
             "train_through": str(frame["date"].max()),
             "seed": args.seed,
+            "version": 1,
+            "generated_at": generated_at,
             "expected_oof_pct": {str(k): v for k, v in EXPECTED_OOF.items()},
             "oof_measured": False,
             "git_hash": (g := git_commit()),
