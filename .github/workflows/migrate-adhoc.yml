@@ -1,0 +1,39 @@
+# TEMPORARY: one-shot applier for the shot-columns migration, run by
+# hand while the workflow this PR belongs to is in review. The standing
+# migrate job (deploy.yml) only fires on main/`deploy`-labelled PRs; this
+# dispatch lets the owner apply supabase/migrations/*.sql to dev or prod
+# ad hoc with the same sed+psql idempotent pattern. Remove once the
+# standing pipeline carries the migration itself.
+name: migrate-adhoc
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Table suffix to migrate (dev or prod)"
+        required: true
+        default: dev
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    env:
+      ENV: ${{ github.event.inputs.env }}
+      DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Apply migrations
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(supabase/migrations/*.sql)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No migrations in supabase/migrations/; nothing to apply."
+            exit 0
+          fi
+          for file in $(printf '%s\n' "${files[@]}" | sort); do
+            echo "Applying $file (ENV=$ENV)"
+            sed "s/__ENV__/$ENV/g" "$file" \
+              | psql -v ON_ERROR_STOP=1 --single-transaction "$DATABASE_URL"
+          done
