@@ -2,7 +2,7 @@
 # while this branch is in review. The standing migrate job (deploy.yml) only
 # fires on main pushes / `deploy`-labelled PRs; this lets the owner apply the
 # pending migrations to dev or prod ad hoc with the same sed+psql
-# idempotent pattern. Remove once the standing pipeline carries the migration.
+# idempotent pattern. Env marker file: .github/migrate-env-prod. Remove once the standing pipeline carries the migration.
 #
 # Trigger is `push` (workflow_dispatch needs the file on the default branch).
 # Scope: dev by default; a commit message containing "[prod]" switches the
@@ -21,11 +21,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      # dev unless the pushed commit message carries the [prod] marker.
+      # dev unless the repo carries the marker file. A commit-message based
+      # marker misfired once ("[prod]" inside prose); a file is unambiguous.
       - name: Pick environment
         id: env-pick
         run: |
-          if git log -1 --pretty=%s | grep -q "\[prod\]"; then
+          if [ -f .github/migrate-env-prod ]; then
             echo "env=prod" >> "$GITHUB_OUTPUT"
           else
             echo "env=dev" >> "$GITHUB_OUTPUT"
