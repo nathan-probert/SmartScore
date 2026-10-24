@@ -41,6 +41,7 @@ import argparse
 import sqlite3
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -67,6 +68,7 @@ SHOT_TABLE_COLS = tuple(SHOT_FEATURES)  # Block A, in SHOT_FEATURES order.
 PAYLOAD_COLUMNS = (
     "date",
     "player_id",
+    "name",
     *SHOT_TABLE_COLS,
     *CLUB_TABLE_COLS,
 )
@@ -99,7 +101,14 @@ def _last_date(table):
 
 
 def snapshot_keys(env):
-    """All (date, player_id) keys already published to the snapshot table."""
+    """All (date, player_id, name) rows already published to the snapshot table.
+
+    ``name`` rides along because PostgREST evaluates NOT NULL constraints on
+    the upsert payload even when every payload row hits an existing PK row
+    (verified: a keys-only upsert 400s with "null value in column \"name\"",
+    the same sparse request with the row's own name succeeds). publish()
+    sidesteps this by always sending a full-row payload.
+    """
     table = player_table(env)
     start = time.time()
     first = SUPABASE_ADMIN_CLIENT.table(table).select("date").order("date").limit(1).execute().data
@@ -109,7 +118,7 @@ def snapshot_keys(env):
     frames = []
     for lo, hi in _month_windows(first[0]["date"], last):
         offset = 0
-        query = SUPABASE_ADMIN_CLIENT.table(table).select("date,player_id").gte("date", lo).lt("date", hi)
+        query = SUPABASE_ADMIN_CLIENT.table(table).select("date,player_id,name").gte("date", lo).lt("date", hi)
         query = query.order("date").order("player_id")
         while True:
             rows = query.range(offset, offset + 10_000 - 1).execute().data
@@ -121,7 +130,9 @@ def snapshot_keys(env):
     keys["date"] = keys["date"].astype(str)
     keys["player_id"] = keys["player_id"].astype("int64")
     keys = keys.drop_duplicates(["date", "player_id"])
-    print(f"  {len(keys):,} snapshot keys in {time.time() - start:.0f}s", flush=True)
+    if keys["name"].isna().any():
+        raise RuntimeError(f"{int(keys['name'].isna().sum())} snapshot rows have null name - NOT NULL column")
+    print(f"  {len(keys):,} snapshot rows in {time.time() - start:.0f}s", flush=True)
     return keys
 
 
@@ -151,14 +162,20 @@ def build_payload(env, limit=None):
     if frame["career_games"].isna().any():
         raise RuntimeError("career_games must never be null (0 on debut)")
     frame["player_id"] = frame["player_id"].astype("int64")
+    frame["name"] = frame["name"].astype(str)
     frame["career_games"] = frame["career_games"].astype("int64")
-    frame = frame[PAYLOAD_COLUMNS]
-    return frame
+    # list(...) - a bare tuple would go through the multiindex path in pandas.
+    return frame[list(PAYLOAD_COLUMNS)]
 
 
 def payload_records(frame):
-    """Rows ready for supabase-py: python scalars, NaN -> None."""
-    data = frame.where(pd.notna(frame), None)
+    """Rows ready for supabase-py: python scalars, NaN -> None.
+
+    The astype(object) is load-bearing: ``where(cond, None)`` on float columns
+    coerces the fill back to NaN (and supabase-py then dies on json "nan"),
+    while an object column keeps the None.
+    """
+    data = frame.astype(object).where(pd.notna(frame), None)
     return [
         {key: value.item() if isinstance(value, np.generic) else value for key, value in row.items()}
         for row in data.to_dict("records")
@@ -167,8 +184,6 @@ def payload_records(frame):
 
 def upsert_frame(frame, env, batch_size=500, concurrency=1, progress_every=50):
     """Upsert the payload in batches; logs every ``progress_every`` chunks."""
-    from concurrent.futures import ThreadPoolExecutor
-
     table = player_table(env)
     records = payload_records(frame)
     print(f"upserting {len(records):,} rows to {table} ({batch_size}/batch)", flush=True)
@@ -247,7 +262,9 @@ def main():
     parser.add_argument("--env", default="dev", choices=["dev", "prod"], help="backtrack table suffix (default dev)")
     parser.add_argument("--dry-run", action="store_true", help="print coverage/dtypes and exit without writing")
     parser.add_argument("--limit", type=int, default=None, help="cap the number of rows (smoke test)")
-    parser.add_argument("--batch-size", type=int, default=500, help="PostgREST rows per request (default 500, spec cap)")
+    parser.add_argument(
+        "--batch-size", type=int, default=500, help="PostgREST rows per request (default 500, spec cap)"
+    )
     parser.add_argument("--concurrency", type=int, default=1, help="parallel batch requests (default 1 = serial)")
     parser.add_argument("--progress-every", type=int, default=50, help="log every N batches")
     args = parser.parse_args()
