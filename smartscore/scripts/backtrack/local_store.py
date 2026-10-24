@@ -2005,6 +2005,14 @@ def publish(season, db_path=DB_PATH):
             }
         )
 
+    # The 16 shot/TOI + club columns (shot-columns migration). attach is a
+    # probe-gated no-op until the migration has landed on this env's table,
+    # so a publish racing the owner's DDL degrades to today's payload
+    # instead of 400-ing the whole batch (spec gotcha 5).
+    from publish_shot_cols import attach_shot_columns  # noqa: PLC0415
+
+    payload = attach_shot_columns(payload, table)
+
     written = 0
     batch_size = 500
 

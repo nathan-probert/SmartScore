@@ -280,3 +280,75 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def columns_landed(table):
+    """True once the shot-columns migration has created the new columns.
+
+    Probing a known new column is the cheapest owner-independent check: until
+    the DDL lands, PostgREST 400s ANY request naming it, so the caller must
+    not yet send the keys (spec gotcha 5 - unknown keys drop the whole batch).
+    """
+    try:
+        SUPABASE_ADMIN_CLIENT.table(table).select("sd_shots_pg").limit(1).execute()
+        return True
+    except Exception:  # noqa: BLE001 - any failure means "not landed yet"
+        return False
+
+
+_PROBE = {}
+
+
+def attach_shot_columns(payload, table, block=None):
+    """Add the 16 published columns onto a daily upsert payload in place.
+
+    ``payload`` is local_store.publish()'s row-dict list for one season. The
+    values come from the same verbatim shot_features() run the backfill used,
+    so a nightly row and its owner-migrated history row carry identical
+    semantics. Column values keep their dtypes: floats for the shot/TOI
+    aggregates, exact int for career_games, None for NaN (season-first rows,
+    and the 32 rows whose source game-log lacked opponentAbbrev).
+
+    After the first successful attach for a table the probe result is cached;
+    until the migration has landed the payload returns unchanged.
+    """
+    placed = _PROBE.get(table)
+    if placed is None:
+        placed = _PROBE[table] = columns_landed(table)
+        if not placed:
+            print(f"shot-columns migration not landed on {table}; skipping the 16 keys")
+    if not placed or not payload:
+        return payload
+
+    import pandas as pd  # noqa: PLC0415 - keep the hot nightly path import-light
+
+    if block is None:
+        frame = shot_features().merge(
+            club_map_cols(), on=["date", "player_id"], how="left", validate="many_to_one"
+        )
+        frame["player_id"] = frame["player_id"].astype("int64")
+        frame["career_games"] = frame["career_games"].astype("int64")
+    else:
+        frame = block
+
+    frame = frame.astype(object).where(pd.notna(frame), None)
+    by_key = {}
+    for row in frame.drop(columns=["game_id"], errors="ignore").to_dict("records"):
+        # Every published column must exist on the frame (the migration's
+        # column set); a block missing one is a contract break, so KeyError is
+        # the loud failure we want.
+        by_key[(row["date"], int(row["player_id"]))] = {
+            col: row[col].item() if isinstance(row[col], np.generic) else row[col]
+            for col in PAYLOAD_COLUMNS
+            if col not in ("date", "player_id", "name")
+        }
+    hits = 0
+    for row in payload:
+        key = (row["date"], int(row["player_id"]))
+        values = by_key.get(key)
+        if values is None:
+            continue
+        row.update(values)
+        hits += 1
+    print(f"shot/TOI + club columns attached to {hits}/{len(payload)} payload row(s)")
+    return payload

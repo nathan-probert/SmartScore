@@ -666,6 +666,10 @@ def add_derived(frame, teams, source="sqlite"):
                 "the shot-columns backfill has not populated this env"
             )
     else:
+        # The snapshot rows may already carry the published shot columns (the
+        # shot-columns backfill writes them); the sqlite source computes the
+        # block itself, so never merge onto its own names.
+        frame = frame.drop(columns=SHOT_FEATURES, errors="ignore")
         frame = frame.merge(
             shot_features(),
             on=["date", "player_id"],
