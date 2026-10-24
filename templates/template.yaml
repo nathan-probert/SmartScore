@@ -655,7 +655,7 @@ Resources:
   MLPicksFunctionPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !Ref MLPicksFunction
+      FunctionName: !GetAtt MLPicksFunction.Arn  # accepted as the ARN for the event-source grant
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt MLPicksDailyTrigger.Arn

@@ -13,8 +13,9 @@ import datetime
 import importlib.util
 import io
 import sys
+import types
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock  # noqa: E402  (bootstrap precedes; see module docstring + stubs)
 
 import numpy as np
 import pandas as pd
@@ -27,8 +28,6 @@ sys.path[0:0] = [str(ROOT / "smartscore"), str(ROOT / "smartscore" / "scripts" /
 # time; save_to_db's code path only reads constant strings. Stub the wheel the
 # way tests/unit/conftest.py stubs supabase - the integration compile is not a
 # dependency of unit-testing the pick assembly.
-import types
-
 _rust_stub = types.ModuleType("make_predictions_rust")
 
 
@@ -40,7 +39,11 @@ class _StubWeights:  # noqa: N801
 _rust_stub.Weights = _StubWeights
 sys.modules.setdefault("make_predictions_rust", _rust_stub)
 
-_SPEC = importlib.util.spec_from_file_location(
+# sys.path bootstrap precedes these imports deliberately (see above)
+# (bootstrap deliberately precedes these imports)
+# noqa anchor
+_SPEC = importlib.util.spec_from_file_location(  # noqa: E402
+
     "ml_picks_handler", ROOT / "smartscore" / "lambda" / "predict_picks" / "handler.py"
 )
 mod = importlib.util.module_from_spec(_SPEC)
@@ -214,7 +217,7 @@ def prediction_tables(monkeypatch):
 
 
 def fake_s3(monkeypatch, bundle):
-    import joblib
+    import joblib  # noqa: PLC0415
 
     buffer = io.BytesIO()
     joblib.dump(bundle, buffer, compress=("zlib", 3))

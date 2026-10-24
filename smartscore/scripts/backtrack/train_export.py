@@ -71,10 +71,10 @@ sys.path.insert(0, str(ROOT / "smartscore"))
 sys.path.insert(1, Path(__file__).resolve().parent)
 
 import joblib  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402 (model.py uses the global pd namespace)
-
 import model  # noqa: E402
+
+# noqa: E402
+import pandas as pd  # noqa: E402 (model.py uses the global pd namespace)
 
 CACHE_DIR = ROOT / "data" / "ml"
 
@@ -88,7 +88,7 @@ LGBM_CONFIG = "a"
 def git_commit():
     try:
         return subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True  # noqa: S607
         ).stdout.strip()
     except Exception:  # noqa: BLE001
         return "unknown"
@@ -118,7 +118,6 @@ def fit_bundle(frame, args):
     """
     probe = frame.iloc[:1]  # a one-row "test"; the 0-row shape trips sklearn
     x_train, _ = model.categorise(frame, probe)
-    y = frame["scored"].astype(int)
     timings = {}
 
     # model.fit_* fit AND predict, returning a probability Series - the fitted
@@ -127,12 +126,12 @@ def fit_bundle(frame, args):
     # touching any hyperparameter: construction stays 100% inside model.py.
     captured = {}
     cap_stack = []
-    import sklearn.ensemble  # noqa: F401  (pre-seeds the modules we wrapper-capture)
-    import sklearn.linear_model  # noqa: F401
+    import sklearn.ensemble  # noqa: E401, PLC0415, F401  (pre-seeds the modules we wrapper-capture)
+    import sklearn.linear_model  # noqa: E401, PLC0415, F401
     try:
-        import lightgbm as _lightgbm  # noqa: F401
+        import lightgbm  # noqa:PLC0415  (optional dep; ranked bundle member)
     except ImportError:
-        pass  # ranker ships omitted; a warning comes from fit_bundle's result path
+        lightgbm = None  # ranker ships omitted; a warning comes from fit_bundle
     def _wrap(holder, attr):
         """Install a self-capturing subclass of holder.<attr>; restored later."""
         base = getattr(holder, attr)
@@ -148,8 +147,8 @@ def fit_bundle(frame, args):
 
     for module, attr in (
         (model, "HistGradientBoostingClassifier"),
-        (sys.modules.get("lightgbm"), "LGBMClassifier"),
-        (sys.modules.get("lightgbm"), "LGBMRanker"),
+        (lightgbm, "LGBMClassifier"),
+        (lightgbm, "LGBMRanker"),
         (model, "LogisticRegression"),  # model.py binds it from sklearn.linear_model
     ):
         if module is not None and hasattr(module, attr):
@@ -172,8 +171,7 @@ def fit_bundle(frame, args):
         try:
             model.fit_ranker(frame, probe, "lambdarank")
         except ImportError:
-            print("ranker: lightgbm unavailable; bundle ships without it", flush=True)
-        ranker = captured.get("LGBMRanker")
+            ranker = captured.get("LGBMRanker")
         if ranker is None:
             print("ranker: lightgbm unavailable; bundle ships without it", flush=True)
         timings["ranker_s"] = round(time.time() - start, 1)
@@ -181,7 +179,7 @@ def fit_bundle(frame, args):
         for holder, name, base in cap_stack:
             setattr(holder, name, base)
 
-# capture (dynamic subclasses don't pickle); attribute access stays identical.
+    # unlock states: restore original classes so the objects pickle
     _restored = {attr: base for holder, attr, base in cap_stack}
     for attr, estimator in captured.items():
         try:
@@ -189,7 +187,9 @@ def fit_bundle(frame, args):
         except TypeError:
             pass
 
-    hgb, lgbm, logreg = captured["HistGradientBoostingClassifier"], captured.get("LGBMClassifier"), captured["LogisticRegression"]
+    hgb = captured["HistGradientBoostingClassifier"]
+    lgbm = captured.get("LGBMClassifier")
+    logreg = captured["LogisticRegression"]
 
     bundle = {
         "hgb": hgb,
@@ -272,7 +272,7 @@ def run_oof(frame, args):
 
 
 def upload_artifact(path, args):
-    import boto3
+    import boto3  # noqa: PLC0415  (boto3 only loads when the owner asks for S3)
 
     bucket = args.s3_bucket or os.environ.get("ML_S3_BUCKET", "")
     prefix = args.s3_prefix or os.environ.get("ML_S3_PREFIX", "predict/ml")
@@ -294,10 +294,12 @@ def main():
     parser.add_argument("--seed", type=int, default=DEPLOYMENT_SEED,
                         help="fold-shuffle seed for --oof + metadata (default 0 = the measured best: "
                         "29.92%% vs 29.41%% s1 / 29.82%% s3)")
-    parser.add_argument("--oof", action="store_true", help="run the k-fold sim after fitting (slow; measures this seed)")
+    parser.add_argument("--oof", action="store_true",
+                        help="run the k-fold sim after fitting (slow; measures this seed)")
     parser.add_argument("--oof-splits", type=int, default=5)
     parser.add_argument("--lgbm-config", choices=list(model.LGBM_CONFIGS), default=LGBM_CONFIG)
-    parser.add_argument("--out", default=None, help="override the artifact path (default data/ml/artifact_<through>_<seed>.joblib)")
+    parser.add_argument("--out", default=None,
+                        help="override the artifact path (default data/ml/artifact_<through>_<seed>.joblib)")
     parser.add_argument("--upload", action="store_true", help="push the artifact to S3 (default: OFF)")
     parser.add_argument("--s3-bucket", default=os.environ.get("ML_S3_BUCKET", ""))
     parser.add_argument("--s3-prefix", default=os.environ.get("ML_S3_PREFIX", "predict/ml"))
@@ -309,7 +311,8 @@ def main():
 
     bundle = fit_bundle(frame, args)
     bundle["metadata"]["oof_measured"] = args.oof
-    path = Path(args.out) if args.out else CACHE_DIR / f"artifact_{bundle['metadata']['train_through']}_{args.seed}.joblib"
+    path = Path(args.out) if args.out else CACHE_DIR / (
+        f"artifact_{bundle['metadata']['train_through']}_{args.seed}.joblib")
     if str(path.parent) == str(CACHE_DIR):
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, path, compress=("zlib", 3))
