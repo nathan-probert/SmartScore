@@ -31,6 +31,18 @@ Parameters:
     Type: String
     Default: ""
     Description: PostHog project/personal API key for runtime feature-flag evaluation
+  MLS3Bucket:
+    Type: String
+    Default: ""
+    Description: S3 bucket holding the versioned ML artifacts (predict/ml/artifact_*.joblib)
+  MLEcrImageUri:
+    Type: String
+    Default: ""
+    Description: ECR image URI:tag of the predict-picks image (set by make deploy-ml-lambda)
+
+Conditions:
+  MLS3Configured: !Not [!Equals [!Ref MLS3Bucket, ""]]
+  MLImageConfigured: !Not [!Equals [!Ref MLEcrImageUri, ""]]
 
 Resources:
   # IAM Role for Lambda Execution
@@ -67,6 +79,12 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: "*"
+              # Predict-only ML picks (additive): read the versioned artifact
+              # that the OWNER's local train_export.py --upload run ships.
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${MLS3Bucket}/predict/ml/*"
 
   # State Machine Execution Role
   StateMachineExecutionRole:
@@ -590,6 +608,57 @@ Resources:
     Properties:
       LogGroupName: !Sub "/aws/lambda/GetGoalies-${ENV}"
       RetentionInDays: 1
+
+  # ---------------- Predict-only ML picks Lambda (ADDITIVE) ----------------
+  # Trains nothing: loads the owner-uploaded artifact from S3 and publishes
+  # picks (docs/aws-predict-lambda-runbook.md).
+  MLPicksFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "MLPicks-${ENV}"
+      PackageType: Image
+      Role: !GetAtt LambdaExecutionRole.Arn
+      MemorySize: 2048          # 600k-row frame build + 4 sklearn/lightgbm estimators
+      Timeout: 300
+      ImageUri: !Ref MLEcrImageUri
+      Environment:
+        Variables:
+          ENV: !Ref ENV
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
+          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
+          ML_S3_BUCKET: !Ref MLS3Bucket
+          ML_ARTIFACT_PREFIX: "predict/ml"
+          ML_HISTORY_WINDOW_DAYS: "60"
+
+  MLPicksLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/MLPicks-${ENV}"
+      RetentionInDays: 1
+
+  # 09:30 UTC anchors the ML pass after the 08:00 UTC pipeline slate build.
+  # DST note: cron is a fixed UTC clock, but America/Toronto (the pipeline's
+  # "today" notion, see handler.today_et) observes DST - local morning time
+  # drifts between 04:30 and 05:30 ET across clock changes. Accepted, same as
+  # DailyStepFunctionTrigger's cron(0 8 * * ? *).
+  MLPicksDailyTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(30 9 * * ? *)"  # 09:30 UTC daily; DST note above
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt MLPicksFunction.Arn
+          Id: MLPicksFunctionTarget
+
+  MLPicksFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MLPicksFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MLPicksDailyTrigger.Arn
 
 Outputs:
   StepFunctionExecutionRoleArn:

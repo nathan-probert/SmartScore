@@ -105,3 +105,33 @@ backtrack-publish:
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish $(SEASON)
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-team $(SEASON)
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-goalies $(SEASON)
+
+# ---------------- Predict-only ML picks Lambda (ADDITIVE) ----------------
+# Owner-run, on-demand only: training NEVER happens on AWS, and no target
+# here is scheduled. The image ships feature inference + a Picks write; the
+# artifact always comes from this machine via train_export.py.
+#   docs: docs/aws-predict-lambda-runbook.md
+MLS3_BUCKET     ?= $(if $(ML_S3_BUCKET),$(ML_S3_BUCKET),smartsscore-ml-artifacts)
+MLECR_REPO      ?= smartsscore/predict-picks
+ML_ENV          ?= prod
+ML_REGION       ?= us-east-1
+
+# Local dry training + export + upload (the on-demand artifact refresh):
+#   make train-ml-export ENV=prod SEASON=2023 THROUGH=2026-06-14 SEED=0
+train-ml-export:
+	ENV=$(ENV) uv run --with lightgbm==4.7.0 python $(BACKTRACK)/train_export.py \
+	  --env $(ENV) $(if $(SEASON),--season $(SEASON),) $(if $(THROUGH),--through-date $(THROUGH),) \
+	  --seed $(if $(SEED),$(SEED),0) --upload --s3-bucket $(MLS3_BUCKET)
+
+# Build the predict-picks image and push it to ECR (one-time per code change).
+build-ml-image:
+	docker build -f smartscore/lambda/predict_picks/Dockerfile -t $(MLECR_REPO):latest .
+	$(if $(AWS_ACCOUNT_ID),aws ecr get-login-password --region $(ML_REGION) | docker login --username AWS --password-stdin $(AWS_ACCOUNT_ID).dkr.ecr.$(ML_REGION).amazonaws.com && aws ecr create-repository --repository-name $(MLECR_REPO) --region $(ML_REGION) 2>/dev/null; docker tag $(MLECR_REPO):latest $(AWS_ACCOUNT_ID).dkr.ecr.$(ML_REGION).amazonaws.com/$(MLECR_REPO):latest && docker push $(AWS_ACCOUNT_ID).dkr.ecr.$(ML_REGION).amazonaws.com/$(MLECR_REPO):latest,)
+
+# Create/refresh the MLPicks Lambda + trigger (additive; runs the same
+# `cloudformation deploy` an owner would run manually after build-ml-image:
+#   ENV=prod MLECR_IMAGE_URI=<ecr/uri:tag> make deploy-ml-lambda
+deploy-ml-lambda:
+	ENV=$(ML_ENV) MLECR_IMAGE_URI=$(MLECR_IMAGE_URI) MLS3_BUCKET=$(MLS3_BUCKET) \
+	  bash build_scripts/deploy_ml_lambda.sh
+.PHONY: train-ml-export build-ml-image deploy-ml-lambda
