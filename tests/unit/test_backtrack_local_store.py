@@ -878,13 +878,15 @@ def test_publish_goalies_ships_team_scoped_stats_and_full_names(tmp_path, monkey
     conn.close()
 
     client = _FakeArchiveClient([])
-    monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
+    monkeypatch.setattr(local_store, "config", lambda: ("prod", client))
 
     written = local_store.publish_goalies("20232024", db_path=tmp_path / "raw.sqlite")
 
     assert written == 4
-    # Goalie rows go to the goalie table and nowhere else.
-    assert client.table_names == ["Goalie-Snapshots-backtrack-dev"]
+    # Goalie rows go to the goalie table and nowhere else. ENV=dev now fails
+    # the guard (Goalie-Snapshots-backtrack-dev was deleted 2026-10-24), so the
+    # publish is exercised against prod.
+    assert client.table_names == ["Goalie-Snapshots-backtrack-prod"]
     assert all(k["on_conflict"] == "season,player_id,date" for k in client.upsert_kwargs)
     rows = {(r["player_id"], r["date"]): r for r in client.upserted}
     assert all(r["team_abbrev"] == "TOR" and r["team_name"] == local_store.to_place("TOR") for r in client.upserted)
@@ -920,7 +922,7 @@ def test_publish_goalies_without_features_writes_nothing(tmp_path, monkeypatch):
     conn.close()
 
     client = _FakeArchiveClient([])
-    monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
+    monkeypatch.setattr(local_store, "config", lambda: ("prod", client))
 
     written = local_store.publish_goalies("20232024", db_path=tmp_path / "raw.sqlite")
 

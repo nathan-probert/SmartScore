@@ -1,10 +1,11 @@
-# dev backtracking snapshot deleted (2026-10-24)
+# dev backtracking snapshots deleted (2026-10-24)
 
-`Player-Snapshots-backtrack-dev` was deleted after verifying
-`Player-Snapshots-backtrack-prod` supersedes it. Any script that used to read
-the dev backtrack snapshot (language default `ENV=dev` in `config.py`) must be
-run with `ENV=prod` / `--env prod` instead. Code reading the deleted table now
+All three dev backtrack tables are now deleted (row-deleted; the Postgres
+shells remain until a manual DROP). Any script that used to read a dev
+backtrack table (language default `ENV=dev` in `config.py`) must be run with
+`ENV=prod` / `--env prod` instead. Code resolving a deleted dev table name now
 fails loudly via `smartscore/scripts/backtrack/deleted_env_tables.py`.
+
 
 ## What was verified before deletion (all read-only)
 
@@ -21,13 +22,38 @@ fails loudly via `smartscore/scripts/backtrack/deleted_env_tables.py`.
 - Column lists: dev and prod identical (37 = 37) — no dev-only column remained
   to migrate.
 
-## What was NOT deleted (and why)
+## Team-Stats / Goalie-Snapshots dev deletions (2026-10-24, second pass)
 
-- `Team-Stats-backtrack-dev` (34,300 rows) and `Goalie-Snapshots-backtrack-dev`
-  (36,696 rows): their prod counterparts (`Team-Stats-backtrack-prod`,
-  `Goalie-Snapshots-backtrack-prod`) are EMPTY (0 rows), so prod does not yet
-  supersede dev for those two. They stay until prod publishes exist
-  (`local_store --publish-team/--publish-goalies` with `ENV=prod`).
+- `Team-Stats-backtrack-prod` was published from the local store
+  (`local_store.py --publish-team`, `ENV=prod`, all 14 seasons incl. 2026-27):
+  34,636 rows, 2013-10-01..2026-10-24.
+- `Goalie-Snapshots-backtrack-prod` was published the same way
+  (`--publish-goalies`): 37,044 rows, 2013-10-01..2026-10-22 (goalies carry no
+  2026-10-23/24 rows yet because those games had no box scores at publish time
+  — un-played, the known partially-filled-today source pattern).
+- Random 500-key spot-checks per table (value-compare against freshly computed
+  local values, floats <=1e-9 rel / ints+text exact / NULL-parity): 0
+  mismatches. Full key-set check: prod is a strict superset of dev — 0
+  dev-only keys; prod-only keys are exactly the 336 team / 348 goalie 2026-27
+  rows. The Player-table precedent (6,048 extra 2026-27 rows) replicates.
+- After verification, `Team-Stats-backtrack-dev` (34,300 rows) and
+  `Goalie-Snapshots-backtrack-dev` (36,696 rows) were row-deleted (year-chunked
+  PostgREST deletes, per-table backup SHA256 verified first); prod counts were
+  re-checked stable (34,636 / 37,044). Pre-delete gzip backups live in
+  `data/backups/` with SHA256s in `MANIFEST.md`.
+
+## Remaining manual steps
+
+PostgREST cannot DROP TABLE, so the three empty shells still exist in the
+Supabase project. In the dashboard SQL editor:
+
+1. `DROP TABLE "Player-Snapshots-backtrack-dev";`
+2. `DROP TABLE "Team-Stats-backtrack-dev";`
+3. `DROP TABLE "Goalie-Snapshots-backtrack-dev";`
+
+Then, to also reclaim the disk, run `VACUUM FULL` on the (now smaller)
+remaining backtrack prod tables, or pause/restore the project (a brief
+outage — scheduled maintenance, not a data path blocker).
 
 ## Restore / re-derivation paths
 
