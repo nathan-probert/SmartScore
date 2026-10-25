@@ -137,6 +137,23 @@ def test_every_lambda_gets_its_code_deployed():
     successful and does nothing.
     """
     declared = _declared_function_names()
+    # Image-packaged functions (MLPicks) carry their code INSIDE a container
+    # image pushed to ECR (smartscore/lambda/predict_picks/Dockerfile via
+    # `make build-ml-image`), not through deploy.sh's zip flow - exempt them.
+    image_packaged = set()
+    text = TEMPLATE_TEXT
+    for match in re.finditer(r'FunctionName: !Sub "([A-Za-z0-9_]+)-\$\{ENV\}"', text):
+        # the resource's own properties block runs until the next two-space
+        # resource key; PackageType inside that window marks image packaging
+        window_start = match.start()
+        window_end = min(m.start() for m in re.finditer(r"^  [A-Za-z]", text[window_start + 1 :], flags=re.M)) + (
+            window_start + 1
+            if len(re.findall(r"^  [A-Za-z]", text[window_start + 1 :], flags=re.M)) > 0
+            else len(text)
+        )
+        if re.search(r"^\s*PackageType: Image$", text[window_start:window_end], flags=re.M):
+            image_packaged.add(match.group(1))
+    declared -= image_packaged
     deployed = _deployed_function_names()
 
     assert declared, "expected to parse FunctionName entries from template.yaml"
