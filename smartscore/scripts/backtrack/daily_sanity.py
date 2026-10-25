@@ -125,8 +125,8 @@ def supabase_sanity(env: str, date_str: str, do_train: bool = True) -> None:
     """
     import os  # noqa: PLC0415
 
-    from dotenv import load_dotenv  # noqa: PLC0415
     import requests  # noqa: PLC0415
+    from dotenv import load_dotenv  # noqa: PLC0415
 
     load_dotenv()
     url = os.environ["SUPABASE_URL"].rstrip("/")
