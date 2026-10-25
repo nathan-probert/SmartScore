@@ -147,9 +147,7 @@ def test_every_lambda_gets_its_code_deployed():
         # resource key; PackageType inside that window marks image packaging
         window_start = match.start()
         window_end = min(m.start() for m in re.finditer(r"^  [A-Za-z]", text[window_start + 1 :], flags=re.M)) + (
-            window_start + 1
-            if len(re.findall(r"^  [A-Za-z]", text[window_start + 1 :], flags=re.M)) > 0
-            else len(text)
+            window_start + 1 if len(re.findall(r"^  [A-Za-z]", text[window_start + 1 :], flags=re.M)) > 0 else len(text)
         )
         if re.search(r"^\s*PackageType: Image$", text[window_start:window_end], flags=re.M):
             image_packaged.add(match.group(1))

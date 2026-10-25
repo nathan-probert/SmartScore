@@ -125,11 +125,27 @@ PAYLOAD_COLUMNS = (
 )
 FORBIDDEN_COLUMNS = frozenset(
     {
-        "scored", "gpg", "hgpg", "five_gpg", "hppg", "tgpg", "otga", "otshga",
-        "injury_status", "injury_desc", "tims", "lineup_unit_source",
-        "opp_goalie_name", "opp_goalie_team", "opp_goalie_status",
-        "opp_goalie_confirmed", "opp_goalie_nhl_id", "opp_goalie_gaa",
-        "opp_goalie_save_pct", "opp_goalie_record", "opp_goalie_shutouts",
+        "scored",
+        "gpg",
+        "hgpg",
+        "five_gpg",
+        "hppg",
+        "tgpg",
+        "otga",
+        "otshga",
+        "injury_status",
+        "injury_desc",
+        "tims",
+        "lineup_unit_source",
+        "opp_goalie_name",
+        "opp_goalie_team",
+        "opp_goalie_status",
+        "opp_goalie_confirmed",
+        "opp_goalie_nhl_id",
+        "opp_goalie_gaa",
+        "opp_goalie_save_pct",
+        "opp_goalie_record",
+        "opp_goalie_shutouts",
         "opp_goalie_games_played",
     }
 )
@@ -475,8 +491,14 @@ def _prior_from_archive(supabase, table, date_str, player_ids):
             pid = int(row["player_id"])
             entry = prior.setdefault(
                 pid,
-                {"lineup_unit": None, "lineup_position_group": None, "pp_unit": None,
-                 "lineup_date": None, "pp_date": None, "source": "archive"},
+                {
+                    "lineup_unit": None,
+                    "lineup_position_group": None,
+                    "pp_unit": None,
+                    "lineup_date": None,
+                    "pp_date": None,
+                    "source": "archive",
+                },
             )
             date = row.get("date") or ""
             if row.get("lineup_unit") and (entry["lineup_date"] is None or date > entry["lineup_date"]):
@@ -511,7 +533,7 @@ def _prior_from_sqlite(date_str, player_ids):
             chunk = ids[start : start + 500]
             placeholders = ",".join("?" * len(chunk))
             rows = con.execute(
-                (
+                (  # noqa: S608
                     "SELECT pg.player_id, pg.game_date, pl.lineup_unit,"
                     " pl.lineup_position_group, pl.pp_unit"
                     " FROM player_games pg"
@@ -525,11 +547,21 @@ def _prior_from_sqlite(date_str, player_ids):
             for player_id, game_date, lineup, group, pp in rows:
                 entry = prior.setdefault(
                     int(player_id),
-                    {"lineup_unit": None, "lineup_position_group": None, "pp_unit": None,
-                     "lineup_date": None, "pp_date": None, "source": "sqlite-shiftcharts"},
+                    {
+                        "lineup_unit": None,
+                        "lineup_position_group": None,
+                        "pp_unit": None,
+                        "lineup_date": None,
+                        "pp_date": None,
+                        "source": "sqlite-shiftcharts",
+                    },
                 )
                 if game_date and (entry["lineup_date"] is None or game_date > entry["lineup_date"]):
-                    entry["lineup_unit"], entry["lineup_position_group"], entry["lineup_date"] = lineup, group, game_date
+                    entry["lineup_unit"], entry["lineup_position_group"], entry["lineup_date"] = (
+                        lineup,
+                        group,
+                        game_date,
+                    )
                 if pp and (entry["pp_date"] is None or game_date > entry["pp_date"]):
                     entry["pp_unit"] = pp
                     entry["pp_date"] = game_date
@@ -596,7 +628,7 @@ def _resolve_pair(stored, official, prior, roster_group):
 
     Returns ``(lineup_fields_dict, status)`` or ``None`` when nothing changes.
     """
-    s_status = ((stored or {}).get("lineup_status") or "")
+    s_status = (stored or {}).get("lineup_status") or ""
     if s_status in HARD_KEEP_STATUSES:
         return None
 
@@ -739,8 +771,14 @@ def run(supabase, env, date_str, modes, limit=None, force=False, dry_run=False, 
         for pid, entry in _prior_from_sqlite(date_str, universe_ids).items():
             target = prior.setdefault(
                 pid,
-                {"lineup_unit": None, "lineup_position_group": None, "pp_unit": None,
-                 "lineup_date": None, "pp_date": None, "source": "sqlite-shiftcharts"},
+                {
+                    "lineup_unit": None,
+                    "lineup_position_group": None,
+                    "pp_unit": None,
+                    "lineup_date": None,
+                    "pp_date": None,
+                    "source": "sqlite-shiftcharts",
+                },
             )
             if entry["lineup_unit"] and not target["lineup_unit"]:
                 target["lineup_unit"] = entry["lineup_unit"]
@@ -832,7 +870,9 @@ def run(supabase, env, date_str, modes, limit=None, force=False, dry_run=False, 
             elif _parse_utc(start_utc) <= now_utc and not force:
                 guard_skipped += 1
                 continue  # game already underway: never touch deployment data
-            patch_groups[(fields["lineup_unit"], fields["lineup_position_group"], fields["pp_unit"], status)].append(pid)
+            patch_groups[(fields["lineup_unit"], fields["lineup_position_group"], fields["pp_unit"], status)].append(
+                pid
+            )
 
     appended = refreshed = 0
     if "append" in modes:
@@ -842,8 +882,12 @@ def run(supabase, env, date_str, modes, limit=None, force=False, dry_run=False, 
             for start in range(0, len(batch), BATCH_SIZE):
                 (
                     supabase.table(table)
-                    .upsert(batch[start : start + BATCH_SIZE], on_conflict="date,player_id",
-                            ignore_duplicates=True, returning="minimal")
+                    .upsert(
+                        batch[start : start + BATCH_SIZE],
+                        on_conflict="date,player_id",
+                        ignore_duplicates=True,
+                        returning="minimal",
+                    )
                     .execute()
                 )
             appended = len(batch)
@@ -868,11 +912,15 @@ def main():
     parser.add_argument("--date", default=None, help="Game date YYYY-MM-DD (default: today, America/Toronto).")
     parser.add_argument("--mode", nargs="+", choices=("append", "refresh"), default=["append", "refresh"])
     parser.add_argument("--limit", type=int, default=None, help="Cap rows appended (safety for a first rollout).")
-    parser.add_argument("--force", action="store_true",
-                        help="Write even when the article date/query guards do not line up.")
+    parser.add_argument(
+        "--force", action="store_true", help="Write even when the article date/query guards do not line up."
+    )
     parser.add_argument("--dry-run", action="store_true", help="Collect and report only; no writes, no table reads.")
-    parser.add_argument("--no-proxy", action="store_true",
-                        help="Skip the strictly-prior proxy tier; persist official published units only.")
+    parser.add_argument(
+        "--no-proxy",
+        action="store_true",
+        help="Skip the strictly-prior proxy tier; persist official published units only.",
+    )
     args = parser.parse_args()
 
     date_str = args.date or et_today()

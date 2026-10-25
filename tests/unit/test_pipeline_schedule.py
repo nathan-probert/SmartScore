@@ -33,10 +33,18 @@ TEMPLATES = Path(__file__).resolve().parents[2] / "templates"
 
 
 class CfnLoader(yaml.SafeLoader):
-    """SafeLoader that keeps CloudFormation intrinsic tag scalars inspectable."""
+    """SafeLoader that keeps CloudFormation intrinsic tags inspectable (scalar or sequence values)."""
 
 
-CfnLoader.add_multi_constructor("!", lambda loader, suffix, node: {suffix: loader.construct_scalar(node)})
+def _cfn_intrinsic(loader, suffix, node):
+    if isinstance(node, yaml.SequenceNode):
+        return {suffix: loader.construct_sequence(node)}
+    if isinstance(node, yaml.MappingNode):
+        return {suffix: loader.construct_mapping(node)}
+    return {suffix: loader.construct_scalar(node)}
+
+
+CfnLoader.add_multi_constructor("!", _cfn_intrinsic)
 
 TEMPLATE = yaml.load((TEMPLATES / "template.yaml").read_text(encoding="utf-8"), Loader=CfnLoader)
 

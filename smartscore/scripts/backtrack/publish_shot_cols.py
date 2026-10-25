@@ -222,8 +222,7 @@ def upsert_frame(frame, env, batch_size=500, concurrency=1, progress_every=50):
         if done % progress_every == 0 or done == len(batches):
             rate = written / max(time.time() - start, 1e-9)
             print(
-                f"  batch {done:,}/{len(batches):,}  rows {written:,}  "
-                f"{rate:,.0f} rows/s  errors {len(failed)}",
+                f"  batch {done:,}/{len(batches):,}  rows {written:,}  {rate:,.0f} rows/s  errors {len(failed)}",
                 flush=True,
             )
     if failed:
@@ -323,9 +322,7 @@ def attach_shot_columns(payload, table, block=None):
     import pandas as pd  # noqa: PLC0415 - keep the hot nightly path import-light
 
     if block is None:
-        frame = shot_features().merge(
-            club_map_cols(), on=["date", "player_id"], how="left", validate="many_to_one"
-        )
+        frame = shot_features().merge(club_map_cols(), on=["date", "player_id"], how="left", validate="many_to_one")
         frame["player_id"] = frame["player_id"].astype("int64")
         frame["career_games"] = frame["career_games"].astype("int64")
     else:

@@ -38,9 +38,19 @@ from model import (  # noqa: E402
 from publish_shot_cols import PAYLOAD_COLUMNS, club_map_cols, snapshot_keys  # noqa: E402
 
 FLOAT_COLUMNS = [
-    "sd_shots_pg", "sd_goals_pg", "sd_toi_pg", "sd_sh_pct",
-    "r5_shots_pg", "r5_goals_pg", "r10_shots_pg", "r10_goals_pg",
-    "r10_toi_pg", "ewm_goals", "ewm_shots", "career_goals_pg", "career_shots_pg",
+    "sd_shots_pg",
+    "sd_goals_pg",
+    "sd_toi_pg",
+    "sd_sh_pct",
+    "r5_shots_pg",
+    "r5_goals_pg",
+    "r10_shots_pg",
+    "r10_goals_pg",
+    "r10_toi_pg",
+    "ewm_goals",
+    "ewm_shots",
+    "career_goals_pg",
+    "career_shots_pg",
 ]
 INT_COLUMNS = ["career_games"]
 TEXT_COLUMNS = ["team_abbrev", "opponent_abbrev"]
@@ -57,9 +67,13 @@ def remote_rows(env, keys):
         # concurrency; retry with backoff, serialise to 2 workers below.
         for attempt in range(4):
             try:
-                return client.table(table).select("date,player_id," + ",".join(
-                    list(FLOAT_COLUMNS) + INT_COLUMNS + TEXT_COLUMNS
-                )).eq("date", date).execute().data
+                return (
+                    client.table(table)
+                    .select("date,player_id," + ",".join(list(FLOAT_COLUMNS) + INT_COLUMNS + TEXT_COLUMNS))
+                    .eq("date", date)
+                    .execute()
+                    .data
+                )
             except Exception:  # noqa: BLE001 - retried below, then surfaced
                 if attempt == 3:
                     raise
@@ -95,7 +109,7 @@ def compare_column(remote, expect, name, kind):
     else:
         x = a[both].astype(float)
         y = b[both].astype(float)
-        rel = ((x - y).abs() / np.maximum(1.0, y.abs()))
+        rel = (x - y).abs() / np.maximum(1.0, y.abs())
         worst = float(rel.max()) if len(rel) else 0.0
         mism += int((rel > REL_TOL).sum())
     if not both_na.all():
@@ -139,8 +153,7 @@ def main():
     # Authoritative row-count / no-add / no-delete proof: the full PK key set.
     pub = published_keys(args.env)
     print(
-        f"{table} published keys: {len(pub):,}  "
-        f"(count=exact: {count if count is not None else 'timed out'})",
+        f"{table} published keys: {len(pub):,}  (count=exact: {count if count is not None else 'timed out'})",
         flush=True,
     )
     if len(pub) != 617_310:

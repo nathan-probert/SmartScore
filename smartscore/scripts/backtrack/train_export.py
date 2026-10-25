@@ -98,7 +98,10 @@ LGBM_CONFIG = "a"
 def git_commit():
     try:
         return subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True  # noqa: S607
+            ["git", "rev-parse", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=True,  # noqa: S607
         ).stdout.strip()
     except Exception:  # noqa: BLE001
         return "unknown"
@@ -138,10 +141,12 @@ def fit_bundle(frame, args):
     cap_stack = []
     import sklearn.ensemble  # noqa: E401, PLC0415, F401  (pre-seeds the modules we wrapper-capture)
     import sklearn.linear_model  # noqa: E401, PLC0415, F401
+
     try:
         import lightgbm  # noqa:PLC0415  (optional dep; ranked bundle member)
     except ImportError:
         lightgbm = None  # ranker ships omitted; a warning comes from fit_bundle
+
     def _wrap(holder, attr):
         """Install a self-capturing subclass of holder.<attr>; restored later."""
         base = getattr(holder, attr)
@@ -221,8 +226,7 @@ def fit_bundle(frame, args):
         # traceability only, never in the ensemble mean), then daily_picks
         # takes each group's max - exactly one pick per tims group per date.
         "derived_params": {
-            "ensemble_recipe": "mean of within-(date, tims) rank(pct=True) "
-            "across members {hgb, lgbm, logreg}",
+            "ensemble_recipe": "mean of within-(date, tims) rank(pct=True) across members {hgb, lgbm, logreg}",
             "ensemble_members": ["hgb", "lgbm", "logreg"],
             "ranker_in_ensemble": False,
             "fillna_before_rank": 0.0,
@@ -276,10 +280,22 @@ def fit_bundle(frame, args):
 # (docs/supabase_shot_columns.md); sqlite covers them from the raw store.
 FRAME_SOURCE_COLUMNS = {
     "supabase": [
-        "sd_shots_pg", "sd_goals_pg", "sd_toi_pg", "sd_sh_pct",
-        "r5_shots_pg", "r5_goals_pg", "r10_shots_pg", "r10_goals_pg",
-        "r10_toi_pg", "ewm_goals", "ewm_shots", "career_games",
-        "career_goals_pg", "career_shots_pg", "team_abbrev", "opponent_abbrev",
+        "sd_shots_pg",
+        "sd_goals_pg",
+        "sd_toi_pg",
+        "sd_sh_pct",
+        "r5_shots_pg",
+        "r5_goals_pg",
+        "r10_shots_pg",
+        "r10_goals_pg",
+        "r10_toi_pg",
+        "ewm_goals",
+        "ewm_shots",
+        "career_games",
+        "career_goals_pg",
+        "career_shots_pg",
+        "team_abbrev",
+        "opponent_abbrev",
     ],
     "sqlite": [],
 }
@@ -336,19 +352,30 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--env", default="dev", help="backtrack-table suffix (dev default locally; prod for deploy)")
     parser.add_argument("--refresh", action="store_true", help="re-download the table CSV caches")
-    parser.add_argument("--source", choices=model.FRAME_SOURCES, default="sqlite",
-                        help="sqlite (default, local raw store) or supabase (published 16 columns)")
-    parser.add_argument("--through-date", default=None,
-                        help="last training date YYYY-MM-DD (default: the store/cache's latest date)")
-    parser.add_argument("--seed", type=int, default=DEPLOYMENT_SEED,
-                        help="fold-shuffle seed for --oof + metadata (default 0 = the measured best: "
-                        "29.92%% vs 29.41%% s1 / 29.82%% s3)")
-    parser.add_argument("--oof", action="store_true",
-                        help="run the k-fold sim after fitting (slow; measures this seed)")
+    parser.add_argument(
+        "--source",
+        choices=model.FRAME_SOURCES,
+        default="sqlite",
+        help="sqlite (default, local raw store) or supabase (published 16 columns)",
+    )
+    parser.add_argument(
+        "--through-date", default=None, help="last training date YYYY-MM-DD (default: the store/cache's latest date)"
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEPLOYMENT_SEED,
+        help="fold-shuffle seed for --oof + metadata (default 0 = the measured best: "
+        "29.92%% vs 29.41%% s1 / 29.82%% s3)",
+    )
+    parser.add_argument(
+        "--oof", action="store_true", help="run the k-fold sim after fitting (slow; measures this seed)"
+    )
     parser.add_argument("--oof-splits", type=int, default=5)
     parser.add_argument("--lgbm-config", choices=list(model.LGBM_CONFIGS), default=LGBM_CONFIG)
-    parser.add_argument("--out", default=None,
-                        help="override the artifact path (default data/ml/artifact_<through>_<seed>.joblib)")
+    parser.add_argument(
+        "--out", default=None, help="override the artifact path (default data/ml/artifact_<through>_<seed>.joblib)"
+    )
     parser.add_argument("--upload", action="store_true", help="push the artifact to S3 (default: OFF)")
     parser.add_argument("--s3-bucket", default=os.environ.get("ML_S3_BUCKET", ""))
     parser.add_argument("--s3-prefix", default=os.environ.get("ML_S3_PREFIX", "predict/ml"))
@@ -360,8 +387,11 @@ def main():
 
     bundle = fit_bundle(frame, args)
     bundle["metadata"]["oof_measured"] = args.oof
-    path = Path(args.out) if args.out else CACHE_DIR / (
-        f"artifact_{bundle['metadata']['train_through']}_{args.seed}.joblib")
+    path = (
+        Path(args.out)
+        if args.out
+        else CACHE_DIR / (f"artifact_{bundle['metadata']['train_through']}_{args.seed}.joblib")
+    )
     if str(path.parent) == str(CACHE_DIR):
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, path, compress=("zlib", 3))

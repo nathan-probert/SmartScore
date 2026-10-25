@@ -43,7 +43,6 @@ sys.modules.setdefault("make_predictions_rust", _rust_stub)
 # (bootstrap deliberately precedes these imports)
 # noqa anchor
 _SPEC = importlib.util.spec_from_file_location(  # noqa: E402
-
     "ml_picks_handler", ROOT / "smartscore" / "lambda" / "predict_picks" / "handler.py"
 )
 mod = importlib.util.module_from_spec(_SPEC)
@@ -143,30 +142,32 @@ HISTORY_DATE = "2026-06-10"
 
 
 def fake_players():
-    prior = pd.DataFrame({
-        "date": [HISTORY_DATE] * 4,
-        "player_id": [1, 2, 9, 10],
-        "name": ["a", "b", "g", "h"],
-        "team_name": ["T", "T", "Time", "Noise"],
-        "home": [1, 1, 0, 0],
-        "tims": [0, 0, 0, 0],
-        "scored": [0, 1, 0, 0],
-        "gpg": [0.5, 0.2, 0.0, 0.0],
-        "hgpg": [0.1, 0.2, 0.0, 0.0],
-        "five_gpg": [0.1, 0.2, 0.0, 0.0],
-        "ppg": [0.2, 0.1, 0.0, 0.0],
-        "tgpg": [3.0, 3.0, 0.0, 0.0],
-        "otga": [2.5, 2.5, 0.0, 0.0],
-        "otshga": [0.01, 0.01, 0.0, 0.0],
-        "injury_status": [None] * 4,
-        "lineup_unit": [None] * 4,
-        "lineup_position_group": ["C", "W", None, None],
-        "pp_unit": [None] * 4,
-        "lineup_status": [None] * 4,
-        "team_abbrev": ["TOR", "TOR", "MTL", "MTL"],
-        "opponent_abbrev": ["MTL", "MTL", "TOR", "TOR"],
-        **{c: [0.0] * 4 for c in mod.REQUIRED_SNAPSHOT_COLUMNS if c not in ("team_abbrev", "opponent_abbrev")},
-    })
+    prior = pd.DataFrame(
+        {
+            "date": [HISTORY_DATE] * 4,
+            "player_id": [1, 2, 9, 10],
+            "name": ["a", "b", "g", "h"],
+            "team_name": ["T", "T", "Time", "Noise"],
+            "home": [1, 1, 0, 0],
+            "tims": [0, 0, 0, 0],
+            "scored": [0, 1, 0, 0],
+            "gpg": [0.5, 0.2, 0.0, 0.0],
+            "hgpg": [0.1, 0.2, 0.0, 0.0],
+            "five_gpg": [0.1, 0.2, 0.0, 0.0],
+            "ppg": [0.2, 0.1, 0.0, 0.0],
+            "tgpg": [3.0, 3.0, 0.0, 0.0],
+            "otga": [2.5, 2.5, 0.0, 0.0],
+            "otshga": [0.01, 0.01, 0.0, 0.0],
+            "injury_status": [None] * 4,
+            "lineup_unit": [None] * 4,
+            "lineup_position_group": ["C", "W", None, None],
+            "pp_unit": [None] * 4,
+            "lineup_status": [None] * 4,
+            "team_abbrev": ["TOR", "TOR", "MTL", "MTL"],
+            "opponent_abbrev": ["MTL", "MTL", "TOR", "TOR"],
+            **{c: [0.0] * 4 for c in mod.REQUIRED_SNAPSHOT_COLUMNS if c not in ("team_abbrev", "opponent_abbrev")},
+        }
+    )
     today = prior.copy()
     today["date"] = ON_DATE
     today["scored"] = None
@@ -176,27 +177,31 @@ def fake_players():
 
 
 def fake_teams():
-    return pd.DataFrame({
-        "date": [HISTORY_DATE, ON_DATE] * 2,
-        "team_abbrev": ["TOR", "TOR", "MTL", "MTL"],
-        "tgpg": [3.0] * 4,
-        "otga": [2.5] * 4,
-        "otshga": [0.01] * 4,
-        "season": ["20252026"] * 4,
-    })
+    return pd.DataFrame(
+        {
+            "date": [HISTORY_DATE, ON_DATE] * 2,
+            "team_abbrev": ["TOR", "TOR", "MTL", "MTL"],
+            "tgpg": [3.0] * 4,
+            "otga": [2.5] * 4,
+            "otshga": [0.01] * 4,
+            "season": ["20252026"] * 4,
+        }
+    )
 
 
 def fake_goalies():
-    return pd.DataFrame({
-        "date": [HISTORY_DATE, ON_DATE] * 2,
-        "player_id": [9, 9, 10, 10],
-        "team_abbrev": ["MTL", "MTL", "TOR", "TOR"],
-        "gaa": [2.5] * 4,
-        "save_pct": [0.9] * 4,
-        "record": ["10-4-2"] * 4,
-        "shutouts": [1] * 4,
-        "games_played": [10, 10, 12, 12],
-    })
+    return pd.DataFrame(
+        {
+            "date": [HISTORY_DATE, ON_DATE] * 2,
+            "player_id": [9, 9, 10, 10],
+            "team_abbrev": ["MTL", "MTL", "TOR", "TOR"],
+            "gaa": [2.5] * 4,
+            "save_pct": [0.9] * 4,
+            "record": ["10-4-2"] * 4,
+            "shutouts": [1] * 4,
+            "games_played": [10, 10, 12, 12],
+        }
+    )
 
 
 @pytest.fixture
@@ -374,13 +379,15 @@ def test_encode_frame_unseen_category_maps_to_nan():
 
 
 def test_ensemble_scores_rank_rule():
-    frame = pd.DataFrame({
-        "date": [ON_DATE] * 3,
-        "player_id": [1, 2, 3],
-        "tims": [1, 1, 2],
-        "gpg": [0.5, 0.2, 0.9],
-        "hgpg": [0.1, 0.2, 0.3],
-    })
+    frame = pd.DataFrame(
+        {
+            "date": [ON_DATE] * 3,
+            "player_id": [1, 2, 3],
+            "tims": [1, 1, 2],
+            "gpg": [0.5, 0.2, 0.9],
+            "hgpg": [0.1, 0.2, 0.3],
+        }
+    )
     sim = mod.ensemble_scores(make_bundle(), frame)
     assert sim["ensemble"].between(0.0, 1.0).all()
     group1 = sim[sim["tims"] == 1]
@@ -406,14 +413,16 @@ def test_supabase_frame_matches_artifact_features(env_vars, prediction_tables):
 
 
 def test_pick_rows_one_per_group_and_order():
-    frame = pd.DataFrame({
-        "date": [ON_DATE, ON_DATE, ON_DATE, ON_DATE],
-        "player_id": [1, 2, 9, 10],
-        "name": ["a", "b", "g", "h"],
-        "team_name": ["T", "T", "Time", "Noise"],
-        "tims": [1, 1, 2, 3],
-        "ensemble": [0.4, 0.8, 0.6, np.nan],
-    })
+    frame = pd.DataFrame(
+        {
+            "date": [ON_DATE, ON_DATE, ON_DATE, ON_DATE],
+            "player_id": [1, 2, 9, 10],
+            "name": ["a", "b", "g", "h"],
+            "team_name": ["T", "T", "Time", "Noise"],
+            "tims": [1, 1, 2, 3],
+            "ensemble": [0.4, 0.8, 0.6, np.nan],
+        }
+    )
     picks = model.daily_picks(frame, "ensemble")
     row_map = dict(zip(picks["tims"], picks["player_id"]))
     # highest ensemble member per group; tims=3 is all-NaN -> daily_picks
@@ -423,30 +432,34 @@ def test_pick_rows_one_per_group_and_order():
 
 
 def test_validate_picks_rejects_wrong_shape():
-    sim = pd.DataFrame({
-        "date": [ON_DATE] * 2,
-        "player_id": [1, 2],
-        "tims": [1, 1],
-        "ensemble": [0.5, 0.6],
-    })
+    sim = pd.DataFrame(
+        {
+            "date": [ON_DATE] * 2,
+            "player_id": [1, 2],
+            "tims": [1, 1],
+            "ensemble": [0.5, 0.6],
+        }
+    )
     picks = model.daily_picks(sim, "ensemble")
     with pytest.raises(RuntimeError, match="3 picks"):
         mod.validate_picks(picks, ON_DATE)
 
 
 def test_pick_payload_whitelist():
-    picks = pd.DataFrame({
-        "date": [ON_DATE],
-        "player_id": [1.0],
-        "name": ["a"],
-        "team_name": ["T"],
-        "tims": [1.0],
-        "gpg": [0.5],
-        "hgpg": [0.1],
-        "ppg": [0.2],
-        "ensemble": [0.12345],
-        "scored": [np.nan],
-    })
+    picks = pd.DataFrame(
+        {
+            "date": [ON_DATE],
+            "player_id": [1.0],
+            "name": ["a"],
+            "team_name": ["T"],
+            "tims": [1.0],
+            "gpg": [0.5],
+            "hgpg": [0.1],
+            "ppg": [0.2],
+            "ensemble": [0.12345],
+            "scored": [np.nan],
+        }
+    )
     rows = mod.pick_rows_to_picks_db(picks)
 
     assert len(rows) == 1
@@ -455,7 +468,7 @@ def test_pick_payload_whitelist():
         "player_id": 1,
         "name": "a",
         "team_name": "T",
-        "stat": 12.3,        # ensemble ranked-pct -> percent, 1 decimal
+        "stat": 12.3,  # ensemble ranked-pct -> percent, 1 decimal
         "tims": 1,
         "gpg": 0.5,
         "hgpg": 0.1,

@@ -62,7 +62,8 @@ USAGE
     cd SmartScore-backtrack
     uv run python smartscore/scripts/backtrack/model.py --env dev \
         [--refresh] [--split kfold|seasons] [--splits 5] [--test-start DATE] [--min-season YEAR] \
-        [--train-subset challenge|all] [--model ensemble|hgb|lgbm|extratrees] [--lgbm-config a|b|c] [--lineup none|projected|oracle] [--seed N] [--ranker none|lambdarank] [--model-file PATH]
+        [--train-subset challenge|all] [--model ensemble|hgb|lgbm|extratrees] [--lgbm-config a|b|c]
+        [--lineup none|projected|oracle] [--seed N] [--ranker none|lambdarank] [--model-file PATH]
 
 Defaults: kfold k=5, train-subset all (strongest under CV; see MODEL_NOTES.md).
 
@@ -465,12 +466,8 @@ def shot_features():
         lambda series: series.shift(1).ewm(halflife=5, min_periods=1).mean()
     )
     games["career_games"] = player_group.cumcount()
-    games["career_goals_pg"] = player_group["goals"].transform(
-        lambda series: series.shift(1).expanding().mean()
-    )
-    games["career_shots_pg"] = player_group["shots"].transform(
-        lambda series: series.shift(1).expanding().mean()
-    )
+    games["career_goals_pg"] = player_group["goals"].transform(lambda series: series.shift(1).expanding().mean())
+    games["career_shots_pg"] = player_group["shots"].transform(lambda series: series.shift(1).expanding().mean())
     cols = ["date", "player_id"] + SHOT_FEATURES
     return games[cols]
 
@@ -510,9 +507,11 @@ def projected_lineup_features(frame):
             "proj_pp_confidence_b": "proj_pp_conf",
         }
     )
-    merged = frame.merge(
-        projected, on=["date", "player_id"], how="left", validate="many_to_one"
-    ).sort_values(["player_id", "date"]).reset_index(drop=True)
+    merged = (
+        frame.merge(projected, on=["date", "player_id"], how="left", validate="many_to_one")
+        .sort_values(["player_id", "date"])
+        .reset_index(drop=True)
+    )
 
     n = len(merged)
     pos = merged["lineup_position_group"].to_numpy(dtype=object)
@@ -534,11 +533,7 @@ def projected_lineup_features(frame):
         if pd.isna(group_unit):
             continue
         for row in group_idx:
-            others = [
-                other
-                for other in group_idx
-                if other != row and pos[other] == pos[row]
-            ]
+            others = [other for other in group_idx if other != row and pos[other] == pos[row]]
             if others:
                 line_gpg[row] = np.nanmean(gpg[others])
                 line_ppg[row] = np.nanmean(ppg[others])
@@ -554,9 +549,7 @@ def projected_lineup_features(frame):
                 pp_ppg[row] = np.nanmean(ppg[others])
 
     actual_sets = {}
-    for (day, team, group_unit), idxs in merged.groupby(
-        ["date", "club", "lineup_unit"], sort=False
-    ).indices.items():
+    for (day, team, group_unit), idxs in merged.groupby(["date", "club", "lineup_unit"], sort=False).indices.items():
         if pd.notna(group_unit):
             actual_sets[(day, team, group_unit)] = set(pid[idxs])
     proj_sets = {}
@@ -796,7 +789,7 @@ def fit_hgb(train, test):
 
 def fit_lgbm(train, test, config="a"):
     """LightGBM binary classifier on the same feature encoding as HGB."""
-    from lightgbm import LGBMClassifier
+    from lightgbm import LGBMClassifier  # noqa: PLC0415
 
     x_train, x_test = categorise(train, test)
     # LightGBM reads pandas category codes; align test categories to train.
@@ -807,7 +800,7 @@ def fit_lgbm(train, test, config="a"):
         subsample=0.8,
         colsample_bytree=0.8,
         random_state=0,
-        n_jobs=int(os.environ.get("LGBM_N_JOBS", 4)),
+        n_jobs=int(os.environ.get("LGBM_N_JOBS", "4")),
         verbose=-1,
         **LGBM_CONFIGS[config],
     )
@@ -817,7 +810,7 @@ def fit_lgbm(train, test, config="a"):
 
 def fit_extratrees(train, test):
     """ExtraTrees on the same features, with categoricals as ordinal codes."""
-    from sklearn.ensemble import ExtraTreesClassifier
+    from sklearn.ensemble import ExtraTreesClassifier  # noqa: PLC0415
 
     x_train, x_test = categorise(train, test)
     for col in CATEGORICAL_FEATURES:
@@ -861,7 +854,7 @@ def _fit_pairwise_logistic(x_train, y_train, groups, x_test):
     A pair (winner, loser) becomes the feature difference; a linear model on
     differences ranks by w . x, so ``decision_function`` is the score.
     """
-    from sklearn.linear_model import SGDClassifier
+    from sklearn.linear_model import SGDClassifier  # noqa: PLC0415
 
     rng = np.random.default_rng(0)
     max_pairs = 120
@@ -909,7 +902,7 @@ def fit_ranker(train, test, kind):
     y_ordered = train["scored"].astype(int).to_numpy()[order]
 
     try:
-        from lightgbm import LGBMRanker
+        from lightgbm import LGBMRanker  # noqa: PLC0415
     except ImportError:
         print("  ranker: lightgbm unavailable, using pairwise logistic fallback", flush=True)
         x_num = x_ordered.copy()
@@ -919,9 +912,7 @@ def fit_ranker(train, test, kind):
             x_test_num[col] = x_test_num[col].cat.codes.astype(float).replace(-1, np.nan)
         groups = train.iloc[order].groupby(["date", "tims"], sort=False).indices
         positional = [(key, np.asarray(vals)) for key, vals in groups.items()]
-        return _fit_pairwise_logistic(
-            x_num.to_numpy(dtype=np.float32), y_ordered, positional, x_test_num
-        )
+        return _fit_pairwise_logistic(x_num.to_numpy(dtype=np.float32), y_ordered, positional, x_test_num)
 
     model = LGBMRanker(
         objective="lambdarank",
@@ -981,9 +972,7 @@ def run_folds(frame, args):
         else:
             train_all = frame[(frame["date"] < getattr(args, "test_start", TEST_START)) & frame["scored"].notna()]
             if getattr(args, "min_season", None) is not None:
-                season_start = pd.to_numeric(
-                    train_all["season"].astype(str).str[:4], errors="coerce"
-                )
+                season_start = pd.to_numeric(train_all["season"].astype(str).str[:4], errors="coerce")
                 train_all = train_all[season_start >= args.min_season]
         train = train_all[train_all["tims"].isin([1, 2, 3])] if args.train_subset == "challenge" else train_all
 
@@ -1130,15 +1119,13 @@ def main():
         "--lgbm-config",
         choices=["a", "b", "c"],
         default="a",
-        help="LightGBM config when --model lgbm: a=400/0.03/31 (default), "
-        "b=600/0.02/15/reg5, c=800/0.02/63.",
+        help="LightGBM config when --model lgbm: a=400/0.03/31 (default), b=600/0.02/15/reg5, c=800/0.02/63.",
     )
     parser.add_argument(
         "--lineup",
         choices=["none", "projected", "oracle"],
         default="none",
-        help="lineup block: none (default), projected method b, or oracle "
-        "(actual same-game units, upper bound only).",
+        help="lineup block: none (default), projected method b, or oracle (actual same-game units, upper bound only).",
     )
     parser.add_argument(
         "--ranker",
@@ -1158,7 +1145,7 @@ def main():
     parser.add_argument("--model-file", type=Path, help="save pooled out-of-fold rows with predictions here")
     args = parser.parse_args()
 
-    global NUMERIC_FEATURES, CATEGORICAL_FEATURES, DATASET_FEATURES
+    global NUMERIC_FEATURES, CATEGORICAL_FEATURES, DATASET_FEATURES  # noqa: PLW0603
     if args.lineup == "projected":
         NUMERIC_FEATURES = NUMERIC_FEATURES + PROJECTED_LINEUP_NUMERIC
         CATEGORICAL_FEATURES = CATEGORICAL_FEATURES + PROJECTED_LINEUP_CATEGORICAL

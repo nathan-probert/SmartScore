@@ -38,17 +38,14 @@ def load_frame(env="dev"):
     players["date"] = players["date"].astype(str)
     con = sqlite3.connect(f"file:{RAW_DB}?mode=ro", uri=True)
     clubs = pd.read_sql_query(
-        "SELECT game_date AS date, player_id, team_abbrev AS team, season "
-        "FROM player_games",
+        "SELECT game_date AS date, player_id, team_abbrev AS team, season FROM player_games",
         con,
     )
     con.close()
     clubs["date"] = clubs["date"].astype(str)
     clubs["season"] = clubs["season"].astype("Int64").astype(str)
     clubs = clubs.drop_duplicates(["date", "player_id"])
-    frame = players.merge(
-        clubs, on=["date", "player_id"], how="left", validate="many_to_one"
-    )
+    frame = players.merge(clubs, on=["date", "player_id"], how="left", validate="many_to_one")
     return frame.sort_values(["player_id", "date"]).reset_index(drop=True)
 
 
@@ -104,11 +101,7 @@ def project(frame):
             ("D", ["D1", "D2", "D3"], 2),
         ):
             candidates = [r for r in rows if pos[r] == group]
-            pairs = [
-                (scores_u[r].get(unit, 0.0), r, unit)
-                for r in candidates
-                for unit in group_units
-            ]
+            pairs = [(scores_u[r].get(unit, 0.0), r, unit) for r in candidates for unit in group_units]
             pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
             counts = {unit: 0 for unit in group_units}
             assigned = {}
@@ -120,11 +113,7 @@ def project(frame):
             for row in candidates:
                 c_u[row] = assigned.get(row, np.nan)
 
-        pairs = [
-            (scores_p[r].get(unit, 0.0), r, unit)
-            for r in rows
-            for unit in PP_UNITS
-        ]
+        pairs = [(scores_p[r].get(unit, 0.0), r, unit) for r in rows for unit in PP_UNITS]
         pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
         counts = {unit: 0 for unit in PP_UNITS}
         assigned = {}
@@ -212,7 +201,6 @@ def probabilistic_features(frame):
     units = f["lineup_unit"].to_numpy(dtype=object)
     pps = f["pp_unit"].to_numpy(dtype=object)
     date = f["date"].to_numpy(dtype=object)
-    team = f["team"].to_numpy(dtype=object)
 
     all_units = LINE_UNITS + PP_UNITS
     probs = {unit: np.full(n, np.nan) for unit in all_units}
@@ -224,30 +212,14 @@ def probabilistic_features(frame):
             recent_p = player_p[max(0, i - 10) : i]
             weights = [DECAY ** (len(recent_u) - 1 - j) for j in range(len(recent_u))]
             for unit in LINE_UNITS:
-                total = sum(
-                    w
-                    for w, value in zip(weights, recent_u)
-                    if pd.notna(value)
-                )
+                total = sum(w for w, value in zip(weights, recent_u) if pd.notna(value))
                 if total:
-                    probs[unit][row] = sum(
-                        w
-                        for w, value in zip(weights, recent_u)
-                        if value == unit
-                    ) / total
+                    probs[unit][row] = sum(w for w, value in zip(weights, recent_u) if value == unit) / total
             weights = [DECAY ** (len(recent_p) - 1 - j) for j in range(len(recent_p))]
             for unit in PP_UNITS:
-                total = sum(
-                    w
-                    for w, value in zip(weights, recent_p)
-                    if pd.notna(value)
-                )
+                total = sum(w for w, value in zip(weights, recent_p) if pd.notna(value))
                 if total:
-                    probs[unit][row] = sum(
-                        w
-                        for w, value in zip(weights, recent_p)
-                        if value == unit
-                    ) / total
+                    probs[unit][row] = sum(w for w, value in zip(weights, recent_p) if value == unit) / total
 
     line_gpg = np.full(n, np.nan)
     line_ppg = np.full(n, np.nan)
@@ -323,10 +295,7 @@ def trio_project(frame):
     f = frame.sort_values(["player_id", "date"]).reset_index(drop=True)
     n = len(f)
     unit = f["lineup_unit"].to_numpy(dtype=object)
-    pp = f["pp_unit"].to_numpy(dtype=object)
     pos = f["lineup_position_group"].to_numpy(dtype=object)
-    date = f["date"].to_numpy(dtype=object)
-    team = f["team"].to_numpy(dtype=object)
     pid = f["player_id"].to_numpy()
 
     team_dates = {}
@@ -334,8 +303,8 @@ def trio_project(frame):
     for (club, day), positions in f.groupby(["team", "date"], sort=False).indices.items():
         team_dates.setdefault(club, []).append(day)
         team_date_rows[(club, day)] = list(positions)
-    for club in team_dates:
-        team_dates[club] = sorted(team_dates[club])
+    for club, days in team_dates.items():
+        team_dates[club] = sorted(days)
     projected = np.full(n, np.nan, dtype=object)
     for (day, club), positions in f.groupby(["date", "team"], sort=False).indices.items():
         rows = list(positions)
@@ -362,9 +331,7 @@ def trio_project(frame):
         current = set(pid[rows])
         assigned = {}
         counts = {}
-        for key, entry in sorted(
-            trios.items(), key=lambda item: item[1]["weight"], reverse=True
-        ):
+        for key, entry in sorted(trios.items(), key=lambda item: item[1]["weight"], reverse=True):
             if not set(key) <= current:
                 continue
             label = max(entry["units"], key=entry["units"].get)
@@ -386,10 +353,7 @@ def accuracy_table(table):
         line_col = f"proj_lineup_unit_{method}"
         pp_col = f"proj_pp_unit_{method}"
         for group, label in (("F", "Forwards"), ("D", "Defence")):
-            data = table[
-                table["lineup_unit"].notna()
-                & (table["lineup_position_group"] == group)
-            ]
+            data = table[table["lineup_unit"].notna() & (table["lineup_position_group"] == group)]
             rows.append(
                 {
                     "method": method,
@@ -417,10 +381,7 @@ def season_table(table):
             line_col = f"proj_lineup_unit_{method}"
             pp_col = f"proj_pp_unit_{method}"
             for group, label in (("F", "F"), ("D", "D")):
-                sub = data[
-                    data["lineup_unit"].notna()
-                    & (data["lineup_position_group"] == group)
-                ]
+                sub = data[data["lineup_unit"].notna() & (data["lineup_position_group"] == group)]
                 rows.append(
                     {
                         "season": season,
@@ -458,11 +419,7 @@ def main():
     table.to_csv(args.out, index=False)
     elapsed = time.time() - start
 
-    nan_counts = {
-        column: int(table[column].isna().sum())
-        for column in table.columns
-        if column.startswith("proj_")
-    }
+    nan_counts = {column: int(table[column].isna().sum()) for column in table.columns if column.startswith("proj_")}
     print(f"rows: {len(table):,}")
     print(f"elapsed: {elapsed:.1f}s")
     print(f"output: {args.out}")
@@ -472,7 +429,9 @@ def main():
     print("\noverall accuracy (%):")
     print(accuracy_table(table).to_string(index=False, float_format=lambda v: f"{v:.2f}"))
     print("\nby season (%):")
-    print(season_table(table).pivot(index="season", columns=["group", "method"], values="match_pct").round(1).to_string())
+    print(
+        season_table(table).pivot(index="season", columns=["group", "method"], values="match_pct").round(1).to_string()
+    )
 
 
 if __name__ == "__main__":

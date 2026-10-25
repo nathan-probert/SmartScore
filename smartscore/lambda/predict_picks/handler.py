@@ -55,10 +55,22 @@ ARTIFACT_STALE_DAYS = 7
 # The 16 columns the migration must have published on the player snapshots
 # (docs/supabase_shot_columns.md): the 14 shot/TOI aggregates + 2 club abbrevs.
 REQUIRED_SNAPSHOT_COLUMNS = [
-    "sd_shots_pg", "sd_goals_pg", "sd_toi_pg", "sd_sh_pct",
-    "r5_shots_pg", "r5_goals_pg", "r10_shots_pg", "r10_goals_pg",
-    "r10_toi_pg", "ewm_goals", "ewm_shots", "career_games",
-    "career_goals_pg", "career_shots_pg", "team_abbrev", "opponent_abbrev",
+    "sd_shots_pg",
+    "sd_goals_pg",
+    "sd_toi_pg",
+    "sd_sh_pct",
+    "r5_shots_pg",
+    "r5_goals_pg",
+    "r10_shots_pg",
+    "r10_goals_pg",
+    "r10_toi_pg",
+    "ewm_goals",
+    "ewm_shots",
+    "career_games",
+    "career_goals_pg",
+    "career_shots_pg",
+    "team_abbrev",
+    "opponent_abbrev",
 ]
 
 PICK_DB_COLUMNS = ["date", "player_id", "name", "team_name", "stat", "tims", "gpg", "hgpg", "ppg"]
@@ -192,8 +204,11 @@ def staleness_note(bundle):
     except ValueError:
         return None
     if age_days > ARTIFACT_STALE_DAYS:
-        print(f"WARNING: artifact trains through {through}, which is {age_days} days stale "
-              f"(refresh with a local train_export.py --upload run)", flush=True)
+        print(
+            f"WARNING: artifact trains through {through}, which is {age_days} days stale "
+            f"(refresh with a local train_export.py --upload run)",
+            flush=True,
+        )
     return age_days
 
 
@@ -324,7 +339,7 @@ def pick_rows_to_picks_db(picks):
 
 def today_et():
     import pytz  # noqa: PLC0415  (lazy; single call per invoke)
-    
+
     return datetime.datetime.now(pytz.timezone("America/Toronto")).strftime("%Y-%m-%d")
 
 
@@ -341,8 +356,11 @@ def handler(event, context):
     key, bundle = load_artifact(boto3.client("s3"), bucket, prefix)
     meta = bundle["metadata"]
     stale = staleness_note(bundle)
-    print(f"artifact {key}: through={meta.get('train_through')} seed={meta.get('seed')} "
-          f"git={meta.get('git_hash')} age={stale}d", flush=True)
+    print(
+        f"artifact {key}: through={meta.get('train_through')} seed={meta.get('seed')} "
+        f"git={meta.get('git_hash')} age={stale}d",
+        flush=True,
+    )
 
     players, teams, goalies = load_prediction_tables(ENV, on_date)
     require_snapshot_columns(players[players["date"].astype(str) == on_date])
@@ -361,11 +379,7 @@ def handler(event, context):
     rows = pick_rows_to_picks_db(picks)
     if not dry:
         save_to_db(rows)
-    mean_max_prob = (
-        round(float(pd.to_numeric(picks["ensemble"], errors="coerce").mean()), 4)
-        if len(picks)
-        else None
-    )
+    mean_max_prob = round(float(pd.to_numeric(picks["ensemble"], errors="coerce").mean()), 4) if len(picks) else None
     print(
         json.dumps(
             {

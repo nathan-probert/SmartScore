@@ -53,8 +53,7 @@ def q_conn(db_path: Path, timeout: float = 60.0) -> sqlite3.Connection:
     the regular 5 s default would fail with 'database is locked' exactly on the
     mornings it is scheduled. 60 s covers it; WAL is not forced from here (the
     store's locking mode is the writer's business)."""
-    return sqlite3.connect(f"file:{db_path}?mode=ro&immutable=false", uri=True,
-                           timeout=timeout)
+    return sqlite3.connect(f"file:{db_path}?mode=ro&immutable=false", uri=True, timeout=timeout)
 
 
 def sqlite_sanity(season: str, db_path: Path = DB_PATH) -> int:
@@ -67,27 +66,17 @@ def sqlite_sanity(season: str, db_path: Path = DB_PATH) -> int:
     q = conn.execute
 
     latest = q("SELECT max(game_date) FROM player_games WHERE season = ?", (season,)).fetchone()[0]
-    n_days = q(
-        "SELECT count(DISTINCT game_date) FROM player_games WHERE season = ?", (season,)
-    ).fetchone()[0]
+    n_days = q("SELECT count(DISTINCT game_date) FROM player_games WHERE season = ?", (season,)).fetchone()[0]
     rows = q("SELECT count(*) FROM player_games WHERE season = ?", (season,)).fetchone()[0]
     lineups = q(
         "SELECT count(*) FROM player_lineups l WHERE l.game_id IN"
         " (SELECT DISTINCT game_id FROM player_games WHERE season = ?)",
         (season,),
     ).fetchone()[0]
-    shifts_g = q(
-        "SELECT count(DISTINCT game_id) FROM shifts WHERE season = ?", (season,)
-    ).fetchone()[0]
-    tims = q(
-        "SELECT count(*), max(game_date) FROM tims_daily WHERE season = ?", (season,)
-    ).fetchone()
-    derived = q(
-        "SELECT count(*) FROM derived_features WHERE season = ?", (season,)
-    ).fetchone()[0]
-    team = q(
-        "SELECT count(*) FROM derived_team_stats WHERE season = ?", (season,)
-    ).fetchone()[0]
+    shifts_g = q("SELECT count(DISTINCT game_id) FROM shifts WHERE season = ?", (season,)).fetchone()[0]
+    tims = q("SELECT count(*), max(game_date) FROM tims_daily WHERE season = ?", (season,)).fetchone()
+    derived = q("SELECT count(*) FROM derived_features WHERE season = ?", (season,)).fetchone()[0]
+    team = q("SELECT count(*) FROM derived_team_stats WHERE season = ?", (season,)).fetchone()[0]
 
     print(f"{season} player_games latest game date : {latest} ({n_days} dates, {rows} rows)")
     print(f"{season} player_lineups (reconstructed)  : {lineups} rows")
@@ -105,12 +94,12 @@ def sqlite_sanity(season: str, db_path: Path = DB_PATH) -> int:
         print(f"    {dt}: {n} rows")
 
     if latest:
-        gap = (
-            datetime.date.today() - datetime.date.fromisoformat(latest)
-        ).days
+        gap = (datetime.date.today() - datetime.date.fromisoformat(latest)).days
         if gap >= 2:
-            print(f"WARN: latest local game date is {gap} days old - rerun"
-                  " run_background.py --cmd build before publishing")
+            print(
+                f"WARN: latest local game date is {gap} days old - rerun"
+                " run_background.py --cmd build before publishing"
+            )
     print()
 
     conn.close()
@@ -136,8 +125,7 @@ def supabase_sanity(env: str, date_str: str, do_train: bool = True) -> None:
         headers = {"apikey": key, "Authorization": f"Bearer {key}"}
         if count_exact:
             headers["Prefer"] = "count=exact"
-        resp = requests.get(f"{url}/rest/v1/{path}", headers=headers, params=params,
-                            timeout=30)
+        resp = requests.get(f"{url}/rest/v1/{path}", headers=headers, params=params, timeout=30)
         if resp.status_code >= 400:
             print(f"FAIL: GET {path} -> {resp.status_code}")
             return []
@@ -151,10 +139,14 @@ def supabase_sanity(env: str, date_str: str, do_train: bool = True) -> None:
     print(f"== Supabase --env {env} ==")
 
     # projected snapshots for the requested date
-    rows = rest(table_projected, {
-        "select": "date,lineup_status,lineup_position_group,lineup_unit,pp_unit",
-        "date": f"eq.{date_str}", "limit": "20000",
-    })
+    rows = rest(
+        table_projected,
+        {
+            "select": "date,lineup_status,lineup_position_group,lineup_unit,pp_unit",
+            "date": f"eq.{date_str}",
+            "limit": "20000",
+        },
+    )
     by_status: dict = {}
     d_units = 0
     pp1 = 0
@@ -172,8 +164,7 @@ def supabase_sanity(env: str, date_str: str, do_train: bool = True) -> None:
     print(f"    rows with D units (D1-D3 or group=D): {d_units}")
     print(f"    rows with PP1: {pp1}")
     if not rows:
-        print(f"WARN: zero projected rows on {date_str} - did"
-              " snapshot_projected.py run at 10:30 ET?")
+        print(f"WARN: zero projected rows on {date_str} - did snapshot_projected.py run at 10:30 ET?")
     elif "PROJECTED" not in by_status and "PROJECTED_PROXY" not in by_status:
         print("WARN: nothing official/proxy collected yet for the date")
 
@@ -183,32 +174,46 @@ def supabase_sanity(env: str, date_str: str, do_train: bool = True) -> None:
     # published training-table freshness (max date via order+limit). The
     # backtrack tables' column is `date` (game/snapshot date), not game_date.
     table_train = f"Player-Snapshots-backtrack-{env}"
-    latest_rows = rest(table_train, {
-        "select": "date", "order": "date.desc",
-        "limit": "1",
-    })
+    latest_rows = rest(
+        table_train,
+        {
+            "select": "date",
+            "order": "date.desc",
+            "limit": "1",
+        },
+    )
     if not latest_rows:
-        print(f"{table_train}: no rows (empty table: publish has never run"
-              " for this env)")
+        print(f"{table_train}: no rows (empty table: publish has never run for this env)")
         return
     latest = latest_rows[0]["date"]
-    _, total = rest(table_train, {
-        "select": "date", "order": "date.desc", "limit": "1",
-        "date": f"eq.{latest}",
-    }, count_exact=True)
+    _, total = rest(
+        table_train,
+        {
+            "select": "date",
+            "order": "date.desc",
+            "limit": "1",
+            "date": f"eq.{latest}",
+        },
+        count_exact=True,
+    )
     print(f"{table_train} latest date: {latest} ({total} rows on that date)")
     if latest and latest != date_str:
-        print("note: published table lags the local store - publish is a"
-              " separate step; run make backtrack-publish after the build")
+        print(
+            "note: published table lags the local store - publish is a"
+            " separate step; run make backtrack-publish after the build"
+        )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--env", choices=("dev", "prod", "both"), default="both")
-    parser.add_argument("--date", default=None,
-                        help="projected-snapshot date to check (default: today ET)."
-                        " Backtrack training tables are checked at their max date,"
-                        " not this one - they can legitimately lag.")
+    parser.add_argument(
+        "--date",
+        default=None,
+        help="projected-snapshot date to check (default: today ET)."
+        " Backtrack training tables are checked at their max date,"
+        " not this one - they can legitimately lag.",
+    )
     parser.add_argument("--season", default="20262027")
     args = parser.parse_args()
 
@@ -219,7 +224,7 @@ def main() -> int:
     rc1 = sqlite_sanity(args.season)
     rc = rc1 if rc1 else rc
 
-    for env in (["dev", "prod"] if args.env == "both" else [args.env]):
+    for env in ["dev", "prod"] if args.env == "both" else [args.env]:
         supabase_sanity(env, date_str)
 
     return rc
