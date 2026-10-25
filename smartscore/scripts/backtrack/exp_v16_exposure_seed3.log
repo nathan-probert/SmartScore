@@ -1,0 +1,74 @@
+V16-exposure seed=3 arms=['base', 'exposure'] (model=ensemble run, embeds hgb/logreg/lgbm)
+command: exp_exposure.py --env dev --seed 3 (OMP_NUM_THREADS=2 LGBM_N_JOBS=2, lightgbm==4.7.0)
+frame rows 617,310 (42-feature corrected baseline incl. add_derived)
+
+===== arm base seed 3 =====
+arm base run_folds wall 525s; mean AUC 0.6103
+--- base seed 3 per-fold accuracy (%):
+method  ensemble    gpg    hgb   hgpg   lgbm   live  logreg  random
+fold                                                               
+1          29.23  28.59  27.96  27.96  30.65  28.82   29.38   19.91
+2          29.70  26.86  29.23  27.80  27.96  25.36   27.65   17.06
+3          30.17  22.91  28.75  26.22  29.70  26.63   26.70   18.17
+4          29.84  26.03  27.30  28.89  29.21  29.35   29.84   16.67
+5          29.05  28.10  28.25  29.37  29.52  28.57   29.37   16.03
+--- base seed 3 pooled summary:
+          acc_mean  fold_std     acc  hits  total      g1      g2      g3  acc_2023p  acc_2025p  acc_2023p_n  acc_2025p_n
+method                                                                                                                   
+gpg         26.497     2.246  26.496   837   3159  37.797  23.742  17.949     27.086     28.278         2001          633
+hgpg        28.049     1.208  28.047   886   3159  38.367  26.021  19.753     28.136     30.332         2001          633
+live        27.748     1.682  27.753   867   3124  37.812  25.360  20.077     27.797     29.280         1975          625
+hgb         28.299     0.737  28.300   894   3159  38.462  26.496  19.943     28.036     30.490         2001          633
+logreg      28.587     1.348  28.585   903   3159  38.936  26.591  20.228     28.636     30.016         2001          633
+lgbm        29.408     0.970  29.408   929   3159  38.746  28.395  21.083     29.585     30.332         2001          633
+ensemble    29.598     0.459  29.598   935   3159  39.031  28.015  21.747     29.935     30.806         2001          633
+random      17.567     1.521  17.569   555   3159  27.255  16.239   9.212     16.842     18.009         2001          633
+saved OOF rows -> oof_v16_base_seed3.csv
+  shot_xg rows 1,025,191; sum xG 71,948.1; goal rate 0.0699
+  spot-check 8482062 2024-04-06: xg_before 13.079223 toi_before 1027.200 xg60 model=0.7639732836371312 manual=np.float64(0.7639732836371312) -> OK
+  spot-check 8477497 2024-02-10: xg_before 15.548547 toi_before 936.767 xg60 model=0.995886012091907 manual=np.float64(0.995886012091907) -> OK
+  spot-check 8479398 2024-11-23: xg_before 1.104160 toi_before 420.583 xg60 model=0.15751839291835093 manual=np.float64(0.15751839291835099) -> OK
+  challenge exposure coverage 0.9892; describe: {'count': 91441.0, 'mean': 11.811, 'std': 7.431, 'min': 0.0, '25%': 5.931, '50%': 10.525, '75%': 16.54, 'max': 85.453}
+  exposure feature built in 10s
+
+===== arm exposure seed 3 =====
+arm exposure run_folds wall 492s; mean AUC 0.6111
+--- exposure seed 3 per-fold accuracy (%):
+method  ensemble    gpg    hgb   hgpg   lgbm   live  logreg  random
+fold                                                               
+1          30.02  28.59  27.80  27.96  29.23  28.82   28.91   19.91
+2          27.80  26.86  27.96  27.80  28.28  25.36   27.80   17.06
+3          29.38  22.91  29.07  26.22  29.38  26.63   26.54   18.17
+4          29.84  26.03  28.73  28.89  29.68  29.35   28.73   16.67
+5          30.63  28.10  31.11  29.37  29.68  28.57   28.57   16.03
+--- exposure seed 3 pooled summary:
+          acc_mean  fold_std     acc  hits  total      g1      g2      g3  acc_2023p  acc_2025p  acc_2023p_n  acc_2025p_n
+method                                                                                                                   
+gpg         26.497     2.246  26.496   837   3159  37.797  23.742  17.949     27.086     28.278         2001          633
+hgpg        28.049     1.208  28.047   886   3159  38.367  26.021  19.753     28.136     30.332         2001          633
+live        27.748     1.682  27.753   867   3124  37.812  25.360  20.077     27.797     29.280         1975          625
+hgb         28.935     1.325  28.933   914   3159  39.506  27.255  20.038     29.135     29.700         2001          633
+logreg      28.111     0.974  28.110   888   3159  38.557  25.831  19.943     27.786     30.174         2001          633
+lgbm        29.251     0.578  29.250   924   3159  38.557  28.965  20.228     29.085     31.438         2001          633
+ensemble    29.536     1.067  29.535   933   3159  39.411  27.635  21.557     29.335     31.438         2001          633
+random      17.567     1.521  17.569   555   3159  27.255  16.239   9.212     16.842     18.009         2001          633
+saved OOF rows -> oof_v16_exposure_seed3.csv
+
+=== McNemar exact (pooled paired picks, all folds) ===
+  arm base: gpg vs hgpg: 326-375, p=0.0698
+  arm base: hgpg vs hgpg: 0-0, p=1.0000
+  arm base: hgb vs hgpg: 336-328, p=0.7859
+  arm base: logreg vs hgpg: 276-259, p=0.4891
+  arm base: lgbm vs hgpg: 338-295, p=0.0950
+  arm base: ensemble vs hgpg: 316-267, p=0.0467
+  arm exposure: gpg vs hgpg: 326-375, p=0.0698
+  arm exposure: hgpg vs hgpg: 0-0, p=1.0000
+  arm exposure: hgb vs hgpg: 365-337, p=0.3082
+  arm exposure: logreg vs hgpg: 278-276, p=0.9661
+  arm exposure: lgbm vs hgpg: 334-296, p=0.1404
+  arm exposure: ensemble vs hgpg: 329-282, p=0.0627
+  exposure hgb vs base hgb: 174-154, p=0.2941
+  exposure logreg vs base logreg: 85-100, p=0.3033
+  exposure lgbm vs base lgbm: 131-136, p=0.8067
+  exposure ensemble vs base ensemble: 130-132, p=0.9508
+wrote /home/nathan/code/SmartScore-backtrack/smartscore/scripts/backtrack/exp_v16_exposure_results_seed3.csv
