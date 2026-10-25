@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import local_store
+import publish_shot_cols
 import pytest
 
 
@@ -437,6 +438,16 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
         ]
     )
     monkeypatch.setattr(local_store, "config", lambda: ("prod", client))
+
+    # The session-wide supabase mock (tests/unit/conftest.py) makes the
+    # shot-columns migration probe read as "landed", which would send
+    # attach_shot_columns into shot_features() against the canonical
+    # data/raw_nhl.sqlite - an untracked 2.5 GB store this test does not build
+    # and must not require (it makes its own tmp_path store). Seed the probe
+    # cache the way a not-yet-migrated table looks, so attach takes its
+    # documented probe-gated no-op path; the 16 shot/TOI columns have their
+    # own coverage in test_shot_columns.py.
+    publish_shot_cols._PROBE["Player-Snapshots-backtrack-prod"] = False
 
     written = local_store.publish("20232024", db_path=tmp_path / "raw.sqlite")
 
