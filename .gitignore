@@ -49,3 +49,13 @@ data/cache/
 
 # Model training caches, re-fetched from Supabase (see model.py).
 data/ml/
+
+# V16 experiment run residue (deleted in chore/clean-tree; the record lives
+# in MODEL_NOTES.md + git history). Never re-track the pick dumps or per-fold
+# scraps if they are regenerated.
+smartscore/scripts/backtrack/exp_v16_pick*.pkl
+smartscore/scripts/backtrack/exp_v16_perfold*.csv
+
+# Mis-named MoneyPuck-derived own-xG cache: no code reads it (V7-shots and
+# V8-own-xG were both rejected) and it is raw re-fetchable data.
+data/moneypuck/
