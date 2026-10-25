@@ -10,8 +10,10 @@
 **V16 (2026-10-22) — no V16 change adopted.** Six follow-up experiments
 (exposure product, group-3 weights/dedicated model, PBP pass-context xG,
 calibration swap, interactions, ALS latent factors) all failed the
-+0.5pp-on-both-seeds adoption gate; exact rows are in the rejected table
-below and `notes_v16_{exposure,group3,pbp,embed,calib,interact,audit}.md`.
++0.5pp-on-both-seeds adoption gate; exact rows are in the rejected master
+table below. (The per-experiment `notes_v16_*.md` notebooks were deleted in
+`chore/clean-tree`; full runs are preserved in git history at the
+pre-cleanup commit `c82b2e7`.)
 The **29.71%** mean pooled all-era result stands (seeds 0/1/3 = 29.92 / 29.41
 / 29.82 on the 96f0ff2 cache); regenerating the ensemble on the current data
 cache (617,310 rows incl. the V15 2013-17 rows) gives **29.28% / 29.60%** for
@@ -39,36 +41,58 @@ rows across 17 dates, with null `lineup_unit`/`pp_unit`). Real-projection
 accuracy and the live simulation cannot be measured — collect PROJECTED rows
 with units forward.
 
-**Post-correction experiments — all rejected:**
+**Tried and rejected — master table (V3..V16; seeds 1/3 unless stated,
+pooled OOF hits/total on the 3,159 challenge picks; every McNemar is the
+exact two-sided binomial on pooled paired picks). All experiment code was
+deleted in `chore/clean-tree`; the blobs live in git history at the
+pre-cleanup commit `c82b2e7`:**
 
-| experiment | result | verdict |
-|---|---|---|
-| V7-objective (Poisson LGBM / conditional softmax) | Poisson +0.25 / +0.09pp; softmax below binary | rejected (tie) |
-| V7-context (team form / special teams / goalie rest) | +0.06 / -0.25pp | rejected |
-| V7-shots (raw distance/angle/HD/slot/rebound/PP features) | -0.13 / +0.57pp, McNemar p>=0.37 | rejected (mixed) |
-| V8-own-xG (first-party per-shot xG model) | -0.16 / -0.35pp, p=0.82/0.57 | rejected |
-| V8-shrinkage (empirical-Bayes rate features) | -0.67 / -0.54pp | rejected |
-| V8-tune (LGBM configs b/d) | +0.19 / -0.03 and -0.06 / +0.19pp vs a | rejected (mixed) |
-| V9-projected-lineups (prior-games projector) | hard b +0.98 / -0.25pp; probabilistic -0.41 / 0.00pp; projected ensemble +0.48 / -0.22pp; oracle LGBM 4-seed 30.33%; oracle ensemble -0.16 / +0.38 | rejected (mixed) |
-| V12-identity (player/team/age) | -1.49 / -0.29pp | rejected |
-| V12-era recent training (2021-22+) | LGBM -1.07 / -0.95pp, ensemble -0.15 / +0.08 vs full-era | rejected |
-| V12-qoc (shift-chart QoC/QoT) | +0.51 / +0.03pp | rejected (mixed) |
-| V12-interactions (tims x rates) | +0.10 / 0.00pp; g3 -0.57pp | rejected |
-| V15 pre-2017 data (2013-17) | LGBM +0.10 / +0.41pp; ensemble -0.38 / -0.22pp | rejected |
-| V16-exposure (prior xG/60 x projected-TOI product) | base ens 926→921 seed 1, 935→933 seed 3; LGBM 931→922, 929→924; McNemar p 0.8023/0.9508 and 0.6108/0.8067 vs paired base; product correlates r=0.94 with xg60_prior and 0.85 with hgpg | rejected |
-| V16-group3 (g3 weights w2/w4 + dedicated g3 model) | everything below the paired base on both seeds (w2 -0.38/-0.44pp, w4 -0.29/-0.66pp, g3blend -0.38/-0.19pp, g3pure -0.89/-0.48pp); dedicated g3 AUC lower than the shared model on all 5 folds | rejected |
-| V16-pbp (pass-context per-shot xG) | per-shot AUC +0.0007/+0.0009 over geometry-only 0.765; decisive matched-data pair LGBM -0.158/-0.127pp (6,993 games / 608,813 shots) | rejected |
-| V16-calib (confident-miss competitor swap) | seed 1 +0.35pp, seed 3 -0.16pp; McNemar vs ensemble p=0.51/0.78 | rejected |
-| V16-interact (home x form / rest x role / opponent-relative) | ensemble +0.506/+0.253pp vs paired arm, LGBM -0.728/+0.095pp; ens McNemar p=0.3447/0.6593 | rejected |
-| V16-embed (ALS latent factors) | seed 1 -0.03pp / seed 3 +0.57pp | **INVALID (leakage)** — see below |
+| experiment | pooled hits / total + result | exact McNemar (pooled) | verdict |
+|---|---|---|---|
+| V3a lambdarank within-day ranking objective | ranker **832/3159 = 26.34%** (HGB 916, logreg 917, hgpg 886, gpg 837) | ranker vs gpg 394-399 p=0.89; vs hgpg 332-386 p=0.048 (**worse**); HGB vs gpg 442-363 p=0.0059 | rejected (fell to the GPG level) |
+| V3b calendar/schedule/rel-goalie features | HGB 907/3159 = 28.71%; ensemble 921 = 29.16% | V3b HGB vs V2 HGB 202-211 p=0.69; ens vs hgpg 280-245 p=0.14 | reverted (no gain) |
+| V3c post-hoc blends on saved OOF | 9 variants; best z-score hgb+logreg+live 935/3159 = 29.598% (+0.317pp) | vs hgpg 211-162 p=0.013, but vs ensemble 164-154 p=0.614 | no variant qualified (needed +0.5pp & p<0.10 vs ens) |
+| V3d model-family diversity | lgbm single 959/3159 = 30.358% (+1.08pp); all-four bag 946 = 29.946% | lgbm vs hgpg 354-281 p=0.0042 but vs ensemble 237-203 p=0.116 | defaults unchanged (missed p<0.10 bar vs ens) |
+| V3e LGBM seed robustness | seeds 1/2/3 = 957/950/934, mean 29.978% (seed std 0.373) | pooled vs hgpg 1025-842 p=2.5e-05; loses the seasons split (394 < 396 hgpg) | default stays hgb |
+| V3f LGBM + baseline blends | best rank 0.75 lgbm + 0.25 hgpg mean 29.841 ± 0.120 | vs lgbm pooled p>=0.12 for all hgpg blends (173-186 p=0.527) | no blend qualified |
+| V3g seed bagging / LGBM config sweep | bag 945/3159 = 29.915% (< lgbm-alone 29.978%); config b timings out at 200s, c seed 1 939 = 29.725% | bag vs hgpg 328-269 p=0.0175 | no bag / no config qualified |
+| V4 raw shot/TOI block — **promoted** | HGB seed 0 961/3159 = 30.421%, seed 42 950 = 30.073% | HGB vs hgpg 406-342 p=0.0212; vs gpg 468-355 p=9.2e-05 | promoted into `NUMERIC_FEATURES` (clean cross-family re-check LGBM +0.063/-0.253pp, p=0.962/0.733; the k-fold edge did NOT transfer to the seasons split) |
+| V5 pick voting / recency weighting | A1 vote 929/3159 = 29.408%; A2 seed vote 938; recency mixed (linear -0.475/+0.886pp, half worse both) | vote vs hgpg 249-206 p=0.049 but vs lgbm 148-178 p=0.108 | rejected (nothing beat LGBM alone) |
+| V6 lagged lineup/PP replacements | mean **+0.095pp** (29.376→29.408 / 28.870→29.313 / 28.997→28.807) | pooled 454-445 p=0.790 | reverted (< +0.5pp; the mandatory same-game leak correction is retained) |
+| V7-objective Poisson LGBM + conditional softmax | Poisson pooled 1,855/6,318 = 29.361% (+0.174pp) +0.25/+0.09pp per seed; csoftmax 1,782 = 28.205% (−0.981pp, AUC 0.569) | Poisson vs binary 284-273 p=0.672 | rejected (both arms below the gate) |
+| V7-context team form / special teams / goalie rest | 930/3159 = 29.440% (+0.063pp) / 908 = 28.743% (−0.253pp); mean −0.095pp | vs base p=0.954/0.680 | rejected |
+| V7-shots raw distance/angle/HD/slot/rebound/PP | 924/3159 = 29.250% (−0.127pp) / 934 = 29.566% (+0.570pp), McNemar p>=0.37 | vs base p=0.874/0.369 | rejected (mixed) |
+| V8-own-xG first-party per-shot xG model | 923/3159 = 29.218% (−0.158pp) / 905 = 28.648% (−0.349pp); per-shot AUC 0.769 | vs base p=0.82/0.57 | rejected |
+| V8-shrinkage empirical-Bayes rate features | 907/3159 = 28.712% (−0.665pp) / 899 = 28.458% (−0.538pp) | vs base p=0.229/0.326 | rejected |
+| V8-tune LGBM configs b/d | b +0.19 / −0.03pp; d −0.06 / +0.19pp vs a | vs a p=0.755/1.0 (b), 0.945/0.728 (d) | rejected (mixed) |
+| V9-projected-lineups (prior-games projector, stages 1-5) | hard b +0.98 / −0.25pp (seed 1 p=0.081 / seed 3 p=0.695); probabilistic −0.41 / 0.00pp; projected ensemble +0.48 / −0.22pp (end-to-end seed 1 944/3159 = 29.883%, p=0.432 vs no-lineup); oracle LGBM 4-seed 30.334% ± 0.263 | projected ens vs hgpg p=0.025/0.049; vs no-lineup p=0.465/0.783 | rejected (mixed); oracle ensemble −0.16 / +0.38; `--lineup projected` stays opt-in, default no-lineup |
+| V12-identity (player/team/age) | 881/3159 = 27.889% (−1.487pp) / 907 = 28.712% (−0.285pp) | p=0.058/0.734 | rejected |
+| V12-era recent training (2021-22+) | LGBM −1.07 / −0.95pp; ensemble −0.15 / +0.08pp vs full-era | — | rejected |
+| V12-qoc (shift-chart QoC/QoT) | 944/3159 = 29.883% (+0.507pp) / 917 = 29.028% (+0.032pp) | vs base p=0.413/1.0 | rejected (mixed) |
+| V12-interactions (tims x rates) | 931/3159 = 29.471% (+0.095pp) / 0.000pp; g3 −0.57pp | vs base p=0.904/1.0 | rejected |
+| V15 pre-2017 data (2013-17) | LGBM +0.10 / +0.41pp (931/3159 = 29.471% / 929 = 29.408%); ensemble 933 = 29.535% (−0.380pp) / 935 = 29.598% (−0.222pp) | LGBM p=0.91/0.52 | rejected (not adopted) |
+| V16-exposure (prior xG/60 x projected-TOI product) | base ens 926→921 seed 1, 935→933 seed 3; LGBM 931→922, 929→924 | p=0.8023/0.9508 and 0.6108/0.8067 vs paired base; product correlates r=0.94 with xg60_prior and 0.85 with hgpg | rejected |
+| V16-group3 (g3 weights w2/w4 + dedicated g3 model) | everything below the paired base on both seeds (g3 20.7/20.2 vs base 21.7 seed 1; 20.9/20.6 vs 21.1 seed 3) | vs base p≥0.27 all arms (g3pure 67-95 p=0.0336 *worse* seed 1) | rejected |
+| V16-pbp (pass-context per-shot xG) | per-shot AUC +0.0007/+0.0009 over geometry-only 0.765; decisive matched-data pair LGBM −0.158/−0.127pp (6,993 games / 608,813 shots) | a-b p=0.8189/0.8567 | rejected |
+| V16-calib (confident-miss competitor swap) | seed 1 936/3159 = 29.630% (+0.35pp), seed 3 −0.16pp; McNemar vs ensemble p=0.51/0.78 | | rejected |
+| V16-interact (home x form / rest x role / opponent-relative) | ensemble +0.506/+0.253pp vs paired arm, LGBM −0.728/+0.095pp; ens McNemar p=0.3447/0.6593 | | rejected |
+| V16-embed (ALS latent factors) | seed 1 −0.03pp / seed 3 +0.57pp | | **INVALID (leakage)** — see below |
 
 **INVALID — excluded (leakage):** the ALS latent-factor experiment
 (`493ba96`) built player x season aggregate cells over **ALL training dates**
 while the folds are shuffled date blocks, so a held-out game's factor includes
 the player's **LATER same-season games** — **97.85%** of challenge rows are
-affected; the seed-3 +0.57pp is lookahead, not signal (see
-`notes_v16_audit.md`). The latent-factor idea remains **UNTESTED**; if retried
-it must use only strictly prior games per row (expanding window).
+affected (90,450 / 92,440 rows; per fold 97.57-98.08%); the seed-3 +0.57pp is
+lookahead, not signal (independent OOF re-score audit, 2026-10-22; runs at
+pre-cleanup commit `c82b2e7` in history). The latent-factor idea remains
+**UNTESTED**; if retried it must use only strictly prior games per row
+(expanding window).
+
+The **V6-era shift-unit leak** is the same class of failure: the
+pre-correction headlines (V2-V5, incl. LGBM 30.36% / HGB 30.07-30.42%) used
+`lineup_unit`/`pp_unit` from the same game's shift chart, so they are invalid
+as deployment estimates; corrected LGBM is **29.06%** (918/3159).
+
 
 **Post-roadmap findings:** identity features were negative; recent-era
 training did not beat full-era on identical dates, but per-season accuracy
@@ -89,19 +113,23 @@ the pooled all-era expectation** (and **~30-32% on recent-era dates**),
 contingent on real projection fidelity; V11 puts realistic 80-90% fidelity at
 **~29.3-29.9%**. ≥30% was reachable only with same-game lookahead leakage.
 
-**Data priorities:** (1) persist real **PROJECTED** lineups with units;
-(2) start logging market anytime-goal-scorer odds now. Both are needed before
-a real deployment-accuracy claim is possible.
+**Data priorities (owner rule, 2026-10-24):** (1) persist real **PROJECTED**
+lineups with units going forward — `snapshot_projected.py` + the nightly
+unit-match of build projections vs backtracking actuals (`fidelity_tracker.py`,
+PR #137 tracker) make projection fidelity measurable, and the adoption gate
+is fidelity >= 90% AND paired beats of the no-lineup ensemble on both seeds.
+(2) **No market odds** — per owner rule the market-anytime-goal-scorer-odds
+collection idea is dropped (historical odds are not free before 2023-05
+anyway; the feasibility scan is recorded in the V7 section).
 
-**Legitimate deployment levers, unverifiable historically:** (1) projected
+**Legitimate deployment lever, unverifiable historically:** projected
 lineups and confirmed starting goalies are available pre-game in the live
 pipeline — the crude projector gave an ensemble 29.88/29.60 (seeds 1/3) and the
 oracle-lineup LGBM 4-seed mean is 30.33 ±0.26. V11 puts 80-90% line fidelity at
 roughly **29.25-29.54%**; reaching 29.7-30.3 needs a near-oracle feed (~100%).
-Test a real feed before switching the default. (2) forward-collect market
-anytime-goal-scorer odds (no free historical source exists before 2023-05).
+Test a real feed before switching the default.
 
-**Reproduce:**
+**Reproduce (default model — the canonical live ensemble):**
 ```bash
 cd SmartScore-backtrack
 for s in 0 1 3; do
@@ -110,22 +138,26 @@ for s in 0 1 3; do
     --seed "$s" --split kfold --splits 5 --train-subset all
 done
 ```
+(V4 shot/TOI features are retained in `NUMERIC_FEATURES`; the injury filter
+was never worth testing - fields 100% null.)
 
-**Audit:** `docs/backtrack_model_audit.md` (+ `docs/backtrack_audit.py`,
-`docs/backtrack_ablation.py`). Rejected/negative: V3a lambdarank, V3b
-calendar/schedule, V3c blends, V3e LGBM as default, V3f LGBM+baseline blends,
-V3g configs b/c, V3h opponent history, V5 voting/recency, V6 lagged lineup
-replacements, V7-objective, V7-context, V7-shots, V7 MoneyPuck xG,
-V8-own-xG, V8-shrinkage, V8-tune configs b/d, V9-projected-lineups,
-V12-identity, V12-era recent training, V12-qoc, V12-interactions,
-V16-exposure, V16-group3, V16-pbp, V16-calib, V16-interact (all rejected),
-injury filter (fields empty).
-INVALID / excluded (leakage): V16-embed (ALS latent factors, `493ba96`).
-V4 shot/TOI features are retained.
+The V6-era leakage audit scripts and their write-up
+(`docs/backtrack_audit.py`, `docs/backtrack_ablation.py`,
+`docs/backtrack_model_audit.md`) were deleted in `chore/clean-tree`;
+see commit `c82b2e7` in history.
 
 Working log for the goal-probability model built on the backtracked archive.
 Purpose: record what was tried, what worked, what broke, and the data gotchas,
 so nothing gets re-derived twice. Update it every session.
+
+**Repository state (2026-10-24, `chore/clean-tree`):** this is now the single
+results/history document. All experiment scripts, per-experiment notes,
+audit scripts, and experiment CSV caches were **deleted** (not archived) —
+every exact blob is preserved in git history at the pre-cleanup commit
+**`c82b2e7`** (`git show c82b2e7:<path>`). What remains: the 11 canonical
+model/pipeline scripts plus `snapshot_projected.py` / `fidelity_tracker.py`,
+the operational runbooks, this file, and `docs/supabase_shot_columns.md` on
+its own branch (see the deployment paragraph).
 
 ## Source of truth facts (do not re-discover)
 
@@ -176,6 +208,20 @@ so nothing gets re-derived twice. Update it every session.
 8. The scorer pipeline in the repo (`calculate_accuracy.py`) reads the LIVE
    archive `Player-Snapshots-prod` (143,263 rows), evaluates dates >=
    2025-01-25 only, and summarises per-dates per-group accuracy.
+9. **PBP fetch retry envelope (V16, 2026-10-23).** The gamecenter
+   play-by-play fetcher pulled 6,993/6,993 games with 0 fetch/parse
+   failures, but the endpoint's HTTP 429s are NOT retried by the
+   `nhl_client._get_json` retry envelope (4 attempts, 30s timeout, 1/2/4s
+   backoff) by design; three fan-out processes trip them, so the fetcher
+   runs a >50%-failure-rate breaker that stops the pass. One serialized
+   process at a 0.75s delay sustains ~1.3 games/s with zero failures;
+   exhausted game_ids landed in `data/ml/pbp_failed.csv` for re-running.
+10. **PostgREST 57014 statement timeout on big table reads.** `--refresh`
+    on 617,310 rows died with `57014 canceling statement due to statement
+    timeout` after 254s (ordered offset pagination); `fetch_table` now
+    fetches monthly date windows (`_month_windows` + `_fetch_window`,
+    153 windows for 2013-10-01..2026-06-14). Fix pagination, don't raise
+    the statement timeout.
 
 ## Evaluation protocol (agreed)
 
@@ -1020,8 +1066,8 @@ flags are near the bottom and the pick metric did not follow.
 seed 3 is positive (+0.57pp, p=0.37 vs baseline); this is mixed, not the
 +0.5pp-on-both-seeds bar, so the feature block and `--shot-features` flag were
 removed and `model.py` is back to the corrected baseline. The per-player
-table and raw caches stay on disk under `data/moneypuck/shots/` for a follow-up
-(shot distance/angle look more promising than the counting features).
+table and raw caches were deleted from disk in `chore/clean-tree`
+(owner-approved: data only; blobs in git history at `c82b2e7`).
 
 ### V8-own-xG — our own per-shot expected-goals model (reverted)
 
@@ -1108,9 +1154,9 @@ the player-game grain.
 **Verdict: reverted.** Both seeds are negative (-0.16pp, -0.35pp) and both
 McNemar tests are non-significant (p=0.82/0.57 vs the same-seed baseline).
 The `own_xg.py` builder and `--own-xg-features` flag were removed; the
-per-shot xG files and player-game feature tables stay on disk under
-`data/moneypuck/shots/` for a follow-up (e.g. shrink the block to xG-per-attempt
-or use a player-season re-fit rather than game rolling).
+per-shot xG files and player-game feature tables under `data/moneypuck/shots/`
+were deleted in `chore/clean-tree` (owner-approved data deletion; blobs in
+git history / regenerable per the V8-own-xG recipe).
 
 ### V8-shrinkage — empirical-Bayes rate features (reverted)
 
@@ -1161,7 +1207,8 @@ Verdict: neither config beats a on **both** seeds by +0.5pp; each is mixed
 
 ### V9-projected-lineups — prior-games lineup projector (reverted)
 
-Stage-1 module: `smartscore/scripts/backtrack/lineup_project.py` writes
+Stage-1 module: `smartscore/scripts/backtrack/lineup_project.py` (deleted in
+`chore/clean-tree`; blob at `c82b2e7`) writes
 `data/ml/projected_lineups.csv` (427,240 rows) in 15.9s, with no `model.py`
 change. It emits methods a/b/c plus per-method confidence columns.
 
@@ -1262,7 +1309,7 @@ Probabilistic feature importances (fold-1 LGBM gain rank/55; permutation AUC):
 
 Verdict: **reverted**. Probabilistic features lose 0.41pp on seed 1 and tie
 seed 3; the condition to run the ensemble was not met. The projector functions
-remain in `lineup_project.py` for analysis, but `model.py` keeps the stage-2
+remain deleted in `chore/clean-tree` (blob at `c82b2e7`); `model.py` keeps the stage-2
 `--lineup projected` opt-in only and defaults to no lineup.
 
 **Stage 4 — rank ensemble with lineup features.** Built the fixed equal-weight
@@ -1471,9 +1518,8 @@ and its per-fold spread collapses to 0.684.
 
 **Verdict: reverted.** Seed 1 clears +0.5pp by 0.007pp (p=0.41 vs baseline),
 seed 3 is flat (+0.03pp, p=1.0), so the both-seeds rule fails. The `qoc.py`
-builder and `--qoc-features` flag were removed; the QoC cache stays in
-`data/moneypuck/qoc_player_game.csv` for a follow-up (e.g. QoT-relative only,
-or smoothed prior-season rates with a minimum-TOI floor).
+builder and `--qoc-features` flag were removed; the QoC cache in
+`data/moneypuck/qoc_player_game.csv` was deleted in `chore/clean-tree`.
 
 ### V12-interactions — explicit tims-group interactions (reverted)
 
@@ -1547,7 +1593,8 @@ evaluation; era/style drift makes the expected value uncertain.
 
 ### V14b — pre-2017 runbook
 
-Full copy-paste runbook: `docs/backtrack_pre2017_runbook.md`. Entry points were
+Full copy-paste runbook: `docs/backtrack_pre2017_runbook.md` — deleted in
+`chore/clean-tree`; blob at `c82b2e7` (commands preserved below). Entry points were
 verified with `--help`; one 2013-14 game log, schedule window, and shiftchart
 call returned data. Per season:
 
@@ -1651,7 +1698,7 @@ Safety gates: the article `datePublished` must equal the requested game date
 and makes the pre-publish morning runs collect nothing instead of wrong data);
 `--env prod` is explicit; `--limit` and `--dry-run` are available.
 
-**Audited state (`notes_v16_audit.md`, live Supabase check):** on **prod** as
+**Audited state (independent leakage/number audit, 2026-10-22 — notes were deleted in `chore/clean-tree`, blob at `c82b2e7`; live Supabase check):** on **prod** as
 of 2026-10-20 there are **255 PROJECTED / 240 UNKNOWN** rows with **0 D-unit
 rows and 0 PP1** — the live pipeline's own signature (forwards only, verbatim
 "POWER PLAY #1"). The collector's post-state (PROJECTED rows carrying D units:
@@ -1686,55 +1733,27 @@ Health check: PROJECTED dates accumulating forward under this heading; 0 new
 dates on successive game days means the sources stopped (article moved hosts
 or slug changed) and the collector refuses to write by design.
 
-### V16 rejected experiments — reproduce commands
+### Legacy experiment code — deleted in chore/clean-tree
 
-Exact lines from `notes_v16_{exposure,group3,pbp,embed,calib,interact}.md`.
-None of these is needed for the default model; they reproduce the six
-REJECTED V16 arms. V16-embed is INVALID (leakage, see the FINAL RESULT block)
-— its command is kept only for a strictly-prior-games retry.
+Every rejected arm above was reproducible from a script this cleanup
+**deleted**; each line below is therefore: *code deleted in
+`chore/clean-tree`; see commit `c82b2e7` in history* (`git show c82b2e7:<path>`
+for the exact file, the `notes_v16_*` run notebooks, and the tracked
+`data/ml/` experiment CSVs; `score_oof.py`/`score_embed_oof.py` re-scorers
+were untracked and are gone).
 
-```bash
-cd SmartScore-backtrack
+Command shape for every arm: `OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with
+lightgbm==4.7.0 python smartscore/scripts/backtrack/<script> --env dev
+--seed {1,3}`:
 
-# V16-exposure (base + exposure arms, ensemble + lgbm, seeds 1/3)
-for s in 1 3; do
-  OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
-    smartscore/scripts/backtrack/exp_exposure.py --env dev --seed "$s"
-done
+- V16-exposure: `exp_exposure.py` — self-contained (base + exposure arms, ensemble + LGBM). Code deleted in chore/clean-tree; see commit c82b2e7 in history.
+- V16-group3: `exp_group3.py --oof-file data/ml/oof_v16_group3_seed{1,3}.csv` (w2/w4/g3blend/g3pure vs the paired base arm; `--train-min-date 2017-10-01` default; frame pickle `data/ml/v16_group3_frame.pkl`). Code deleted in chore/clean-tree; see commit c82b2e7 in history.
+- V16-pbp: `fetch_pbp.py --env dev` (builds `data/ml/pbp_shots.csv` / `pbp_player_game.csv`, 608,813 / 279,659 rows from 6,993 games) then `exp_pbp.py --seed {1,3} --with-pbp` (base arm = same command without `--with-pbp`). Code deleted in chore/clean-tree; see commit c82b2e7 in history.
+- V16-embed (INVALID / retry spec): `exp_embed.py --seed {1,3} --splits 5 --models lgbm --save-oof data/ml/oof_v16_embed_lgbm_seed{1,3}.csv` — retried only with strictly prior games per row (expanding window), never season cells. Code deleted in chore/clean-tree; see commit c82b2e7 in history.
+- V16-calib: regenerate the current-cache ensemble OOF via `model.py --model ensemble --seed S --split kfold --splits 5 --train-subset all --model-file data/ml/oof_v16_calib_ens_seedS.csv`, then `exp_calib.py --mode threshold-oof --oof-tag v16_calib_ens --seed S`. Code deleted in chore/clean-tree; see commit c82b2e7 in history.
+- V16-interact: `exp_interact.py --seed {1,3}` (20 interaction columns on the standard frame). Code deleted in chore/clean-tree; see commit c82b2e7 in history.
+- V6-era leakage audit: `docs/backtrack_audit.py` (pick-audit, reproduced the 30.36% claim and flagged same-game lineup leakage) + `docs/backtrack_ablation.py` (LGBM ablation dropping lookahead `lineup_unit`/`pp_unit`). Code deleted in chore/clean-tree; see commit c82b2e7 in history.
 
-# V16-group3 (w2/w4/g3blend/g3pure vs the paired base arm)
-for s in 1 3; do
-  OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
-    smartscore/scripts/backtrack/exp_group3.py --env dev --seed "$s" \
-    --oof-file data/ml/oof_v16_group3_seed"$s".csv
-done
-
-# V16-pbp: enriched arm (--with-pbp); base/reference arm = same command WITHOUT --with-pbp
-OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
-  smartscore/scripts/backtrack/exp_pbp.py --env dev --seed 1 --with-pbp \
-  --oof-file data/ml/oof_v16_pbp_seed1.csv
-
-# V16-embed — INVALID (leakage, 493ba96); only for a strictly-prior-rebuild retry
-for s in 1 3; do
-  OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with torch,lightgbm python \
-    smartscore/scripts/backtrack/exp_embed.py --env dev --seed "$s" \
-    --splits 5 --models lgbm \
-    --save-oof data/ml/oof_v16_embed_lgbm_seed"$s".csv
-done
-
-# V16-calib: current-cache ensemble OOF regen, then the stage-2 threshold-oof swap
-OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
-    smartscore/scripts/backtrack/model.py --env dev --model ensemble --seed S \
-    --split kfold --splits 5 --train-subset all \
-    --model-file data/ml/oof_v16_calib_ens_seedS.csv > data/ml/v16_calib_ens_seedS.log
-OMP_NUM_THREADS=1 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
-    smartscore/scripts/backtrack/exp_calib.py --env dev --mode threshold-oof \
-    --oof-tag v16_calib_ens --seed S
-
-# V16-interact (seed 1; rerun with --seed 3)
-OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
-    smartscore/scripts/backtrack/exp_interact.py --env dev --seed 1
-```
 
 ## Lessons learned this phase
 
@@ -1758,7 +1777,35 @@ OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
    schedule density, goalie-relative and opponent-team blocks were flat or
    negative on top of V2/V3. Monotonic constraints hurt.
 
-## Next steps
+## Deployment / artifact / vintage pointers
+
+The model production chain lives outside this flat tree:
+
+- **Deploy chain:** `smartscore/scripts/backtrack/train_export.py` builds the
+  on-demand predict-Lambda joblib artifact from the committed dumps, and
+  `docs/aws-predict-lambda-runbook.md` is the day-of deploy runbook — both
+  live on the `feat/aws-relambda` branch (keep it there; this PR does not
+  move or duplicate them). `- heads: 0d98cda`.
+- **Column spec:** `docs/supabase_shot_columns.md` on `feat/supabase-spec`
+  (PR #138) is the in-force 16-column Player-Snapshots-backtrack spec
+  referenced by the Lambda code — kept on that branch, not folded here.
+- **Operational runbooks in this tree:** `PROJECTED_LINEUP_RUNBOOK.md`
+  (lineup-unit collection), `FEED_FIDELITY_RUNBOOK.md` (nightly unit-match
+  tracking), and the per-season data-capture flow documented via the
+  `backtrack-*` Makefile targets; `DAILY_DATA_RUNBOOK.md` lives on the
+  `feat/daily-data-runbook` branch.
+- **Data lineage:** the raw dumps under `data/dumps/` are the committed
+  source of truth for training (V15b dumps `9c9f315`; monthly-window cache
+  refresh after the 57014 fix).
+
+## Next actions
+
+- Watch projected-lineup fidelity accumulate via `fidelity_tracker.py`
+  (PR #137 tracker); adopt lineup features only at >= 90% fidelity AND
+  paired beats on both seeds.
+- No market-odds collection (owner rule).
+
+## Pre-cleanup watch list (verbatim next-steps items)
 
 - **V6 correction:** `lineup_unit`/`pp_unit` are same-game shift-chart
   lookahead and are removed from all models. Prior HGB/LGBM headlines that
@@ -1816,5 +1863,6 @@ OMP_NUM_THREADS=2 LGBM_N_JOBS=2 uv run --with lightgbm==4.7.0 python \
   on identical dates. Pre-2017 ingest is feasible but has no Tims labels.
 - Every new feature must be justified as pre-game from the joins; if it
   needs labels from other rows, only shifted-per-player ones qualify.
-- Update this file after every experiment: config used, split mode, pooled
+
+Update this file after every experiment: config used, split mode, pooled
   OOF hits/total, per-headline McNemar vs hgpg AND gpg.
