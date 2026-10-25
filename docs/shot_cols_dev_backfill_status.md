@@ -18,13 +18,14 @@ touched this run.
    692,634-row store). NaN→None via `astype(object)` before upsert; `name`
    rides along because PostgREST enforces NOT NULL even on PK-conflict
    sparse upserts (keys-only 400s with `null value in column "name"`).
-3. **Spot check (Step 3)** — `smartscore/scripts/backtrack/spot_check_shot_cols.py --env dev --sample 1000`:
-   1,000 random (date, player_id) rows read back from Supabase and compared
-   against a fresh verbatim `shot_features()` recompute. **0 mismatches
-   across all 16 columns**; worst relative float diff 4.6e-15 (double
-   round-trip noise, tolerance 1e-9); `career_games`/`team_abbrev`/
-   `opponent_abbrev` exact. Row count re-proven 617,310 via full PK key dump
-   (no rows added/deleted).
+3. **Spot check (Step 3)** — one-shot QA tool `spot_check_shot_cols.py`
+   (deleted after use; see it by sha in git history): 1,000 random
+   (date, player_id) rows read back from Supabase and compared against a
+   fresh verbatim `shot_features()` recompute. **0 mismatches across all 16
+   columns** — retained here as the final QA evidence; worst relative float
+   diff 4.6e-15 (double round-trip noise, tolerance 1e-9);
+   `career_games`/`team_abbrev`/`opponent_abbrev` exact. Row count re-proven
+   617,310 via full PK key dump (no rows added/deleted).
 
 ## Non-null coverage (from the backfill dry run)
 
@@ -51,7 +52,8 @@ shots_before=0 rows).
 ## Prod gate
 
 `Player-Snapshots-backtrack-prod` is untouched. Promotion when the owner
-authorizes: re-run the same migration via migrate-adhoc with the prod marker
-(`.github/migrate-env-prod` file, per the workflow's env pick) and then
+authorizes: apply the same migration through the standing `deploy.yml`
+migrate job (the transient `migrate-adhoc` workflow that applied it to dev
+has been deleted, superseded by the standing job), then
 `uv run python smartscore/scripts/backtrack/publish_shot_cols.py --env prod`.
 Backfill is idempotent (upsert on the PK; safe to re-run/reeinterrupt).
