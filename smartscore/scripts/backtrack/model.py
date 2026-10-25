@@ -103,6 +103,13 @@ CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "ml"
 RAW_DB = Path(__file__).resolve().parents[3] / "data" / "raw_nhl.sqlite"
 PAGE = 10_000
 
+# Where the frame's shot/TOI block and club identity come from. "sqlite"
+# computes them from the raw store via shot_features()/club_map() (the
+# existing path); "supabase" reads the columns published into
+# Player-Snapshots-backtrack-{ENV} by the shot-columns migration
+# (docs/supabase_shot_columns.md) - the path the in-cloud ML Lambda uses.
+FRAME_SOURCES = ("sqlite", "supabase")
+
 # Hand-tuned weights the deployed scorer runs on; the baseline to beat.
 LIVE_WEIGHTS = {
     "hgpg": 0.600,
@@ -287,8 +294,10 @@ def club_map():
     return frame
 
 
-def build_frame(players, teams, goalies):
+def build_frame(players, teams, goalies, source="sqlite"):
     """Join the three Supabase tables into one row per player per game."""
+    if source not in FRAME_SOURCES:
+        raise ValueError(f"unknown frame source: {source}")
     players = players.copy()
     teams = teams.copy()
     goalies = goalies.copy()
@@ -301,13 +310,35 @@ def build_frame(players, teams, goalies):
     # to Team-Stats at its own grain. Drop them so the merge owns the names.
     players = players.drop(columns=["tgpg", "otga", "otshga"], errors="ignore")
 
-    # Club and opponent identity per (date, player_id), from the raw store.
-    players = players.merge(
-        club_map(),
-        on=["date", "player_id"],
-        how="left",
-        validate="many_to_one",
-    )
+    if source == "supabase":
+        # Club and opponent identity is published on the snapshot rows (the
+        # shot-columns migration) - club := team_abbrev, opp := opponent_abbrev.
+        # Never derive it from team_name: the place name collapses both New
+        # York clubs. season is not a snapshot column; the team-stats join
+        # below carries it in (one team season per (date, club) - the same
+        # values club_map() would have supplied from player_games).
+        missing = sorted({"team_abbrev", "opponent_abbrev"} - set(players.columns))
+        if missing:
+            raise RuntimeError(
+                f"source=supabase but player snapshot lacks {missing}; "
+                "the shot-columns migration/backfill has not run for this env"
+            )
+        players = players.rename(columns={"team_abbrev": "club", "opponent_abbrev": "opp"})
+        players = players.merge(
+            teams[["date", "team_abbrev", "season"]].rename(columns={"team_abbrev": "club"}),
+            on=["date", "club"],
+            how="left",
+            validate="many_to_one",
+        )
+        players["season"] = players["season"].astype("Int64").astype(str)
+    else:
+        # Club and opponent identity per (date, player_id), from the raw store.
+        players = players.merge(
+            club_map(),
+            on=["date", "player_id"],
+            how="left",
+            validate="many_to_one",
+        )
 
     # Own-team rates. A club plays at most once a date, so (date, club) is one
     # team row despite the PK carrying game_id.
@@ -567,7 +598,7 @@ def projected_lineup_features(frame):
     )
 
 
-def add_derived(frame, teams):
+def add_derived(frame, teams, source="sqlite"):
     """V2 features layered onto the joined frame. Everything stays pre-game.
 
     * rank_*       - percentile of the rate within the day's tims group. Only
@@ -623,13 +654,28 @@ def add_derived(frame, teams):
         validate="many_to_one",
     )
 
-    # Prior-games-only shot / TOI / shooting block from the raw boxscore layer.
-    frame = frame.merge(
-        shot_features(),
-        on=["date", "player_id"],
-        how="left",
-        validate="many_to_one",
-    )
+    # Prior-games-only shot / TOI / shooting block. On the sqlite path it is
+    # computed from the raw boxscore layer; on the supabase path the same
+    # columns were published on the snapshot rows (shot-columns migration),
+    # so the merge is skipped - the frame already carries them.
+    if source == "supabase":
+        missing = sorted(set(SHOT_FEATURES) - set(frame.columns))
+        if missing:
+            raise RuntimeError(
+                f"source=supabase but snapshot rows lack {missing}; "
+                "the shot-columns backfill has not populated this env"
+            )
+    else:
+        # The snapshot rows may already carry the published shot columns (the
+        # shot-columns backfill writes them); the sqlite source computes the
+        # block itself, so never merge onto its own names.
+        frame = frame.drop(columns=SHOT_FEATURES, errors="ignore")
+        frame = frame.merge(
+            shot_features(),
+            on=["date", "player_id"],
+            how="left",
+            validate="many_to_one",
+        )
 
     # V9 stage 2: method-b projected units + prior-only linemate quality.
     frame = frame.merge(
@@ -1101,6 +1147,14 @@ def main():
         help="add a within-(date,tims)-group ranking model. 'lambdarank' uses LightGBM's "
         "LGBMRanker when installed, else pairwise logistic on positive/negative pairs.",
     )
+    parser.add_argument(
+        "--source",
+        choices=FRAME_SOURCES,
+        default="sqlite",
+        help="where the shot/TOI block and club identity come from: sqlite "
+        "(default; shot_features()/club_map() over the raw store) or supabase "
+        "(the columns published by the shot-columns migration).",
+    )
     parser.add_argument("--model-file", type=Path, help="save pooled out-of-fold rows with predictions here")
     args = parser.parse_args()
 
@@ -1113,8 +1167,8 @@ def main():
     DATASET_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 
     players, teams, goalies = load_frames(args.env, refresh=args.refresh)
-    frame = build_frame(players, teams, goalies)
-    frame = add_derived(frame, teams)
+    frame = build_frame(players, teams, goalies, source=args.source)
+    frame = add_derived(frame, teams, source=args.source)
 
     cover = {
         "date range": f"{frame['date'].min()} .. {frame['date'].max()}",
