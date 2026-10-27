@@ -302,24 +302,12 @@ jobs:
         env:
           PUBLIC_ECR_ALIAS: ${{ secrets.PUBLIC_ECR_ALIAS }}
         run: make build-ml-image
-
-      - name: Enforce 500MB image-size gate (ECR free-tier cap)
-        env:
-          # HARD gate, not a sanity check: mirrors the ECR free-tier monthly
-          # storage cap (500MB). Override via the repo variable
-          # DOCKER_IMAGE_MAX_MB (make build-ml-image's local default remains
-          # the wider 5120MB sanity bound). Runs before the private sync so
-          # an oversized image never becomes the Lambda's pull copy.
-          DOCKER_IMAGE_MAX_MB: ${{ vars.DOCKER_IMAGE_MAX_MB || 500 }}
-        run: |
-          set -euo pipefail
-          SIZE=$(docker image inspect --format '{{.Size}}' smartscore/predict-picks:latest)
-          SIZE_MB=$(( (SIZE + 1048575) / 1048576 ))  # rounds up
-          echo "ML predict-picks image: ${SIZE} bytes = ${SIZE_MB} MB (threshold: ${DOCKER_IMAGE_MAX_MB} MB)"
-          if [ "$SIZE_MB" -gt "$DOCKER_IMAGE_MAX_MB" ]; then
-            echo "::error::ML predict-picks image is ${SIZE_MB} MB over the ${DOCKER_IMAGE_MAX_MB} MB hard gate (mirrors the 500MB ECR free-tier storage cap). Slim the Dockerfile / drop unneeded deps before deploying."
-            exit 1
-          fi
+        # The build target carries the image-size SANITY gate (docker image
+        # inspect vs DOCKER_IMAGE_MAX_MB, default 5120 MB, job-failing): a
+        # runaway build (fat base, accidental data COPY) must never become
+        # the pull copy. It is deliberately NOT a 500 MB "free-tier mirror" —
+        # ECR Public's always-free tier is 50 GB/month; the 500 MB private
+        # figure is first-year-only and ~10x under any plausible image here.
 
       - name: Sync MLPicks image to private ECR (Lambda pull copy)
         run: bash build_scripts/deploy_ml_lambda.sh --sync-only
