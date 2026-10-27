@@ -62,16 +62,30 @@ warning when the artifact trains through a date older than 7 days.
     #     --source supabase --through-date <latest> --seed 0 --upload)
 
 The **artifact-fact convention**: the newest artifact is always "whatever
-the last `train_export.py --upload` pushed". The S3 key is
-`<prefix>/artifact_<train_through>_<seed>.joblib` under
-`ML_ARTIFACT_PREFIX` (default `predict/ml`); file names sort by vintage and
-`run_daily_picks.load_artifact` (exactly the handler's loader) always picks
-the lexically latest `.joblib` under the prefix — no config file to keep in
-sync, no workflow edit on a refresh, and a rollback is a manual
-`aws s3 cp` of the older key back under the prefix (or trimming the newer
-key away). The local file `train_export.py` writes,
+the last `train_export.py --upload` pushed". The key is
+`<prefix>/artifact_<train_through>_<seed>.joblib` under prefix `predict/ml`
+(`ML_ARTIFACT_PREFIX` for S3, `ML_ARTIFACT_STORAGE_PREFIX` for Storage):
+file names sort by vintage and `run_daily_picks.load_artifact` /
+`load_artifact_storage` always pick the lexically latest `.joblib` under
+the prefix — no config file to keep in sync, no workflow edit on a
+refresh, and a rollback is a re-upload/keep of the older key (or trimming
+the newer key away). The local file `train_export.py` writes,
 `data/ml/artifact_<train_through>_<seed>.joblib`, and the upload key share
 the same object — the workflow reads the UPLOADED key by default.
+
+**Artifact SOURCES, in strict resolution order** (`run_daily_picks
+.pick_daily_bundle`):
+
+1. `--artifact PATH` (a local file, e.g. committed under `data/ml/`) —
+   always wins; the downstream inference is byte-identical across sources.
+2. S3 bucket/prefix — only when `ML_S3_BUCKET` is set AND AWS credentials
+   exist in the environment. If they are absent/denied and Storage is
+   configured, the run FALLS THROUGH to Storage (loud log line).
+3. **Supabase Storage** (`ML_STORAGE_BUCKET`, default bucket
+   `ml-artifacts`, prefix `predict/ml`, PRIVATE bucket read with the
+   service-role key) — the no-AWS path and the ml-picks workflow's
+   DEFAULT: it uses the exact SUPABASE_* secrets the job needs anyway, so
+   an artifact refresh = one owner-side upload command, zero new secrets.
 
 Artifact **version 2** carries the logreg member as the FULL fitted train-time
 preprocessing pipeline (SimpleImputer -> StandardScaler -> LogisticRegression);
@@ -80,30 +94,38 @@ version 1 artifacts auto-patch at load with a loud
 "fix(artifact): export train-time preprocessing pipeline..." exported the bare
 inner estimator, which crashed on NaN-bearing live frames).
 
-## 3. First-time setup (4 owner steps)
+## 3. Owner setup — CURRENT minimal-secrets checklist
 
-1. **Add/confirm the Supabase secrets** (the workflow's inference reads):
+The workflow's artifact DEFAULT is **Supabase Storage**, so the only
+required secrets are the ones already needed:
+
+1. **Add/confirm the Supabase secrets** (artifact read + inference writes):
    `SUPABASE_URL`, `SUPABASE_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
    (repo `Settings -> Secrets and variables -> Actions`; the same secrets
    `deploy.yml` already uses — if they exist, nothing to do).
-2. **Add the S3 artifact-read secrets** (default artifact source):
-   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` — a read-only IAM key with
-   `s3:GetObject`+`s3:ListBucket` on the artifact bucket/prefix — and
-   `ML_S3_BUCKET` (the bucket name; the workflow defaults to
-   `smartscore-ml-artifacts` when unset) and optionally `AWS_REGION`
-   (default `us-east-1`). These can be the same principal the old deploy
-   job used; nothing needs write scope.
-   **No-AWS fallback:** if you prefer no AWS credentials in Actions,
-   either commit the artifact into the repo under `data/ml/` (it is a few
-   MB compressed) or fetch it privately, and change the "Run the daily ML
-   picks pass" step to pass `--artifact data/ml/<artifact>.joblib` — the
-   downstream inference is byte-identical (`load_artifact_file` uses the
-   same `normalise_bundle`); DEFAULT stays the S3 read.
-3. **Produce/upload the artifact once** (section 2c) and verify with
-   `aws s3 ls s3://<bucket>/predict/ml/` that the `.joblib` is present.
-4. **First manual trigger**: run the workflow ONCE with `dry: true`
-   (smoke — fails closed without writing anything), check the job summary
-   + SMARTSCORE_ML_PICKS log line, then run once with `dry: false`.
+2. `MLPICKS_DISPATCH_TOKEN` (the per-game kick path's token) — if the
+   kick architecture is used; the nightly cron path needs nothing extra.
+3. *(OPTIONAL, S3 path only)* `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+   `ML_S3_BUCKET` (+ `AWS_REGION`) — only if the owner wants the artifact
+   on S3. Absent secrets = the run reads Storage automatically.
+
+Artifact refresh (section 2c) with NO AWS at all:
+
+    make train-ml-export ENV=prod THROUGH=<latest> SEED=0  # S3 unchanged, needs AWS
+    # NO-AWS equivalent (uploads to Supabase Storage bucket ml-artifacts):
+    uv run --with lightgbm==4.7.0 python smartscore/scripts/backtrack/train_export.py \
+        --env prod --source supabase --through-date <latest> --seed 0 \
+        --upload --storage-bucket ml-artifacts
+
+Verify the Storage upload, then trigger `dry: true` smoke (step 4). The
+bucket auto-creates idempotently on first upload; it is PRIVATE — the
+Actions runner downloads with the service-role key.
+
+Other accepted artifact sources (no code change, same inference):
+commit the artifact into the repo under `data/ml/` (it is a few MB
+compressed joblib of weights — weights are not secrets) and pass
+`--artifact data/ml/<artifact>.joblib`; or provide the 3 AWS secrets and
+`ML_S3_BUCKET` for the legacy S3 read.
 
 (The old runbook's ECR Public alias console step is DELETED — there is no
 registry, no image, and no alias anymore.)

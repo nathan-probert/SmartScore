@@ -51,13 +51,16 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      # Artifact-fact convention: whatever the last local
-      # `train_export.py --upload` pushed, under the dated prefix read at
-      # run time (ML_ARTIFACT_PREFIX, default predict/ml). The bucket name is
-      # the ML_S3_BUCKET repo secret when set (same default the old deploy
-      # used). docs/ml-picks-runbook.md
-      ML_S3_BUCKET: ${{ secrets.ML_S3_BUCKET || 'smartscore-ml-artifacts' }}
-      ML_ARTIFACT_PREFIX: predict/ml
+      # Artifact-fact convention: whatever the last owner refresh pushed, under
+      # the dated prefix read at run time (prefix predict/ml = both S3's
+      # ML_ARTIFACT_PREFIX and Storage's ML_ARTIFACT_STORAGE_PREFIX).
+      # DEFAULT source is SUPABASE STORAGE (ML_STORAGE_BUCKET bucket
+      # `ml-artifacts`, PRIVATE bucket, read with the SUPABASE_* secrets the
+      # job already needs - NO extra owner secret). The S3 read (ML_S3_BUCKET)
+      # stays OPTIONAL for owner-side AWS setups. docs/ml-picks-runbook.md §2/§3
+      ML_STORAGE_BUCKET: ${{ secrets.ML_STORAGE_BUCKET || 'ml-artifacts' }}
+      ML_ARTIFACT_STORAGE_PREFIX: predict/ml
+      ML_S3_BUCKET: ${{ secrets.ML_S3_BUCKET }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -83,24 +86,18 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --no-dev
 
-      # Step 3: the artifact source. DEFAULT is the S3 read (read-only keys;
-      # the loading/listing code is the same load_artifact the handler used).
-      # NO-AWS FALLBACK keeps the exact same downstream inference: the owner
-      # passes --artifact to a local .joblib (one fetched outside the repo,
-      # or one committed under data/ml/) and removes this step -
-      # docs/ml-picks-runbook.md section 3.
-      - name: Configure AWS credentials (S3 artifact read)
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+      # Artifact source step: the script resolves the artifact in this order
+      # (docs/ml-picks-runbook.md §2): --artifact PATH (local file, always
+      # wins) -> S3 bucket/prefix (only when ML_S3_BUCKET is configured AND
+      # AWS credentials exist) -> Supabase Storage ML_STORAGE_BUCKET/prefix
+      # (the DEFAULT here: same SUPABASE_* secrets this job already needs -
+      # no AWS at all). If S3 is configured but its secrets are absent, the
+      # run falls through to Storage automatically.
+      # Steps 3+4: run_daily_picks fetches the artifact (Storage dated-prefix
+      # latest by default) then performs inference via model.py + its
+      # schema-safe Picks write (save_picks_db) - the same inference path the
+      # handler ran.
 
-      # Steps 3+4: run_daily_picks fetches the artifact (S3 dated-prefix
-      # latest, or --artifact) then performs inference via model.py +
-      # its schema-safe Picks write (save_picks_db) - the same inference
-      # path the handler ran.
-      #
       # Trigger-source resolution, workflow_dispatch semantics preserved:
       # explicit inputs.date/inputs.dry win; repository_dispatch (the
       # per-game kick) supplies client_payload {date, dry,

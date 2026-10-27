@@ -367,12 +367,24 @@ def run_oof(frame, args):
 
 
 def upload_artifact(path, args):
+    if args.storage_bucket:
+        from config import SUPABASE_ADMIN_CLIENT  # noqa: PLC0415  (service-role client; .env / CI secrets)
+
+        prefix = (args.s3_prefix or "predict/ml").rstrip("/")
+        key = f"{prefix}/{path.name}"
+        payload = path.read_bytes()
+        SUPABASE_ADMIN_CLIENT.storage.from_(args.storage_bucket).upload(
+            key, payload, {"upsert": "true", "content-type": "application/octet-stream"}
+        )
+        print(f"uploaded: {args.storage_bucket}/{key} (Supabase Storage)", flush=True)
+        return
+
     import boto3  # noqa: PLC0415  (boto3 only loads when the owner asks for S3)
 
     bucket = args.s3_bucket or os.environ.get("ML_S3_BUCKET", "")
     prefix = args.s3_prefix or os.environ.get("ML_S3_PREFIX", "predict/ml")
     if not bucket:
-        raise SystemExit("--upload needs --s3-bucket (or ML_S3_BUCKET env)")
+        raise SystemExit("--upload needs --s3-bucket (or ML_S3_BUCKET env, or --storage-bucket)")
     key = f"{prefix.rstrip('/')}/{path.name}"
     boto3.client("s3").upload_file(str(path), bucket, key)
     print(f"uploaded: s3://{bucket}/{key}", flush=True)
@@ -406,7 +418,16 @@ def main():
     parser.add_argument(
         "--out", default=None, help="override the artifact path (default data/ml/artifact_<through>_<seed>.joblib)"
     )
-    parser.add_argument("--upload", action="store_true", help="push the artifact to S3 (default: OFF)")
+    parser.add_argument(
+        "--upload",
+        action="store_true",
+        help="push the artifact to Supabase Storage (--storage-bucket) or S3 (default: OFF)",
+    )
+    parser.add_argument(
+        "--storage-bucket",
+        default=os.environ.get("ML_STORAGE_BUCKET", ""),
+        help="Supabase Storage bucket for --upload (no AWS; the dailies read it back with the same SUPABASE_* secrets)",
+    )
     parser.add_argument("--s3-bucket", default=os.environ.get("ML_S3_BUCKET", ""))
     parser.add_argument("--s3-prefix", default=os.environ.get("ML_S3_PREFIX", "predict/ml"))
     args = parser.parse_args()

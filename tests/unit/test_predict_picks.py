@@ -269,6 +269,61 @@ def test_load_artifact_empty_prefix_raises(env_vars, monkeypatch):
         mod.load_artifact(s3, "test-artifacts", "predict/ml")
 
 
+def fake_storage(monkeypatch, bundle):
+    import joblib  # noqa: PLC0415
+
+    buffer = io.BytesIO()
+    joblib.dump(bundle, buffer, compress=("zlib", 3))
+    payload = buffer.getvalue()
+
+    storage = MagicMock()
+    storage.list.return_value = [
+        {"name": "artifact_2026-06-13_0.joblib"},
+        {"name": "artifact_2026-06-14_0.joblib"},
+        {"name": "nothing.zip"},
+    ]
+    storage.download.return_value = payload
+    client = MagicMock()
+    client.storage.from_.return_value = storage
+    monkeypatch.setattr(mod, "SUPABASE_ADMIN_CLIENT", client)
+    return client
+
+
+def test_load_artifact_storage_picks_lexically_latest_joblib(env_vars, monkeypatch):
+    client = fake_storage(monkeypatch, make_bundle())
+    key, loaded = mod.load_artifact_storage(client, "ml-artifacts", "predict/ml")
+    key_norm = key.removeprefix("predict/ml/")
+    assert key_norm.endswith("artifact_2026-06-14_0.joblib")
+    assert loaded["metadata"]["seed"] == 0
+    client.storage.from_.assert_called_with("ml-artifacts")
+
+
+def test_load_artifact_storage_empty_listing_raises(env_vars, monkeypatch):
+    client = MagicMock()
+    client.storage.from_.return_value.list.return_value = []
+    with pytest.raises(RuntimeError, match="no artifact"):
+        mod.load_artifact_storage(client, "ml-artifacts", "predict/ml")
+
+
+def test_pick_daily_bundle_s3_fails_falls_through_to_storage(env_vars, monkeypatch):
+    import joblib  # noqa: PLC0415
+
+    bucket_payload = io.BytesIO()
+    joblib.dump(make_bundle(), bucket_payload, compress=("zlib", 3))
+
+    s3 = MagicMock()
+    from botocore.exceptions import NoCredentialsError  # noqa: PLC0415  (test-local)
+
+    s3.list_objects_v2.side_effect = NoCredentialsError()
+    monkeypatch.setattr("run_daily_picks.boto3.client", lambda service, **_kw: s3)
+
+    client = fake_storage(monkeypatch, make_bundle())
+    key, loaded = mod.pick_daily_bundle("s3-bucket", "predict/ml", None, "ml-artifacts", "predict/ml")
+    assert "artifact_" in key
+    assert loaded["metadata"]["seed"] == 0
+    client.storage.from_.assert_called_with("ml-artifacts")
+
+
 def make_contract_bundle(today=ON_DATE):
     """The sibling's ARTIFACT CONTRACT design: ONLY the contract keys."""
     return {

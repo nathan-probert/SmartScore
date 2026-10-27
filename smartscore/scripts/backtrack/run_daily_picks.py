@@ -24,14 +24,17 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
 Manual trigger: the workflow's ``date`` input (or ``--date YYYY-MM-DD``)
 overrides ET-today; ``dry``/``--dry`` skips the Picks write (smoke run).
 
-Artifact source (the artifact-fact convention): by DEFAULT the lexically
-latest .joblib under the S3 dated prefix (whatever the last
-``train_export.py --upload`` pushed - newest train_through wins, no config
-file to keep in sync); fallback ``--artifact PATH`` reads a local file
-(e.g. one committed under data/ml/ or fetched privately), so the exact same
-code path also works without AWS credentials. No rewrite, no fork: every
-function below is the former smartscore/lambda/predict_picks/handler.py
-logic verbatim, only moved and re-anchored.
+Artifact source (the artifact-fact convention), in this documented order:
+(1) ``--artifact PATH`` (a local file, e.g. one committed under data/ml/) -
+always wins; (2) S3 - the lexically latest .joblib under the dated prefix
+(with credentials whatever the last ``train_export.py --upload`` pushed);
+(3) Supabase Storage - ``ML_STORAGE_BUCKET`` (default bucket ``ml-artifacts``,
+prefix ``predict/ml``, same key convention) - the no-AWS-credentials path
+the ml-picks workflow runs by DEFAULT (same SUPABASE_* secrets inference
+needs; load_artifact_storage below). If S3 is configured but its
+credentials are absent, the run falls through to Storage. No rewrite, no
+fork: every function below is the former smartscore/lambda/predict_picks/
+handler.py logic verbatim, only moved and re-anchored.
 """
 
 import argparse
@@ -580,18 +583,65 @@ def job_summary(on_date, key, meta, n_picks, mean_max_prob, dry):
         handle.write("\n".join(lines) + "\n")
 
 
-def pick_daily_bundle(bucket, prefix, artifact_path):
-    """Resolve the artifact exactly per the artifact-fact convention: an
-    explicit --artifact PATH wins (local fallback), otherwise S3
-    (bucket/prefix) is the default source of truth."""
+def load_artifact_storage(client, bucket, prefix):
+    """Lexically latest <prefix>/artifact_<through>_<seed>.joblib from
+    Supabase Storage -> bundle (the SAME dated-prefix-latest convention as
+    ``load_artifact``, no AWS anywhere).
+
+    ``client`` is the ``supabase`` Client (config's SUPABASE_ADMIN_CLIENT -
+    the service-role key the Actions runner already holds, so the artifact
+    can sit in a PRIVATE bucket). The list/download match the S3 loader
+    byte-for-byte in behaviour: list the prefix, sort by key, take the
+    lexically greatest .joblib, download, joblib.load -> normalise_bundle.
+    """
+    prefix = prefix.rstrip("/")
+    listing = client.storage.from_(bucket).list(prefix or "")
+    keys = sorted(
+        (entry["name"] for entry in listing if str(entry.get("name", "")).endswith(".joblib")),
+        key=lambda name: f"{prefix}/{name}",
+    )
+    if not keys:
+        raise RuntimeError(f"no artifact .joblib found under storage bucket {bucket}/{prefix}")
+    key = f"{prefix}/{keys[-1]}" if prefix else keys[-1]
+    payload = client.storage.from_(bucket).download(key)
+    import joblib  # noqa: PLC0415  (payload-time import keeps the runner boot flat)
+
+    bundle = joblib.load(io.BytesIO(payload))
+    return key, normalise_bundle(bundle, key=key)
+
+
+def pick_daily_bundle(bucket, prefix, artifact_path, storage_bucket=None, storage_prefix=None):
+    """Resolve the artifact, in strict documented order:
+
+    1. ``--artifact PATH`` (local file) - always wins;
+    2. S3 ``bucket/prefix`` with credentials (the historical default);
+    3. Supabase Storage ``storage_bucket/storage_prefix`` - the
+       no-AWS-credentials path (same SUPABASE_* secrets inference needs).
+
+    If an S3 bucket is configured but the credentials are absent/denied
+    (NoCredentialsError / ClientError), the run FALLS THROUGH to Storage
+    when one is configured, so a runner without AWS secrets still works.
+    """
     if artifact_path:
         return load_artifact_file(artifact_path)
-    if not bucket:
-        raise RuntimeError(
-            "no artifact source: set ML_S3_BUCKET (or pass --s3-bucket) for the "
-            "default S3 read, or pass --artifact PATH for the local fallback"
-        )
-    return load_artifact(boto3.client("s3"), bucket, prefix)
+    if bucket:
+        try:
+            return load_artifact(boto3.client("s3"), bucket, prefix)
+        except Exception as exc:  # noqa: BLE001  (boto3 raises a range: NoCredentialsError, ClientError, ...)
+            if not storage_bucket:
+                raise
+            print(
+                f"artifact: S3 read of s3://{bucket}/{prefix} unavailable "
+                f"({type(exc).__name__}: {exc}); falling back to Supabase Storage",
+                flush=True,
+            )
+    if storage_bucket:
+        return load_artifact_storage(SUPABASE_ADMIN_CLIENT, storage_bucket, storage_prefix or prefix or "predict/ml")
+    raise RuntimeError(
+        "no artifact source: set ML_STORAGE_BUCKET (or pass --storage-bucket) for the "
+        "default Supabase Storage read, set ML_S3_BUCKET (or pass --s3-bucket) for the "
+        "S3 read, or pass --artifact PATH for the local fallback"
+    )
 
 
 def run(event=None, context=None):
@@ -604,8 +654,10 @@ def run(event=None, context=None):
 
     bucket = event.get("s3_bucket") or os.environ.get("ML_S3_BUCKET")
     prefix = event.get("s3_prefix") or os.environ.get("ML_ARTIFACT_PREFIX", "predict/ml")
+    storage_bucket = event.get("storage_bucket") or os.environ.get("ML_STORAGE_BUCKET")
+    storage_prefix = event.get("storage_prefix") or os.environ.get("ML_ARTIFACT_STORAGE_PREFIX", "predict/ml")
 
-    key, bundle = pick_daily_bundle(bucket, prefix, event.get("artifact_path"))
+    key, bundle = pick_daily_bundle(bucket, prefix, event.get("artifact_path"), storage_bucket, storage_prefix)
     meta = bundle["metadata"]
     stale = staleness_note(bundle)
     print(
@@ -688,6 +740,17 @@ def main(argv=None):
     )
     parser.add_argument("--s3-bucket", default=None, help="override the ML_S3_BUCKET env (default S3 source)")
     parser.add_argument("--s3-prefix", default=None, help="override the ML_ARTIFACT_PREFIX env (default predict/ml)")
+    parser.add_argument(
+        "--storage-bucket",
+        default=None,
+        help="Supabase Storage bucket override (default the ML_STORAGE_BUCKET env, e.g. ml-artifacts) - "
+        "the no-AWS-credentials artifact source",
+    )
+    parser.add_argument(
+        "--storage-prefix",
+        default=None,
+        help="Supabase Storage path override (default the ML_ARTIFACT_STORAGE_PREFIX env, predict/ml)",
+    )
     args = parser.parse_args(argv)
 
     event = {}
@@ -701,6 +764,10 @@ def main(argv=None):
         event["s3_bucket"] = args.s3_bucket
     if args.s3_prefix:
         event["s3_prefix"] = args.s3_prefix
+    if args.storage_bucket:
+        event["storage_bucket"] = args.storage_bucket
+    if args.storage_prefix:
+        event["storage_prefix"] = args.storage_prefix
     return run(event)
 
 
