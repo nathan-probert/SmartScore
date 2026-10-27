@@ -16,8 +16,10 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
     exact ordered feature columns;
   * it picks one player per tims group (model.daily_picks' rule, applied by
     the ensemble's mean within-group rank percentile) and publishes through
-    the existing Picks-{ENV} conventions (smartscore/utility.py save_to_db,
-    reached via the publish_public_db row shape) - no manual Supabase writes.
+    the existing Picks-{ENV} conventions, reached via the publish_public_db
+    row shape, through a schema-safe wrapper (save_picks_db below) that
+    probes the table's live columns BEFORE the delete and restores the
+    pre-wipe rows if the insert fails - no manual Supabase writes.
 
 Manual trigger: the workflow's ``date`` input (or ``--date YYYY-MM-DD``)
 overrides ET-today; ``dry``/``--dry`` skips the Picks write (smoke run).
@@ -54,7 +56,11 @@ sys.path.insert(1, str(_here.parent))
 import model  # noqa: E402
 
 from config import ENV, SUPABASE_ADMIN_CLIENT  # noqa: E402
-from utility import save_to_db  # noqa: E402  (the existing Picks-{ENV} writer)
+
+# The existing Picks-{ENV} conventions (save_to_db, utility.py) are kept as
+# documentation-of-record; the write itself goes through save_picks_db below
+# (schema-probe -> wipe -> insert -> restore-on-failure) because save_to_db's
+# unscoped POST wipes the table before the insert can fail.
 
 # Bounded prior window: prev2/3_goals, games_since_goal (cap 15 games) and
 # days_since_game need each player's immediately-prior snapshot rows;
@@ -88,6 +94,14 @@ REQUIRED_SNAPSHOT_COLUMNS = [
 PICK_DB_COLUMNS = ["date", "player_id", "name", "team_name", "stat", "tims", "gpg", "hgpg", "ppg"]
 CHALLENGE_GROUPS = [1, 2, 3]
 EXPECTED_PICKS = 3
+
+# Whitelist keys that NO Picks-{ENV} table has (dev spot-checked 2026-10-27:
+# PostgREST 42703 "column Picks-{ENV}.ppg does not exist" on both envs). The
+# legacy write helper WIPES the table before it inserts (utility.py:409), so
+# one unsupported key in the payload = wipe succeeds, insert fails PGRST204,
+# table left empty. The whitelist keeps the training-frame keys for the
+# record; REMOVE_KEYS decides what is actually serialized.
+REMOVE_KEYS = ["ppg"]
 
 
 # ---------------------------------------------------------------- artifact
@@ -397,7 +411,14 @@ def validate_picks(picks, on_date):
 
 
 def pick_rows_to_picks_db(picks):
-    """Whitelist into the Picks-{ENV} write shape (PICK_DB_COLUMNS)."""
+    """Whitelist into the Picks-{ENV} write shape (PICK_DB_COLUMNS).
+
+    REMOVE_KEYS are dropped here, before anything reaches the write helper:
+    the serialization is exactly the Picks table's live columns (see
+    pick_daily_bundle's sibling note in the module docstring - a table schema
+    change updates the whitelist AND a migration, or REMOVE_KEYS).
+    """
+    write_keys = [key for key in PICK_DB_COLUMNS if key not in REMOVE_KEYS]
     rows = []
     for _, row in picks.iterrows():
         stat = row.get("ensemble", np.nan)
@@ -406,7 +427,7 @@ def pick_rows_to_picks_db(picks):
         else:
             stat = round(float(stat) * 100, 1)
         values = []
-        for key in PICK_DB_COLUMNS:
+        for key in write_keys:
             if key == "stat":
                 values.append(stat)
             elif key in ("player_id", "tims"):
@@ -417,8 +438,120 @@ def pick_rows_to_picks_db(picks):
                 if isinstance(value, np.generic):
                     value = value.item()
                 values.append(value)
-        rows.append(dict(zip(PICK_DB_COLUMNS, values)))
+        rows.append(dict(zip(write_keys, values)))
     return rows
+
+
+# ------------------------------------------------------------ schema-safe write
+
+
+def _unsupported_picks_keys(table, keys):
+    """Payload keys that are NOT columns of ``table`` (a fail-safe pre-delete check).
+
+    The codebase's cheapest stable schema probe (the same select-a-column
+    pattern ``publish_shot_cols.columns_landed`` uses at
+    publish_shot_cols.py:292): PostgREST 400s ANY request naming an unknown
+    column, so one select naming ALL the payload keys can only succeed when
+    every key is a real column - and, unlike reading a first row, the probe
+    also proves the columns exist on an EMPTY table (the exact state the
+    smoke-run wipe left Picks-dev in). Falls back to per-key probes so the
+    caller's raise names exactly which keys the table rejects; any probe
+    error means "unreachable or unknown column", and an unreachable table is
+    the safe direction (the write aborts before ANY delete).
+    """
+    keys = sorted(keys)
+    try:
+        SUPABASE_ADMIN_CLIENT.table(table).select(",".join(keys)).limit(1).execute()
+    except Exception:  # noqa: BLE001 - probe failure is only the fast path; classify per key
+        unsupported = []
+        for key in keys:
+            try:
+                SUPABASE_ADMIN_CLIENT.table(table).select(key).limit(1).execute()
+            except Exception:  # noqa: BLE001 - any failure means the key is not a real column
+                unsupported.append(key)
+        return unsupported
+    return []
+
+
+def _picks_table_rows(table):
+    """Every row of ``table`` (the restore material for save_picks_db)."""
+    return SUPABASE_ADMIN_CLIENT.table(table).select("*").execute().data or []
+
+
+def save_picks_db(rows, date):
+    """Replace the ENTIRE Picks-{ENV} table with the run's picks - but only
+    when the insert is safe.
+
+    The legacy write helper's unscoped POST (save_to_db -> utility.py:409/411,
+    reached by run_daily_picks until this wrapper) wipes the table BEFORE it
+    inserts, so an insert failure leaves the table EMPTY. The smoke run did
+    exactly that to Picks-dev: the payload shipped a `ppg` key, the wipe
+    succeeded, the insert failed PGRST204. This wrapper keeps the existing
+    wipe-then-insert order (the published single-day convention:
+    delete-all then reinsert, ids restarted at 1 like save_to_db) but makes
+    it fail-safe:
+
+      1. BEFORE ANY delete: schema-probe every payload key against the live
+         Picks-{ENV} table (_unsupported_picks_keys). One unsupported key
+         raises and the table is untouched - the old state survives, and the
+         failure names the offending keys.
+      2. The full pre-wipe rows are read into memory (``prior``), the same
+         capture-before-wipe move _prior_goalie_values makes for its own
+         wipe (utility.py:74-77).
+      3. Wipe (the same ``delete().neq("id", 0)`` the legacy helper uses),
+         then insert the new rows with ``id = 1 + i`` (save_to_db's id
+         convention, utility.py:117).
+      4. If the insert (or the post-write count verify) fails: a best-effort
+         re-insert of ``prior`` (its keys are the table's own columns by
+         construction) and RAISE - so a failed run leaves the realized end
+         state as the OLD table, never 0.
+
+    NOT a Postgres transaction: if the process dies between the delete and
+    the insert the table stays empty until the next successful run, and if
+    the restore insert itself fails BOTH errors are reported in one raise
+    (the wipe is then the realized end state, stated loudly). A failed
+    DELETE needs no restore: PostgREST's delete is atomic, so its exception
+    leaves the old rows in place.
+    """
+    if not rows:
+        print(
+            f"save_picks_db: no pick rows for {date}; NO write (wipe skipped - the Picks table is untouched)",
+            flush=True,
+        )
+        return
+    table = f"Picks-{ENV}"
+    unsupported = _unsupported_picks_keys(table, {key for row in rows for key in row})
+    if unsupported:
+        raise RuntimeError(
+            f"picks write aborted BEFORE any delete: {table} has no column(s) {unsupported} "
+            "(payload keys must be a subset of the live table columns - fix REMOVE_KEYS "
+            "or add the columns; the legacy wipe-then-insert would have emptied the table)"
+        )
+    prior = _picks_table_rows(table)
+    try:
+        # Wipe, then insert: identical semantics to the legacy unscoped POST
+        # (utility.py:409/411), keeping the ids-restart-at-1 convention.
+        SUPABASE_ADMIN_CLIENT.table(table).delete().neq("id", 0).execute()
+        payload = [dict(row, id=i + 1) for i, row in enumerate(rows)]
+        SUPABASE_ADMIN_CLIENT.table(table).upsert(payload).execute()
+        persisted = SUPABASE_ADMIN_CLIENT.table(table).select("id").execute().data or []
+        if len(persisted) != len(payload):
+            raise RuntimeError(f"post-write verify mismatch: {len(persisted)} rows published, expected {len(payload)}")
+    except Exception as insert_error:  # noqa: BLE001 - restored below, then re-raised chained
+        try:
+            if prior:
+                SUPABASE_ADMIN_CLIENT.table(table).upsert(prior).execute()
+            report = (
+                f"picks insert FAILED; the pre-wipe rows were re-inserted, so {table} "
+                f"holds its OLD state. original error: {insert_error!r}"
+            )
+        except Exception as restore_error:  # noqa: BLE001 - the restore report must still name both failures
+            report = (
+                f"picks insert FAILED and the best-effort RESTORE ALSO failed - {table} "
+                f"stays WIPE-EMPTY. original error: {insert_error!r}; restore error: {restore_error!r}"
+            )
+        print(f"save_picks_db: {report}", flush=True)
+        raise RuntimeError(report) from insert_error
 
 
 # ------------------------------------------------------------------ run
@@ -497,7 +630,10 @@ def run(event=None, context=None):
     validate_picks(picks, on_date)
     rows = pick_rows_to_picks_db(picks)
     if not dry:
-        save_to_db(rows)
+        # schema-safe full replace: the wipe commits only when the insert is
+        # safe (probe before delete + restore-on-insert-failure); on failure
+        # the run raises instead of leaving Picks-{ENV} empty.
+        save_picks_db(rows, on_date)
     mean_max_prob = round(float(pd.to_numeric(picks["ensemble"], errors="coerce").mean()), 4) if len(picks) else None
     print(
         json.dumps(

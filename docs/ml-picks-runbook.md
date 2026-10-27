@@ -40,8 +40,8 @@ migrated columns missing (docs/supabase_shot_columns.md), builds the frame
 via `model.build_frame`/`add_derived(source="supabase")`, scores with the
 ensemble's mean within-(date, tims) rank percentile, applies
 `model.daily_picks` (one pick per tims group), validates the 3-pick shape,
-and publishes through `utility.save_to_db` — the identical chain the Lambda
-executed. It emits ONE structured log line (`log: SMARTSCORE_ML_PICKS`,
+and publishes through `save_picks_db` — the identical chain the Lambda
+executed, worked through a schema-safe write. It emits ONE structured log line (`log: SMARTSCORE_ML_PICKS`,
 JSON) and appends a headline to the job summary, plus a stale-artifact
 warning when the artifact trains through a date older than 7 days.
 
@@ -188,8 +188,15 @@ untouched.
 * The 16 columns must be backfilled/populated per env — the pass
   hard-fails (fail-closed) naming exactly what is missing (intentional),
   same as before.
-* `pick_rows_to_picks_db` whitelists Picks-{ENV} columns; a table schema
-  change must be reflected in the whitelist + migration.
+* `pick_rows_to_picks_db` whitelists Picks-{ENV} columns (minus
+  REMOVE_KEYS — `ppg` is not a table column on either env and used to
+  wipe-then-fail the write, PGRST204); a table schema change must be
+  reflected in REMOVE_KEYS/the whitelist + migration. The write itself is
+  fail-safe by order: `save_picks_db` schema-probes every payload key
+  against the live table BEFORE deleting anything (unknown key = loud
+  raise, table untouched), and on an insert failure after the wipe it
+  re-inserts the captured pre-wipe rows (best-effort restore) and raises,
+  so a failed run leaves the OLD table, never 0.
 * DST drift: the fixed UTC cron moves an hour across clock changes
   relative to ET (section 1).
 * Prod snapshot rows may be empty if publishes stop — the pass fails
@@ -235,9 +242,11 @@ compute runs on the GitHub Actions runner via a tiny relay Lambda.
   same way. NEVER commit the token; `deploy.sh` never prints it.)
 * **Idempotent kick semantics:** multiple kicks per date are fine and
   EXPECTED (one per game start). Every kick re-runs the same daily pass;
-  Picks writes are per-day upserts via `save_to_db`, so only the FIRST
-  run per date materially regenerates picks and subsequent runs are
-  no-op upserts over identical rows. The workflow serializes reruns via
+  the Picks write is a full wipe-then-reinsert of the run's 3 picks via
+  `save_picks_db` (probe-before-delete + restore-on-insert-failure), so a
+  repeat pass for the same date rewrites the same rows rather than
+  duplicating them. The workflow serializes reruns via
+  its `concurrency` group, so two kicks overlapping queue, not race.
   its `concurrency` group, so two kicks overlapping queue, not race.
 * **Cost/rates for an NHL day:** ~15 games/day after the first game
   starts → ~15 kicks/day on the AWS side (each is one Lambda invocation

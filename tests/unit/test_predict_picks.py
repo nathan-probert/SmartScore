@@ -245,11 +245,11 @@ def fake_s3(monkeypatch, bundle):
 
 
 def fake_save(monkeypatch, calls):
-    def _fake(rows):
+    def _fake(rows, _date):
         calls.extend(rows)
         return rows
 
-    monkeypatch.setattr("run_daily_picks.save_to_db", _fake)
+    monkeypatch.setattr("run_daily_picks.save_picks_db", _fake)
 
 
 # --------------------------------------------------------------- artifacts
@@ -475,8 +475,12 @@ def test_pick_payload_whitelist():
         "tims": 1,
         "gpg": 0.5,
         "hgpg": 0.1,
-        "ppg": 0.2,
     }
+    # `ppg` is not a live Picks-{ENV} column on either env (smoke: the legacy
+    # wipe-then-insert shipped it, the insert failed PGRST204, the table was
+    # left empty); REMOVE_KEYS strips it before anything is serialized.
+    assert "ppg" in mod.REMOVE_KEYS
+    assert {k for row in rows for k in row}.isdisjoint(mod.REMOVE_KEYS)
 
 
 # ------------------------------------------------------ handler end-to-end
