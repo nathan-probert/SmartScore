@@ -45,13 +45,49 @@ frame from THREE read-only sources (docs/ml-picks-runbook.md §1.1 below):
   fetched FULL-history (career_* are expanding career sums; a bounded
   window mis-states every veteran's block) via `model.fetch_table`'s
   month-window pagination;
-* **the 14 shot/TOI features** for today's rows — computed by the SAME
-  pandas core `model.shot_features()` runs
+* **the 14 shot/TOI features** for today's rows — computed EXACTLY — the
+  SAME pandas core `model.shot_features()` runs
   (`shot_features_from_games`, imported, never forked) over the raw
   per-game store `data/raw_nhl.sqlite` + one synthetic today-row per
-  player; the store rebuilds anywhere from the committed
-  `data/dumps/<season>.sql.gz` (`dump_store.load`), so CI needs no crawl
-  and no local state.
+  player. The store is rebuilt ON THE RUNNER before inference by the job's
+  refresh steps (section 1.2): the committed `data/dumps/<season>.sql.gz`
+  dumps (`dump_store.load`) plus the current season's played games, crawled
+  on HTTP-cache miss through the public NHL endpoints (`refresh_store.py`
+  -> `local_store.build`/`nhl_client`). No Supabase anywhere in the
+  refresh; no credentials in it at all.
+
+### 1.2 The runner-side store refresh (ml-picks.yml, before inference)
+
+The job's `picks` job runs, before the picks pass:
+
+1. `dump_store.py --load` — un-gzips the committed season dumps into the
+   runner's `data/raw_nhl.sqlite` (~6 min, measured 2026-10-27: 685,914
+   player-games for 13 dumps). The dumps hold COMPLETED seasons; the
+   current season's rows are not in any dump until the owner's
+   `make backtrack-export` + commit, which is why step 2 exists.
+2. `refresh_store.py --skip-load --through <ET slate date>` — `--skip-load`
+   because step 1 already loaded the dumps (a pass pays the ~6 min dump
+   load once; refresh_store falls back to a full load if the store is
+   missing anyway). It drops the season
+   schedule cache (never trusts a warm schedule file: DAILY_DATA_RUNBOOK §2
+   gotcha), then `local_store.build(season)` walks the season schedule and
+   fetches every played game the store lacks on HTTP-cache miss (box score
+   + shift charts per game, per-player game logs, tims/goalie feeds).
+   ~8 min cold on a fresh season start, ~1-3 min warm-served (measured
+   nightly cadence: 7.5-8.2 min on the owner box, DAILY_DATA_RUNBOOK).
+
+Idempotency/nature of the cache: `data/cache` (nhl_client's HTTP cache) is
+kept between runs by an `actions/cache` step, so the second pass of a day —
+the per-game kicks — re-fetches only newly FINAL games. Nothing else of the
+refresh survives the job: `data/raw_nhl.sqlite` itself is rebuildable in
+~that same time by the committed dumps, so the runner's per-run ephemeral
+filesystem is fine. Steps run TWICE/day (nightly cron + kicks) without
+re-downloading already-cached games; the crawl step is
+`continue-on-error` — an NHL-endpoint flake DEGRADES the pass (the store
+stays at the dumps' vintage; `run_daily_picks` prints its ONE stale-store
+warning for the affected game days and continues, section 1.1), it never
+kills the schedule. Say it plainly: **the refresh adds ~10-20 min per pass
+and is cache-bounded**; on a public repo the runner minutes stay free.
 
 then builds the frame via `model.build_frame`/`add_derived(source="supabase")`
 (a pick-date context row per fixture is injected from the live snapshot's
@@ -204,7 +240,8 @@ same-game `lineup_unit`.
 ## 5. Cost: $0.00
 
 * GitHub Actions on a PUBLIC repo: free (standard hosted-runner minutes for
-  public repos cost nothing; this job is a few minutes a day).
+  public repos cost nothing; with the store refresh in the job this is
+  ~tens of minutes a day across the cron pass and the kicks — still free).
 * S3 artifact: free at this scale (a few MB per vintage, a couple of reads
   a day).
 * No ECR, no Lambda, no EventBridge, no CloudWatch — the whole MLPicks AWS
@@ -252,11 +289,21 @@ untouched.
   in run_daily_picks.py — team_name / opp_goalie_* / the morning rates);
   the pass hard-fails (fail-closed) naming exactly what is missing
   (intentional), same as the old 16-column contract.
-* The shot block is only as fresh as the raw per-game store (the committed
-  dumps): a pick date whose games predate the last `make backtrack-export` +
-  commit has its rolling/ewm/career features computed without those days —
-  the missing-day warning names them (section 1.1). Refresh duty is the
-  same owner cadence as the backtrack publish (section 2a-2b).
+* The shot block is only as fresh as the runner-side refresh chain (section
+  1.2): a crawl failure leaves the store at the committed dumps' vintage and
+  the pass degrades with the ONE stale-store warning (warn-not-exit,
+  section 1.1). What is EXACT on the deployed path since
+  cd05868 + the refresh commit: today's 14 shot/TOI features — the same
+  data, the same core, dump-load + crawl rebuilt everywhere, parity < 1e-9
+  (evidence: the refresh commit's parity note, 2026-10-23, 80 players).
+  What is still attached from PUBLISHED rows and therefore lags by the
+  publish cadence (unchanged, by design): the team rates (`tgpg`, `otga`,
+  `otshga`) from `Team-Stats-backtrack-{ENV}` and the goalie context
+  (`gaa`/`save_pct`/...) from `Goalie-Snapshots-backtrack-{ENV}` plus the
+  LIVE snapshot's own morning rates — those tables' grains (team totals,
+  goalie starts) are not in the raw per-game store's scope for the picks
+  frame, and their freshness is governed by the same nightly publish they
+  always had (section 2a-2b cadence, DAILY_DATA_RUNBOOK).
 * `pick_rows_to_picks_db` whitelists Picks-{ENV} columns (minus
   REMOVE_KEYS — `ppg` is not a table column on either env and used to
   wipe-then-fail the write, PGRST204); a table schema change must be
@@ -321,8 +368,12 @@ compute runs on the GitHub Actions runner via a tiny relay Lambda.
 * **Cost/rates for an NHL day:** ~15 games/day after the first game
   starts → ~15 kicks/day on the AWS side (each is one Lambda invocation
   ~free) and ~15 one-dispatch GitHub API calls (far below the repo's 60+
-  authenticated requests/hour headroom; no self-limiting needed). The
-  Actions job itself costs ~3-6 minutes per pass, 30 passes worst case.
+  authenticated requests/hour headroom; no self-limiting needed). With the
+  runner-side store refresh (section 1.2) each Actions pass costs ~10-20
+  min (refresh) + ~3-6 min (the pass itself), so ~30 passes worst case per
+  NHL day; on a public repo the hosted-runner minutes stay free, and the
+  HTTP-cache step makes a same-day second pass cheap (newly FINAL games
+  only).
 * **Nightly-cron interplay:** if both the 09:30 UTC cron and per-game
   kicks fire, the result is harmlessly ONE EXTRA pass — same upserts,
   logged in job history as two runs for that date. Leave both on; the

@@ -56,6 +56,16 @@ mod = importlib.util.module_from_spec(_SPEC)
 sys.modules["run_daily_picks"] = mod
 _SPEC.loader.exec_module(mod)
 
+# The runner-side refresh wrapper (ml-picks.yml's crawl step): same import
+# pattern, no Supabase config manufactured (refresh_store deliberately
+# imports no config module).
+_RSPEC = importlib.util.spec_from_file_location(  # noqa: E402
+    "refresh_store", ROOT / "smartscore" / "scripts" / "backtrack" / "refresh_store.py"
+)
+refresh_mod = importlib.util.module_from_spec(_RSPEC)
+sys.modules["refresh_store"] = refresh_mod
+_RSPEC.loader.exec_module(refresh_mod)
+
 model = mod.model
 
 
@@ -726,6 +736,98 @@ def test_live_shot_block_replays_historical_date_exactly(env_vars, prediction_ta
     live_block = mod.derive_shot_block(x_date, [1, 2, 9, 10]).sort_values("player_id").reset_index(drop=True)
     diffs = (training_rows[model.SHOT_FEATURES] - live_block[model.SHOT_FEATURES]).abs()
     assert diffs.to_numpy().max() < 1e-9
+
+
+# ----------------------------------------------------------- refresh store
+
+
+def test_refresh_chain_dumps_then_current_season(monkeypatch, tmp_path):
+    """The runner-side refresh chain: dump load FIRST, then the current
+    season's build for the --through date's season - and the season schedule
+    cache is dropped so the walk re-discovers newly FINAL games (the
+    DAILY_DATA_RUNBOOK section-2 gotcha: a warm schedule file is served
+    verbatim and silently freezes the game list). No fetches here at all:
+    build/load are stubbed, this asserts the ORDER + the season selection +
+    the schedule-cache eviction."""
+    calls = []
+    schedule_cache = tmp_path / "schedule-20262027.json"
+    schedule_cache.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(refresh_mod.dump_store, "load", lambda db, dumps: calls.append("load") or 685914)
+    monkeypatch.setattr(refresh_mod.local_store, "CACHE_DIR", tmp_path)
+
+    def _fake_build(season, db_path=None, delay_seconds=None):
+        calls.append(f"build:{season}:{delay_seconds}")
+
+        return 120, 120
+
+    monkeypatch.setattr(refresh_mod.local_store, "build", _fake_build)
+    connect_calls = []
+
+    class _FakeConn:
+        def execute(self, *_a, **_k):
+            connect_calls.append("query")
+
+            class _Row:
+                def fetchone(self):
+                    return (0,)
+
+            return _Row()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(refresh_mod.local_store, "connect", lambda _p: _FakeConn())
+
+    season, _rows, _newest = refresh_mod.refresh(
+        through="2026-10-27", db_path=tmp_path / "raw.sqlite", dump_dir=tmp_path
+    )
+
+    assert season == "20262027"
+    assert calls == ["load", "build:20262027:0.34"]
+    assert not schedule_cache.exists()  # fresh walk enforced
+    assert "20252026" == refresh_mod.season_label("2026-06-13")  # Jan-Jun -> year-1
+
+
+def test_refresh_is_idempotent_and_skips_load_with_warm_schedule(monkeypatch, tmp_path):
+    """--skip-load keeps the existing store and crawls only (a twice-a-day
+    pass never re-loads the dumps), and a cold refresh with --warm-schedule
+    (fresh_schedule=False) keeps the schedule cache instead of evicting it.
+    Season math: month>=7 belongs to the NEW season id."""
+    calls = []
+    schedule_cache = tmp_path / "schedule-20252026.json"
+    schedule_cache.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(refresh_mod.dump_store, "load", lambda *_a, **_k: calls.append("load") or 1)
+    monkeypatch.setattr(refresh_mod.local_store, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(
+        refresh_mod.local_store, "build", lambda season, **_k: calls.append(f"build:{season}") or (0, 0)
+    )
+
+    def _fake_conn(_p):
+        class _Conn:
+            def execute(self, *_a, **_k):
+                class _Row:
+                    def fetchone(self):
+                        return (0,)
+
+                return _Row()
+
+            def close(self):
+                pass
+
+        return _Conn()
+
+    monkeypatch.setattr(refresh_mod.local_store, "connect", _fake_conn)
+
+    (tmp_path / "raw.sqlite").write_text("", encoding="utf-8")  # store exists
+    season, _rows, _newest = refresh_mod.refresh(
+        through="2026-10-27", db_path=tmp_path / "raw.sqlite", dump_dir=tmp_path, skip_load=True, fresh_schedule=False
+    )
+
+    assert season == "20262027"  # October belongs to the new season
+    assert calls == ["build:20262027"]  # no dump load, no network fetch code touched
+    assert schedule_cache.exists()  # warm schedule kept on request
 
 
 # ----------------------------------------------------------- pick assembly

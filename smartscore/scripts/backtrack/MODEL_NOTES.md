@@ -504,6 +504,11 @@ Leakage checks: spot-checked a player-date against a manual prior-games query
 the current game's line is excluded; 418,885 / 427,240 rows join a shot block
 (the rest are first NHL games). No row-count change and no suffixed columns.
 
+Deployment pointer (2026-10-27): the deployed picks path now uses exact
+same-day shot-block computation via the runner-side store refresh (dumps
+load + current-season crawl on cache-miss, zero Supabase) - commit cd05868
+plus the refresh-store/workflow commit; see docs/ml-picks-runbook.md §1.1.
+
 Each extra feature group was added to the V2 set on its own (HGB, date-blocked
 k=5, train=all, **seed 0** fold assignment, 3,159 picks). Seed 0 V2 baseline
 reproduced at 916 hits / 28.997%.
