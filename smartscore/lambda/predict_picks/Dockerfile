@@ -94,4 +94,4 @@ ENV PYTHONPATH=/var/task:/var/python
 # ENTRYPOINT + CMD pair). Lambda requires the image to define ENTRYPOINT;
 # CMD supplies the handler spec.
 ENTRYPOINT ["python", "-m", "awslambdaric"]
-CMD ["ml_picks_handler.lambda_handler"]
+CMD ["ml_picks_handler.handler"]
