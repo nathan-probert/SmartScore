@@ -408,35 +408,46 @@ def _since_last_goal(history):
     return pd.Series(out, index=history.index)
 
 
-def shot_features():
-    """Prior-games-only shot / TOI / shooting-talent block from the raw store.
+def _toi_minutes(series):
+    """toi -> minutes float: 'MM:SS' strings parse to m + s/60; numeric
+    passthrough (the reconstructed-history path supplies minutes already).
+    Same parsing shot_features always ran, split out so both the raw-store
+    path and the reconstructed-history path share it verbatim."""
 
-    Supabase player snapshots carry goals and points but not shots or ice
-    time, and goals alone are a noisy talent estimate (~15% of rows score).
-    ``player_games`` has the boxscore line per player per game, so every
-    column here is an aggregate over that player's *strictly earlier* games:
-    season-to-date (prefix sums minus the current row), last-5/10, exponentially
-    weighted, and career-to-date. The current game's own line is never part of
-    any feature, which keeps the block pre-game and fold-safe.
+    def _parse(value):
+        if isinstance(value, str) and ":" in value:
+            minutes, seconds = str(value).split(":")[0], str(value).split(":")[1]
+            return int(minutes) + int(seconds) / 60
+        if isinstance(value, str):
+            return np.nan
+        return float(value) if value is not None and not pd.isna(value) else np.nan
+
+    return series.apply(_parse)
+
+
+def shot_features_from_games(games):
+    """Prior-games-only shot / TOI / shooting-talent block - the pandas core.
+
+    Single source of truth for the 14 SHOT_FEATURES: consumed BOTH by
+    ``shot_features`` (local raw store path - ``player_games`` straight from
+    data/raw_nhl.sqlite) and by run_daily_picks' live path (a per-game series
+    reconstructed from the published Player-Snapshots-backtrack rows - see
+    reconstruct_game_series there). ``games`` needs exactly the columns the
+    raw query selects: player_id, date, season, goals, shots, toi - one row
+    per player per game, any prior-games-agnostic ordering (it is re-sorted
+    here). Every column is an aggregate over that player's *strictly earlier*
+    games: season-to-date (prefix sums minus the current row), last-5/10,
+    exponentially weighted, and career-to-date. The current game's own line
+    is never part of any feature, which keeps the block pre-game and
+    fold-safe.
     """
-    con = sqlite3.connect(f"file:{RAW_DB}?mode=ro", uri=True)
-    games = pd.read_sql_query(
-        "SELECT player_id, game_date AS date, season, goals, shots, toi FROM player_games",
-        con,
-    )
-    con.close()
+    games = games.copy()
     games["date"] = games["date"].astype(str)
     games["season"] = games["season"].astype("Int64").astype(str)
     games = games.sort_values(["player_id", "date", "season"]).reset_index(drop=True)
     games["shots"] = pd.to_numeric(games["shots"], errors="coerce")
     games["goals"] = pd.to_numeric(games["goals"], errors="coerce")
-    games["toi_min"] = games["toi"].apply(
-        lambda value: (
-            int(str(value).split(":")[0]) + int(str(value).split(":")[1]) / 60
-            if isinstance(value, str) and ":" in value
-            else np.nan
-        )
-    )
+    games["toi_min"] = _toi_minutes(games["toi"])
 
     season_group = games.groupby(["player_id", "season"], sort=False)
     prior_games = season_group.cumcount()
@@ -470,6 +481,23 @@ def shot_features():
     games["career_shots_pg"] = player_group["shots"].transform(lambda series: series.shift(1).expanding().mean())
     cols = ["date", "player_id"] + SHOT_FEATURES
     return games[cols]
+
+
+def shot_features():
+    """The shot/TOI block from the raw store (the local training path).
+
+    Reads ``player_games`` and hands the rows to the shared pandas core
+    (``shot_features_from_games``) - the SAME function run_daily_picks' live
+    path feeds its reconstructed history series, so the two paths cannot
+    drift. See that function for the feature definitions.
+    """
+    con = sqlite3.connect(f"file:{RAW_DB}?mode=ro", uri=True)
+    games = pd.read_sql_query(
+        "SELECT player_id, game_date AS date, season, goals, shots, toi FROM player_games",
+        con,
+    )
+    con.close()
+    return shot_features_from_games(games)
 
 
 def projected_lineup_features(frame):

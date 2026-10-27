@@ -34,44 +34,55 @@ runner:
 Either way the job does: checkout -> `uv sync --frozen --no-dev` (the same
 runtime dependency surface `deploy.yml`'s deploy job installs) -> artifact
 fetch (default: S3 dated-prefix-latest; see section 3) ->
-`run_daily_picks.py`, which loads the artifact, builds the frame
-via `model.build_frame`/`add_derived(source="supabase")`, scores with the
-ensemble's mean within-(date, tims) rank percentile, applies
+`run_daily_picks.py`, which loads the artifact, then assembles the day's
+frame from THREE read-only sources (docs/ml-picks-runbook.md §1.1 below):
+
+* **today's rows** — the LIVE snapshot table `Player-Snapshots-{ENV}`
+  (the daily snapshot the pipeline's snapshot build publishes each
+  morning);
+* **history** — the backtrack tables (Player-Snapshots / Team-Stats /
+  Goalie-Snapshots `-backtrack-{ENV}`), STRICTLY before the pick date,
+  fetched FULL-history (career_* are expanding career sums; a bounded
+  window mis-states every veteran's block) via `model.fetch_table`'s
+  month-window pagination;
+* **the 14 shot/TOI features** for today's rows — computed by the SAME
+  pandas core `model.shot_features()` runs
+  (`shot_features_from_games`, imported, never forked) over the raw
+  per-game store `data/raw_nhl.sqlite` + one synthetic today-row per
+  player; the store rebuilds anywhere from the committed
+  `data/dumps/<season>.sql.gz` (`dump_store.load`), so CI needs no crawl
+  and no local state.
+
+then builds the frame via `model.build_frame`/`add_derived(source="supabase")`
+(a pick-date context row per fixture is injected from the live snapshot's
+own morning rates and confirmed opponent goalie, since the backtrack tables
+only gain a date's rows post-game), scores with
+the ensemble's mean within-(date, tims) rank percentile, applies
 `model.daily_picks` (one pick per tims group), validates the 3-pick shape,
 and publishes through `save_picks_db` — the identical chain the Lambda
 executed, worked through a schema-safe write. It emits ONE structured log line (`log: SMARTSCORE_ML_PICKS`,
 JSON) and appends a headline to the job summary, plus a stale-artifact
 warning when the artifact trains through a date older than 7 days.
 
-Data flow (the live/backtrack split):
+### 1.1 Missing-day and empty-snapshot semantics (owner-approved)
 
-1. **today** — the row source for the slate date is the LIVE snapshot table
-   `Player-Snapshots-{ENV}` (the daily snapshot build). The backtrack tables
-   only gain a date's rows AFTER that day's games end and the daily publish
-   runs, so an empty live table is NORMAL: `run_daily_picks` prints a
-   warning, writes NO picks, appends the "no picks computed" job-summary
-   line, and exits 0 with `status: "skipped"` — a green soft skip on
-   Actions, never a red traceback (gate on the `status` marker if a
-   workflow ever needs an explicit red).
-2. **history** — rows strictly before the slate date come from the
-   backtrack tables (Player/Team/Goalie-backtrack-). A missing backtrack
-   day, a lag before yesterday, or a >7-day lag each WARN loudly (the last
-   also prints the STALENESS WATCH line) and the run CONTINUES.
-3. **stage 1: honest approximation: rolling/career values taken from the
-   last published prior day; exact same-day recomputation is stage 2 (a
-   per-game raw-columns publish) and is planned** — today's live rows lack
-   the 14 shot/TOI aggregates (sd_*/r5_*/r10_*/ewm_*/career_*), so
-   `attach_prior_features` copies each player's values from that player's
-   last published prior backtrack row (max(date) < slate date). At most 1
-   day stale for rolling columns; a player with no prior published row
-   (call-up) lands NaN + a LOUD warn, and the artifact's already-committed
-   keep-empty-features imputer resolves the row.
-4. The 16-column hard fail (`require_snapshot_columns`) on the attached
-   today frame stays: once the daily build HAS run, today's rows genuinely
-   must be score-able, and a missing migrated column is a real failure.
-5. The kick/cron interplay is unchanged: the cron anchor above plus the
-   per-game kick (section 9) drive the same `run_daily_picks.py` entry
-   point; nothing moved.
+* A missing backtrack day is **NORMAL**: the tables only gain a date's rows
+  after that day's games end and the publish runs. The run prints ONE
+  warning listing the uncovered game days inside the 60-day lookback
+  (`WARNING: no history rows for game day(s) [...] ... continuing`) and
+  proceeds — the affected prior-games features simply lag by those days.
+  Never an exit.
+* If the LIVE snapshot itself has no rows for the pick date (the snapshot
+  build has not run yet), there is nothing to score: the run prints
+  `no picks computed: no live snapshot rows for <date>`, appends the same
+  line to the job summary, writes NO Picks rows, and exits 0 — CLEANLY, no
+  traceback. The scheduled job stays green.
+* The artifact staleness warning is unchanged (section 6).
+* Train/run parity of the shot block is enforced by test
+  `test_live_shot_block_matches_training_core` /
+  `test_live_shot_block_replays_historical_date_exactly`
+  (tests/unit/test_predict_picks.py): the live path's block equals
+  `shot_features()`' training math for the same rows, max abs diff < 1e-9.
 
 ## 2. Artifact refresh (owner-run, local, on demand; NOT scheduled)
 
@@ -80,8 +91,10 @@ Data flow (the live/backtrack split):
     # a. refresh the raw store for the recent seasons (local only)
     make backtrack-store SEASON=2025   # runs local_store.py --build 2025
     #    (+ SEASON=2026 when the new season opens)
-    # b. publish the newest rows to the backtrack tables (this is what feeds
-    #    the workflow's 16 shot/TOI+club snapshot columns day-of)
+    # b. publish the newest rows to the backtrack tables (the history source:
+    #    prior-games context for the ML pick pass - today's rows come from
+    #    the LIVE Player-Snapshots table, and today's shot/TOI block from the
+    #    raw store these dumps/rebuilds feed - see section 1.1)
     make backtrack-publish ENV=prod SEASON=2025 SEASON=2026
     # c. local on-demand train + export + upload
     make train-ml-export ENV=prod THROUGH=<latest> SEED=0
@@ -235,9 +248,15 @@ untouched.
 
 ## 8. Open risks
 
-* The 16 columns must be backfilled/populated per env — the pass
-  hard-fails (fail-closed) naming exactly what is missing (intentional),
-  same as before.
+* The LIVE snapshot must publish its context columns (REQUIRED_LIVE_COLUMNS
+  in run_daily_picks.py — team_name / opp_goalie_* / the morning rates);
+  the pass hard-fails (fail-closed) naming exactly what is missing
+  (intentional), same as the old 16-column contract.
+* The shot block is only as fresh as the raw per-game store (the committed
+  dumps): a pick date whose games predate the last `make backtrack-export` +
+  commit has its rolling/ewm/career features computed without those days —
+  the missing-day warning names them (section 1.1). Refresh duty is the
+  same owner cadence as the backtrack publish (section 2a-2b).
 * `pick_rows_to_picks_db` whitelists Picks-{ENV} columns (minus
   REMOVE_KEYS — `ppg` is not a table column on either env and used to
   wipe-then-fail the write, PGRST204); a table schema change must be
@@ -249,9 +268,10 @@ untouched.
   so a failed run leaves the OLD table, never 0.
 * DST drift: the fixed UTC cron moves an hour across clock changes
   relative to ET (section 1).
-* Prod snapshot rows may be empty if publishes stop — the pass fails
-  closed until `make backtrack-publish ENV=prod SEASON=<year>` runs (the
-  warning carries into the failing log line).
+* Prod LIVE snapshot rows may be empty if the pipeline's snapshot build
+  stops — the run then exits CLEANLY (warn + no picks + status 0, section
+  1.1) every day until the build recovers; the daily green-but-empty
+  summaries are the signal to check the pipeline.
 
 ## 9. Per-game kick (A-architecture)
 

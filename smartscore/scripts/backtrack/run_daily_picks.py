@@ -7,20 +7,27 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
   * training NEVER happens here (or anywhere in CI) - it only loads a
     versioned joblib artifact that the owner's train_export.py --upload run
     pushed from the local machine;
-  * it reads TODAY's player rows from the LIVE snapshot table
-    (Player-Snapshots-{ENV}, the daily build) and HISTORY rows strictly
-    before the slate date from the backtrack tables (Player-Snapshots- /
-    Team-Stats- / Goalie-Snapshots-backtrack-), joined through
-    ``model.build_frame(..., source="supabase")`` + ``model.add_derived`` -
-    model.py's math is imported, never forked; requires the 16 shot/TOI +
-    club columns (docs/supabase_shot_columns.md) on today's (attached)
-    frame with a hard fail naming exactly what is missing, and asserts the
-    built frame has the artifact's exact ordered feature columns;
-
-  STAGE 1 HONEST APPROXIMATION: rolling/career values taken from the last
-  published prior day; exact same-day recomputation is stage 2 (a per-game
-  raw-columns publish) and is planned.
-
+  * TODAY's prediction rows come from the LIVE snapshot table
+    Player-Snapshots-{ENV} (what the pipeline's daily snapshot build
+    publishes each morning); the BACKTRACK tables
+    (Player-Snapshots-backtrack-{ENV}, Team-Stats-backtrack-{ENV},
+    Goalie-Snapshots-backtrack-{ENV}) are used ONLY as history - they gain a
+    date's rows after that day's games end and the publish runs, so a
+    missing recent day is NORMAL: the run prints ONE warning and continues;
+  * the 14 shot/TOI features for today's rows are computed by the SAME
+    pandas core model.shot_features() runs (shot_features_from_games -
+    imported, never forked) over the raw per-game store
+    (data/raw_nhl.sqlite, rebuilt anywhere from the committed
+    data/dumps/<season>.sql.gz) plus one synthetic today-row per player;
+    a day the sources have not caught up to costs a WARNING, not the run;
+  * when the LIVE snapshot itself has no rows for the pick date there is
+    nothing to score: the run warns ("no picks computed: no live snapshot
+    rows for <date>") and exits CLEANLY (status 0, no Picks write, no
+    traceback) instead of hard-failing the schedule;
+  * it requires the live snapshot's own context columns (team/opponent/
+    goalie/rate fields - REQUIRED_LIVE_COLUMNS) with a hard fail naming
+    exactly what is missing, and asserts the built frame has the artifact's
+    exact ordered feature columns;
   * it picks one player per tims group (model.daily_picks' rule, applied by
     the ensemble's mean within-group rank percentile) and publishes through
     the existing Picks-{ENV} conventions, reached via the publish_public_db
@@ -39,9 +46,11 @@ always wins; (2) S3 - the lexically latest .joblib under the dated prefix
 prefix ``predict/ml``, same key convention) - the no-AWS-credentials path
 the ml-picks workflow runs by DEFAULT (same SUPABASE_* secrets inference
 needs; load_artifact_storage below). If S3 is configured but its
-credentials are absent, the run falls through to Storage. No rewrite, no
-fork: every function below is the former smartscore/lambda/predict_picks/
-handler.py logic verbatim, only moved and re-anchored.
+credentials are absent, the run falls through to Storage. The artifact
+loading below is the former smartscore/lambda/predict_picks/handler.py
+logic verbatim, only moved and re-anchored; the data-assembly functions
+(today_live_rows / history_rows / derive_shot_block) implement the
+owner-approved live-snapshot data flow documented in the bullets above.
 """
 
 import argparse
@@ -49,6 +58,7 @@ import datetime
 import io
 import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -64,6 +74,7 @@ _root = _here.parents[2]
 sys.path.insert(0, str(_root / "smartscore"))
 sys.path.insert(1, str(_here.parent))
 import model  # noqa: E402
+from team_map import TEAM_ABBREV_TO_PLACE  # noqa: E402
 
 from config import ENV, SUPABASE_ADMIN_CLIENT  # noqa: E402
 
@@ -72,39 +83,96 @@ from config import ENV, SUPABASE_ADMIN_CLIENT  # noqa: E402
 # (schema-probe -> wipe -> insert -> restore-on-failure) because save_to_db's
 # unscoped POST wipes the table before the insert can fail.
 
-# Bounded prior window: prev2/3_goals, games_since_goal (cap 15 games) and
-# days_since_game need each player's immediately-prior snapshot rows;
-# club/opp rest days need prior Team-Stats rows; the lineup projector looks
-# back 10 games. 60 days covers every in-season break with margin.
+# The HISTORY fetch is deliberately FULL (every published backtrack row
+# strictly before the pick date): career_games / career_goals_pg /
+# career_shots_pg are expanding CAREER sums and ewm_* is career-long - a
+# 60-day window mis-states all of them for veterans. HISTORY_WINDOW_DAYS
+# survives as the LOOKBACK WINDOW for the missing-day warning only (a game
+# day inside it that no history source covers yet = one warning line,
+# never an exit; the fetch itself is full-history).
 HISTORY_WINDOW_DAYS = int(os.environ.get("ML_HISTORY_WINDOW_DAYS", "60"))
 
 ARTIFACT_STALE_DAYS = 7
 
-# The 16 columns the migration must have published on the player snapshots
-# (docs/supabase_shot_columns.md): the 14 shot/TOI aggregates + 2 club abbrevs.
-REQUIRED_SNAPSHOT_COLUMNS = [
-    "sd_shots_pg",
-    "sd_goals_pg",
-    "sd_toi_pg",
-    "sd_sh_pct",
-    "r5_shots_pg",
-    "r5_goals_pg",
-    "r10_shots_pg",
-    "r10_goals_pg",
-    "r10_toi_pg",
-    "ewm_goals",
-    "ewm_shots",
-    "career_games",
-    "career_goals_pg",
-    "career_shots_pg",
+# Columns the run consumes from the published history (Player-Snapshots-
+# backtrack-{ENV}): the frame's prior-games context (scored labels for
+# prevN_goals/games_since_goal, tims/rate/lineup fields, club identity).
+# tgpg/otga/otshga are NOT here: on the player table they are null
+# placeholders (build_frame drops and re-merges them from Team-Stats), and
+# the 14 published shot columns are deliberately NOT fetched - today's shot
+# block is computed by the shared training core from the raw per-game store
+# (see derive_shot_block below).
+HISTORY_FETCH_COLUMNS = [
+    "date",
+    "player_id",
+    "name",
+    "team_name",
     "team_abbrev",
     "opponent_abbrev",
+    "home",
+    "tims",
+    "scored",
+    "gpg",
+    "hgpg",
+    "five_gpg",
+    "hppg",
+    "ppg",
+    "injury_status",
+    "injury_desc",
+    "lineup_unit",
+    "lineup_position_group",
+    "lineup_status",
+    "pp_unit",
 ]
 
-# The 14 shot/TOI aggregates today's LIVE rows lack; attach_prior_features
-# copies each from the player's last published prior backtrack row (stage 1
-# approximation; see attach_prior_features + docs/ml-picks-runbook.md).
-APPROX_ATTACH_COLUMNS = [col for col in REQUIRED_SNAPSHOT_COLUMNS if col not in ("team_abbrev", "opponent_abbrev")]
+TEAM_FETCH_COLUMNS = ["date", "team_abbrev", "team_name", "tgpg", "otga", "otshga", "season", "game_id"]
+GOALIE_FETCH_COLUMNS = [
+    "date",
+    "player_id",
+    "name",
+    "team_abbrev",
+    "team_name",
+    "gaa",
+    "save_pct",
+    "record",
+    "shutouts",
+    "games_played",
+    "season",
+]
+
+# The live snapshot's own context columns (Player-Snapshots-{ENV}): the
+# morning-fresh rates, club place name and confirmed opponent goalie the
+# frame's today-rows are built from. A snapshot missing any of these is a
+# real problem - hard fail naming exactly what is missing (the same
+# fail-closed contract the 16-column check had on the old backtrack read).
+REQUIRED_LIVE_COLUMNS = [
+    "date",
+    "player_id",
+    "name",
+    "team_name",
+    "opp_goalie_team",
+    "opp_goalie_name",
+    "home",
+    "tims",
+    "gpg",
+    "hgpg",
+    "five_gpg",
+    "hppg",
+    "tgpg",
+    "otga",
+    "otshga",
+    "opp_goalie_gaa",
+    "opp_goalie_save_pct",
+    "opp_goalie_record",
+    "opp_goalie_shutouts",
+    "opp_goalie_games_played",
+    "injury_status",
+    "injury_desc",
+    "lineup_unit",
+    "lineup_position_group",
+    "lineup_status",
+    "pp_unit",
+]
 
 PICK_DB_COLUMNS = ["date", "player_id", "name", "team_name", "stat", "tims", "gpg", "hgpg", "ppg"]
 CHALLENGE_GROUPS = [1, 2, 3]
@@ -331,178 +399,399 @@ def staleness_note(bundle):
 # ------------------------------------------------------------- Supabase read
 
 
-def fetch_window(table, order_cols, lo, hi, chunk=10_000):
-    """date-bounded, offset-paged read of one backtrack table (read-only)."""
-    query = SUPABASE_ADMIN_CLIENT.table(table).select("*").gte("date", lo).lt("date", hi)
-    for col in order_cols:
-        query = query.order(col)
-    frames, offset = [], 0
-    while True:
-        rows = query.range(offset, offset + chunk - 1).execute().data
-        if not rows:
-            break
-        frames.append(pd.DataFrame(rows))
-        offset += len(rows)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+def live_player_table(env):
+    """TODAY's rows live here: Player-Snapshots-{ENV} - the daily snapshot
+    the pipeline's snapshot build publishes each morning. NOT the backtrack
+    tables, which only gain a date's rows after that day's games end and the
+    publish runs (they are history - see history_rows)."""
+    return f"Player-Snapshots-{env}"
 
 
-def live_player_rows(env, on_date):
-    """Today's player rows from the LIVE snapshot table (Player-Snapshots-{env}).
+def today_live_rows(env, on_date):
+    """TODAY's prediction rows, read-only from the LIVE snapshot table.
 
-    The daily snapshot build (the daily publish job) writes each slate's
-    pre-game rows to the live table; the backtrack tables only gain a date's
-    rows AFTER that day's games end and the daily publish runs. So TODAY's
-    prediction rows live HERE, and an empty live table means "the daily
-    snapshot build has not run for today yet" - a NORMAL state, not an error:
-    a WARNING is printed and ``None`` returned so the caller can skip the run
-    cleanly (no picks written, exit 0, no traceback). Read-only, offset-paged.
+    Returns None (prints one warning, never raises) when the table has no
+    rows for ``on_date``: the morning snapshot build has not run yet, so
+    there is nothing to score and the run exits CLEANLY (warn + no picks
+    written + status 0). The retired contract raised RuntimeError here,
+    which took the whole scheduled job down whenever the snapshot build
+    lagged the 05:30 UTC picks cron.
     """
-    table = f"Player-Snapshots-{env}"
-    frames, offset = [], 0
-    while True:
-        rows = (
-            SUPABASE_ADMIN_CLIENT.table(table)
-            .select("*")
-            .eq("date", on_date)
-            .range(offset, offset + 10_000 - 1)
-            .execute()
-            .data
-        )
-        if not rows:
-            break
-        frames.append(pd.DataFrame(rows))
-        offset += len(rows)
-    frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    if frame.empty:
+    rows = SUPABASE_ADMIN_CLIENT.table(live_player_table(env)).select("*").eq("date", on_date).execute().data or []
+    if not rows:
         print(
-            f"WARNING: no live snapshot rows for {on_date} - the daily snapshot build has not "
-            f"run for today yet; no picks computed",
+            f"WARNING: no live snapshot rows for {on_date} in {live_player_table(env)} "
+            "- snapshot build has not run yet; no picks computed",
             flush=True,
         )
         return None
-    return frame
+    return pd.DataFrame(rows)
+
+
+def require_live_columns(today, on_date):
+    """The live snapshot's context contract (REQUIRED_LIVE_COLUMNS), fail-closed
+    and naming exactly what is missing - the shape the 16-column check had."""
+    missing = [col for col in REQUIRED_LIVE_COLUMNS if col not in today.columns]
+    if missing:
+        raise RuntimeError(
+            f"{live_player_table(ENV)} rows for {on_date} lack the context columns the "
+            f"ML pick pass consumes: missing exactly {missing}. "
+            "The daily snapshot build published a malformed slice."
+        )
+
+
+def _paged_date_window(table, columns, lo, hi, order_cols, chunk=model.PAGE):
+    """date-bounded, month-windowed, offset-paged read of one Supabase table
+    (read-only). The month windows are model.fetch_table's pattern: a single
+    ordered range over 600k+ rows trips PostgREST's statement timeout (57014).
+
+    Half-open on ``hi`` by construction: the pick date's own rows never leak
+    into a history fetch - a backtrack row FOR the pick date is post-game by
+    construction (the publish runs after that day's games) and must not enter
+    pre-game features. (model._month_windows' last window runs to the month's
+    end, so each window's hi is clamped to ``hi`` here.)
+    """
+    frames = []
+    for win_lo, month_hi in model._month_windows(lo, hi):
+        win_hi = min(month_hi, hi)
+        if win_lo >= win_hi:
+            continue
+        query = SUPABASE_ADMIN_CLIENT.table(table).select(",".join(columns)).gte("date", win_lo).lt("date", win_hi)
+        for col in order_cols:
+            query = query.order(col)
+        offset = 0
+        while True:
+            rows = query.range(offset, offset + chunk - 1).execute().data
+            if not rows:
+                break
+            frames.append(pd.DataFrame(rows))
+            offset += len(rows)
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    frame = pd.concat(frames, ignore_index=True)
+    return frame.sort_values(order_cols).reset_index(drop=True)
+
+
+def _first_published_date(table):
+    first = SUPABASE_ADMIN_CLIENT.table(table).select("date").order("date").limit(1).execute().data
+    if not first:
+        raise RuntimeError(f"{table} is empty - wrong --env, or nothing was published to it")
+    return first[0]["date"]
 
 
 def history_rows(env, before_date):
-    """Published history rows STRICTLY date < before_date from the three
-    backtrack tables ({Player,Team,Goalie}-*-backtrack-{env}) via the
-    existing month-window pagination (model._month_windows, the same windows
-    fetch_table uses). Read-only.
-
-    Published-lag semantics, in order of loudness:
-
-      * a game-date inside the window (a Team-Stats date) that the player
-        table has NO rows for -> ONE warn listing the missing dates, then
-        CONTINUE (a single day can be absent from the player grain without
-        the archive being unusable);
-      * the last published player row is NOT yesterday -> 'backtrack publish
-        appears stale' WARN (the daily publish normally lands the previous
-        day's rows the same night);
-      * the last published player row is >7 days old -> the career-staleness
-        LOUD watch line (career_* columns attached below would be market
-        stale); still proceed.
-    """
-    lo = (datetime.date.fromisoformat(before_date) - datetime.timedelta(days=HISTORY_WINDOW_DAYS)).isoformat()
-    hi = before_date
-    players_parts, teams_parts, goalie_parts = [], [], []
-    for win_lo, win_hi in model._month_windows(
-        lo, (datetime.date.fromisoformat(before_date) - datetime.timedelta(days=1)).isoformat()
-    ):
-        players_parts.append(fetch_window(model.player_table(env), ["date", "player_id"], win_lo, min(win_hi, hi)))
-        teams_parts.append(fetch_window(model.team_stats_table(env), ["date", "team_abbrev"], win_lo, min(win_hi, hi)))
-        goalie_parts.append(fetch_window(model.goalie_table(env), ["date", "player_id"], win_lo, min(win_hi, hi)))
-    players = _concat_nonempty(players_parts)
-    teams = _concat_nonempty(teams_parts)
-    goalies = _concat_nonempty(goalie_parts)
-    if players.empty:
-        print(
-            f"WARNING: backtrack publish appears stale: last published none (no rows in "
-            f"{model.player_table(env)} within the {HISTORY_WINDOW_DAYS}-day window before {before_date})",
-            flush=True,
-        )
-        return players, teams, goalies
-    snapped_dates = set(players["date"].astype(str))
-    game_dates = set(teams["date"].astype(str)) if not teams.empty else set()
-    missing = sorted(game_dates - snapped_dates)
+    """FULL prior history from Player-Snapshots-backtrack-{env}, STRICTLY
+    before the pick date (post-game rows for the pick date itself never
+    enter pre-game features), via the month-window pagination model.fetch_table
+    uses. Full history ON PURPOSE: career_games / career_goals_pg /
+    career_shots_pg are expanding career sums and ewm_* is career-long, so a
+    bounded window mis-states every veteran's block. The 14 published shot
+    columns are deliberately NOT fetched - today's block comes from the
+    shared training core over the raw per-game store (derive_shot_block)."""
+    table = model.player_table(env)
+    frame = _paged_date_window(
+        table, HISTORY_FETCH_COLUMNS, _first_published_date(table), before_date, ["date", "player_id"]
+    )
+    missing = [col for col in HISTORY_FETCH_COLUMNS if col not in frame.columns]
     if missing:
-        print(
-            f"WARN: {model.player_table(env)} has no snapshot rows for game date(s) {missing} inside the "
-            f"{HISTORY_WINDOW_DAYS}-day window - continuing with the days that ARE published",
-            flush=True,
-        )
-    last = max(snapped_dates)
-    lag_days = (datetime.date.fromisoformat(before_date) - datetime.date.fromisoformat(last)).days
-    if lag_days > 1:
-        print(f"WARNING: backtrack publish appears stale: last published {last}", flush=True)
-    if lag_days > ARTIFACT_STALE_DAYS:
-        print(
-            f"STALENESS WATCH: {model.player_table(env)} last published {last} ({lag_days} days before "
-            f"{before_date}) - career_* features attached from that day are >7 days stale; publish the "
-            f"backtrack archive before trusting the picks",
-            flush=True,
-        )
-    return players, teams, goalies
+        raise RuntimeError(f"{table} fetch lacks expected column(s) {missing}")
+    return frame
 
 
-def _concat_nonempty(frames):
-    frames = [f for f in frames if not f.empty]
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+def history_team_rows(env, before_date):
+    """Team-Stats-backtrack-{ENV} history, strictly before the pick date: the
+    club rates (tgpg/otga/otshga) at the training grain AND the game-day
+    schedule add_derived computes rest days from."""
+    table = model.team_stats_table(env)
+    frame = _paged_date_window(
+        table, TEAM_FETCH_COLUMNS, _first_published_date(table), before_date, ["date", "team_abbrev"]
+    )
+    return frame
 
 
-def attach_prior_features(live_players, history_players, before_date):
-    """STAGE 1 HONEST APPROXIMATION (documented verbatim in the runbook):
+def history_goalie_rows(env, before_date):
+    """Goalie-Snapshots-backtrack-{ENV} history, strictly before the pick
+    date (the season-to-date goalie rates the training frame merges; the
+    pick date's own opponent-goalie row is injected from the live snapshot
+    in _inject_today_context)."""
+    table = model.goalie_table(env)
+    return _paged_date_window(
+        table, GOALIE_FETCH_COLUMNS, _first_published_date(table), before_date, ["date", "player_id"]
+    )
 
-    stage 1: honest approximation: rolling/career values taken from the last
-    published prior day; exact same-day recomputation is stage 2 (a per-game
-    raw-columns publish) and is planned.
 
-    Today's live rows (Player-Snapshots-{env}) carry the slate/odds/lineup
-    columns but NOT the 14 shot/TOI aggregates (sd_*, r5_*, r10_*, ewm_*,
-    career_*) - those are published on the backtrack grain only (smoke
-    2026-10-27: live columns stop at odds/lineup/opp-goalie; the 16 migrated
-    columns live on Player-Snapshots-backtrack-prod). For each player, attach
-    the values of the missing aggregates (+ the 2 club abbrevs when absent -
-    provenance, not rolling math) from that player's LAST published prior row
-    (max(date) < before_date). At most 1 day stale for rolling columns;
-    puts career_* right within the published window.
+def warn_missing_history_days(teams, history, store_dates, on_date):
+    """ONE warning per gap kind inside the lookback window - and CONTINUE.
 
-    A player with NO prior published row (call-up / first artifact coverage)
-    gets NaN on the attached columns and a LOUD warn; the NaN stays and the
-    artifact's already-committed keep-empty-features imputer resolves the row.
+    A missing backtrack day is NORMAL: the tables only gain a date's rows
+    after that day's games end and the publish runs, so the run proceeds on
+    the history it has and the affected prior-games features lag by those
+    days. Two witnesses, both read-only:
+    * days the RAW STORE has games for (the crawl witnessed them) but the
+      published player history does not - the publish is lagging those;
+    * days after the raw store's newest game (the crawl/dump refresh has not
+      run since) - the shot/TOI block cannot see them yet.
     """
-    live = live_players.copy()
-    hist = history_players.copy()
-    if not hist.empty:
-        hist["date"] = hist["date"].astype(str)
-        hist = hist[hist["date"] < before_date].sort_values("date")
-        prior = hist.drop_duplicates("player_id", keep="last").set_index("player_id")
-    else:
-        prior = pd.DataFrame()
-    attach_cols = [col for col in APPROX_ATTACH_COLUMNS + ["team_abbrev", "opponent_abbrev"] if col not in live.columns]
-    for col in attach_cols:
-        if col in prior.columns:
-            live[col] = live["player_id"].map(prior[col])
-    uncovered_ids = set(live.loc[~live["player_id"].isin(prior.index), "player_id"])
-    if uncovered_ids:
-        names = live[live["player_id"].isin(uncovered_ids)]["name"].unique().tolist()
+    window_lo = (datetime.date.fromisoformat(on_date) - datetime.timedelta(days=HISTORY_WINDOW_DAYS)).isoformat()
+    store_days = {str(day) for day in (store_dates or [])}
+    published_days = set(history.loc[history["date"] >= window_lo, "date"].astype(str)) if not history.empty else set()
+    unpublished = sorted(day for day in store_days if window_lo <= day < on_date and day not in published_days)
+    if unpublished:
         print(
-            f"WARNING: {len(uncovered_ids)} today-row player(s) have NO prior published row in "
-            f"{model.player_table(ENV)} (call-up / first artifact coverage): "
-            f"players {names} (ids {sorted(uncovered_ids)}) - their attached rolling/career features "
-            "stay NaN; the artifact's keep-empty-features imputer resolves the row",
+            f"WARNING: no published history rows for game day(s) {unpublished} (window >= {window_lo}) - "
+            "the backtrack publish has not covered them yet; continuing with the history available "
+            "(the affected prior-games features lag by those days)",
             flush=True,
         )
-    return live
+    store_days_sorted = sorted(store_days)
+    if store_days_sorted:
+        newest = store_days_sorted[-1]
+        if newest < (datetime.date.fromisoformat(on_date) - datetime.timedelta(days=1)).isoformat():
+            print(
+                f"WARNING: the raw per-game store's newest game is {newest}; game days after that are in no "
+                "history source yet (crawl/dump refresh has not run) - the shot/TOI block for "
+                f"{on_date} is computed without them; continuing",
+                flush=True,
+            )
 
 
-def require_snapshot_columns(players_today):
-    missing = [col for col in REQUIRED_SNAPSHOT_COLUMNS if col not in players_today.columns]
+def season_label(on_date):
+    """The NHL season id ('20262027') a slate date belongs to: the season
+    that started the prior October runs through June, so Jan-Jun dates label
+    to year-1 (verified against player_games: 2014-06-13 -> '20132014')."""
+    day = datetime.date.fromisoformat(on_date)
+    start = day.year if day.month >= 7 else day.year - 1
+    return f"{start}{start + 1}"
+
+
+# ------------------------------------------------------- raw store (per-game)
+
+
+def _player_games_frame():
+    """The raw per-game boxscore lines, read-only, exactly the query
+    model.shot_features runs (player_id, date, season, goals, shots, toi)."""
+    con = sqlite3.connect(f"file:{model.RAW_DB}?mode=ro", uri=True)
+    try:
+        return pd.read_sql_query(
+            "SELECT player_id, game_date AS date, season, goals, shots, toi FROM player_games",
+            con,
+        )
+    finally:
+        con.close()
+
+
+def ensure_raw_store():
+    """data/raw_nhl.sqlite exists - or is rebuilt from the committed season
+    dumps (data/dumps/<season>.sql.gz are tracked in git: the raw layer's
+    audit trail; dump_store.load rebuilds the store anywhere with no crawl).
+    The CI runner needs exactly this: checkout + rebuild, no secrets, no
+    local state."""
+    if model.RAW_DB.exists():
+        return
+    print(f"{model.RAW_DB.name} missing; rebuilding from the committed dumps in data/dumps/ ...", flush=True)
+    import dump_store  # noqa: PLC0415  (same directory; only loaded when the store is absent)
+
+    dump_store.load()
+
+
+def derive_shot_block(on_date, player_ids, games=None):
+    """TODAY's 14 shot/TOI features, computed with the TRAINING math.
+
+    The raw per-game series plus ONE synthetic row per today's player (its
+    own zeros can never enter its features - every definition is shifted one
+    game) go through model.shot_features_from_games - the SAME pandas core
+    model.shot_features() feeds the training path, so this is the training
+    math verbatim, not a fork. Returns today's rows only: (date, player_id,
+    14 features).
+    """
+    ensure_raw_store()
+    games = _player_games_frame() if games is None else games
+    # A replayed historical date's rows already exist in the store (the live
+    # path's equivalence tests/repairs use this); only players the store has
+    # NO game row for on the date get the synthetic today-line.
+    have = set(games.loc[games["date"] == on_date, "player_id"])
+    synthetic_ids = [
+        pid for pid in dict.fromkeys(pd.to_numeric(pd.Series(list(player_ids))).tolist()) if pid not in have
+    ]
+    synthetic = pd.DataFrame(
+        {
+            "player_id": synthetic_ids,
+            "date": on_date,
+            "season": season_label(on_date),
+            "goals": 0,
+            "shots": 0,
+            "toi": 0,
+        }
+    )
+    block = model.shot_features_from_games(pd.concat([games, synthetic], ignore_index=True))
+    block = block[block["date"] == on_date].reset_index(drop=True)
+    missing = [col for col in model.SHOT_FEATURES if col not in block.columns]
     if missing:
+        raise RuntimeError(f"shot-block core produced no column(s) {missing} for {on_date}")
+    return block
+
+
+# ----------------------------------------------------- today-frame assembly
+
+
+def _place_abbrev_map():
+    """place name -> [team_abbrev]; the New York place holds BOTH clubs
+    (team_map.py) and needs the caller's context to disambiguate."""
+    place_map = {}
+    for abbrev, place in TEAM_ABBREV_TO_PLACE.items():
+        place_map.setdefault(place, []).append(abbrev)
+    return place_map
+
+
+# The abbreviations that SHARE a place name (NYR + NYI both render "New
+# York") - the rows whose club needs fixture/history context to resolve.
+PLACE_AMBIGUOUS = {abbrev for abbrs in _place_abbrev_map().values() if len(abbrs) > 1 for abbrev in abbrs}
+
+
+def _map_live_rows(today, history, goalies):
+    """Map the live snapshot rows onto the training-frame shape.
+
+    The live table publishes the club as a PLACE name (team_name - "New York"
+    for both NYI and NYR, team_map.py) and the opponent as an abbrev
+    (opp_goalie_team); the frame needs team_abbrev / opponent_abbrev. The
+    ambiguous place resolves in order: the opponent's own abbrev (a club
+    never plays itself), the opponent goalie's latest published club, the
+    player's own latest published club. Still-unresolvable rows raise,
+    naming the row - a club identity you cannot establish is a real snapshot
+    problem, and silently guessing would corrupt opponent-goalie features.
+    """
+    place_map = _place_abbrev_map()
+    goalie_clubs = (
+        goalies.dropna(subset=["name"]).sort_values("date").groupby("name")["team_abbrev"].last().to_dict()
+        if not goalies.empty
+        else {}
+    )
+    own_clubs = (
+        history.dropna(subset=["team_abbrev"]).sort_values("date").groupby("player_id")["team_abbrev"].last().to_dict()
+        if not history.empty
+        else {}
+    )
+
+    def _candidates(row):
+        candidates = place_map.get(row["team_name"], [])
+        if len(candidates) == 1:
+            return candidates[0]
+        opp = row.get("opponent_abbrev")
+        not_opp = [c for c in candidates if c != opp]
+        if len(not_opp) == 1:
+            return not_opp[0]
+        goalie_club = goalie_clubs.get(row.get("opp_goalie_name"))
+        if goalie_club in candidates:
+            return goalie_club
+        own_club = own_clubs.get(row["player_id"])
+        if own_club in candidates:
+            return own_club
+        return None
+
+    today = today.copy()
+    today["opponent_abbrev"] = today["opp_goalie_team"]
+    today["team_abbrev"] = today.apply(_candidates, axis=1).astype("object")  # object: NaN survives the second pass
+    # Second pass - the FIXTURE pins the ambiguous place: every resolved row
+    # (club C, opponent A) proves C and A play each other tonight, so a
+    # "New York" row whose opponent is C must be the A side (and, the mirror
+    # case, the opponent itself is the other New York club). Covers a sparse
+    # history tail (a veteran whose own latest published row predates the
+    # sparse recent days) where the opponent is NOT itself a New York club.
+    resolved = today[today["team_abbrev"].notna()]
+    fixture_pairs = {
+        (club, opp) for club, opp in resolved[["team_abbrev", "opponent_abbrev"]].dropna().itertuples(index=False)
+    }
+    unresolved = today["team_abbrev"].isna()
+    if unresolved.any():
+
+        def _fixture_club(row):
+            candidates = place_map.get(row["team_name"], [])
+            if len(candidates) < 2:
+                return row["team_abbrev"]
+            opp = row.get("opponent_abbrev")
+            for club, opp_seen in fixture_pairs:
+                if club == opp and opp_seen in candidates and opp_seen != opp:
+                    return opp_seen  # the opponent plays this New York club tonight
+                if opp_seen == opp and club in candidates and club != opp:
+                    return club  # the opponent's own rows name this club as their opponent
+            return row["team_abbrev"]
+
+        today.loc[unresolved, "team_abbrev"] = today[unresolved].apply(_fixture_club, axis=1)
+    still = today[today["team_abbrev"].isna()]
+    if not still.empty:
+        row = still.iloc[0]
         raise RuntimeError(
-            f"Player-Snapshots-{ENV}: today's (attached) rows lack the 16 migrated columns "
-            f"(docs/supabase_shot_columns.md): missing exactly {missing}. "
-            "Run/finish the shot-columns backfill for this env before the ML pick pass."
+            f"cannot resolve team_name {row['team_name']!r} to a team_abbrev for player "
+            f"{row['player_id']} (opponent {row.get('opponent_abbrev')!r}, opp goalie "
+            f"{row.get('opp_goalie_name')!r})"
         )
+    return today
+
+
+def _inject_today_context(teams, goalies, today, on_date):
+    """One Team-Stats / Goalie-Snapshots row per today's fixture, so
+    build_frame's season / club-rate / opponent-goalie merges see the pick
+    date. The backtrack tables only gain a date's rows post-game; the pick
+    date's context comes from the live snapshot itself: each club's own
+    published morning rates (tgpg/otga/otshga - identical on every row of
+    the club) and the confirmed opponent goalie it names. add_derived then
+    computes the pick date's rest days from the resulting schedule with the
+    SAME math the training rows ran."""
+    season = season_label(on_date)
+    team_rows, goalie_rows = [], []
+    for (team_name, club), rows in today.groupby(["team_name", "team_abbrev"]):
+        first = rows.iloc[0]
+        team_rows.append(
+            {
+                "date": on_date,
+                "team_abbrev": club,
+                "team_name": team_name,
+                "tgpg": first.get("tgpg"),
+                "otga": first.get("otga"),
+                "otshga": first.get("otshga"),
+                "season": season,
+            }
+        )
+        opp = rows.iloc[0].get("opponent_abbrev")
+        if opp and not goalies[(goalies["date"] == on_date) & (goalies["team_abbrev"] == opp)].empty:
+            continue  # the opponent's goalie row is already injected
+        goalie_rows.append(
+            {
+                "date": on_date,
+                "team_abbrev": opp,
+                "gaa": first.get("opp_goalie_gaa"),
+                "save_pct": first.get("opp_goalie_save_pct"),
+                "record": first.get("opp_goalie_record"),
+                "shutouts": first.get("opp_goalie_shutouts"),
+                "games_played": first.get("opp_goalie_games_played"),
+            }
+        )
+    teams = pd.concat([teams, pd.DataFrame(team_rows)], ignore_index=True) if team_rows else teams
+    goalies = pd.concat([goalies, pd.DataFrame(goalie_rows)], ignore_index=True) if goalie_rows else goalies
+    return teams, goalies
+
+
+def load_prediction_tables(env, on_date):
+    """The run's data assembly - every read READ-ONLY.
+
+    Returns (today, players, teams, goalies); ``today`` is None when the
+    LIVE snapshot has no rows for the pick date (the caller exits cleanly:
+    warn + no picks + status 0). ``players`` concatenates the FULL backtrack
+    history (strictly before the pick date - the prior-games context) with
+    today's live rows mapped onto the frame shape; ``teams``/``goalies``
+    carry the history tables plus the injected pick-date context rows.
+    """
+    today = today_live_rows(env, on_date)
+    if today is None:
+        return None
+    require_live_columns(today, on_date)
+    teams = history_team_rows(env, on_date)
+    goalies = history_goalie_rows(env, on_date)
+    history = history_rows(env, on_date)
+    today = _map_live_rows(today, history, goalies)
+    teams, goalies = _inject_today_context(teams, goalies, today, on_date)
+    players = pd.concat([history, today], ignore_index=True)
+    return today, players, teams, goalies
 
 
 # ----------------------------------------------------------------- scoring
@@ -731,52 +1020,6 @@ def job_summary(on_date, key, meta, n_picks, mean_max_prob, dry):
         handle.write("\n".join(lines) + "\n")
 
 
-def _skip_run(on_date, key, meta, dry):
-    """Clean soft skip: no live snapshot rows for the date -> the job summary
-    line, a flat print, and a 200 without ANY exception (exit 0, no pickle/
-    traceback on Actions). ``picks`` is empty and ``status`` is 'skipped', a
-    marker a workflow can gate on for an explicit red if it ever needs one
-    (the default presentation is a green no-op step)."""
-    path = os.environ.get("GITHUB_STEP_SUMMARY")
-    lines = [
-        f"## ML picks run: {on_date} - SKIPPED",
-        "",
-        f"- no picks computed: no live snapshot rows for {on_date}",
-        f"- artifact: `{key}` (train_through {meta.get('train_through')}, seed {meta.get('seed')})",
-    ]
-    if path:
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
-    print(
-        json.dumps(
-            {
-                "log": "SMARTSCORE_ML_PICKS",
-                "date": on_date,
-                "status": "skipped",
-                "n_picks": 0,
-                "published": False,
-                "dry": dry,
-            },
-            default=str,
-        ),
-        flush=True,
-    )
-    return {
-        "statusCode": 200,
-        "date": on_date,
-        "status": "skipped",
-        "message": f"no picks computed: no live snapshot rows for {on_date}",
-        "artifact": {
-            "bucket": "(storage)",
-            "key": key,
-            "through": meta.get("train_through"),
-            "seed": meta.get("seed"),
-        },
-        "picks": [],
-        "dry": dry,
-    }
-
-
 def load_artifact_storage(client, bucket, prefix):
     """Lexically latest <prefix>/artifact_<through>_<seed>.joblib from
     Supabase Storage -> bundle (the SAME dated-prefix-latest convention as
@@ -839,11 +1082,7 @@ def pick_daily_bundle(bucket, prefix, artifact_path, storage_bucket=None, storag
 
 
 def run(event=None, context=None):
-    """The former Lambda handler, updated for the live/backtrack split:
-    today's rows come from the LIVE table (skip with status='skipped', exit 0,
-    when the daily build has not run yet), history from the backtrack tables;
-    today's rolling/career features come from the last published prior row
-    (stage 1 approximation - see attach_prior_features). `event` carries
+    """The former Lambda handler, unchanged in behaviour. `event` carries
     optional date / dry / artifact_path / s3_bucket / s3_prefix; `context`
     is kept in the signature so the lifted test surface stays drop-in."""
     event = event or {}
@@ -864,20 +1103,39 @@ def run(event=None, context=None):
         flush=True,
     )
 
-    live_players = live_player_rows(ENV, on_date)
-    if live_players is None:
-        # Clean soft skip: the daily snapshot build has not produced today's
-        # rows yet (NORMAL on the early schedule) - no Picks write, exit 0.
-        # The Actions job shows a green 'skipped' step, not a traceback - if a
-        # workflow ever needs an explicit red, gate on result["status"].
-        return _skip_run(on_date, key, meta, dry)
-    history_players, teams, goalies = history_rows(ENV, on_date)
-    players_today = attach_prior_features(live_players, history_players, on_date)
-    require_snapshot_columns(players_today)
-    players = (
-        pd.concat([history_players, players_today], ignore_index=True) if not history_players.empty else players_today
-    )
+    loaded = load_prediction_tables(ENV, on_date)
+    if loaded is None:
+        # CLEAN EXIT (owner rule): no LIVE snapshot rows for the pick date =
+        # the morning snapshot build has not run yet and there is nothing to
+        # score. Warn + no Picks write + status 0 - a scheduled run that
+        # fired before the snapshot build must stay green, not traceback.
+        print(f"no picks computed: no live snapshot rows for {on_date}", flush=True)
+        summary_note = f"## ML picks run: {on_date}\n\n- no picks computed: no live snapshot rows for {on_date}\n"
+        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as handle:
+                handle.write(summary_note)
+        return {
+            "statusCode": 200,
+            "date": on_date,
+            "picks": [],
+            "dry": dry,
+            "message": f"no live snapshot rows for {on_date}",
+        }
+    today, players, teams, goalies = loaded
+
+    # TODAY's shot/TOI block: the shared training core over the raw per-game
+    # store + one synthetic row per today's player (shift(1) keeps the
+    # synthetic line out of every feature) - the same math/model.py function
+    # the training frames were built from. The store's game dates double as
+    # the shot-block's coverage witness for the missing-day warning.
+    games = _player_games_frame()
+    shot_block = derive_shot_block(on_date, pd.to_numeric(today["player_id"]).tolist(), games=games)
+    warn_missing_history_days(teams, players, set(games["date"].astype(str)), on_date)
     frame = model.build_frame(players, teams, goalies, source="supabase")
+    frame = frame.drop(columns=model.SHOT_FEATURES, errors="ignore").merge(
+        shot_block, on=["date", "player_id"], how="left", validate="many_to_one"
+    )
     frame = model.add_derived(frame, teams, source="supabase")
     frame = frame[frame["date"].astype(str) == on_date].reset_index(drop=True)
     if not set(bundle["all_features"]).issubset(frame.columns):
@@ -922,7 +1180,6 @@ def run(event=None, context=None):
     return {
         "statusCode": 200,
         "date": on_date,
-        "status": "ok",
         "artifact": {
             "bucket": bucket or "(local file)",
             "key": key,

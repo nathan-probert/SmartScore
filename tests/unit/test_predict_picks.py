@@ -5,11 +5,15 @@ The entry point under test is smartscore/scripts/backtrack/run_daily_picks.py
 .github/workflows/ml-picks.yml run). Stubbed surfaces: boto3.client("s3")
 returns an in-memory fake (the bundle is joblib-dumped into a BytesIO), the
 Supabase reads go through a fake table builder shaped like supabase-py's
-builder chain, and the Picks write is a fake save_to_db. Asserted: the
-16-column hard fail naming exactly what is missing, the stale-artifact
-warning, encode order/categories (the artifact's order/shape assertion), the
-ensemble within-group rank rule, one-pick-per-group assembly, payload
-whitelisting, and the dry/published run paths.
+builder chain (LIVE Player-Snapshots rows for the pick date; backtrack rows
+for history), and the raw per-game store is a synthetic frame. Asserted: the
+live-snapshot column hard fail naming exactly what is missing, the
+no-live-rows CLEAN exit (warn + no write + status 0), the missing-history-day
+warn-and-continue, the train/run shot-block equivalence (the shared core vs
+the training math, <1e-9), the stale-artifact warning, encode
+order/categories (the artifact's order/shape assertion), the ensemble
+within-group rank rule, one-pick-per-group assembly, payload whitelisting,
+and the dry/published run paths.
 """
 
 import datetime
@@ -112,8 +116,16 @@ class FakeTable:
         self._frame = frame
         self._low = None
         self._high = None
+        self._eq = None
 
     def select(self, *_cols, **_kw):
+        return self
+
+    def limit(self, _n):
+        return self
+
+    def eq(self, _col, value):
+        self._eq = value
         return self
 
     def gte(self, _col, value):
@@ -124,65 +136,133 @@ class FakeTable:
         self._high = value
         return self
 
-    def eq(self, _col, value):
-        self._equal = value
-        return self
-
     def order(self, _col, **_kw):
         return self
 
     def range(self, lo, hi):
         rows = self._frame
+        if self._eq is not None:
+            col = "date"
+            rows = rows[rows[col].astype(str) == str(self._eq)]
         if self._low is not None:
             rows = rows[rows["date"] >= self._low]
         if self._high is not None:
             rows = rows[rows["date"] < self._high]
-        if getattr(self, "_equal", None) is not None:
-            rows = rows[rows["date"].astype(str) == self._equal]
         self._slice = rows.iloc[lo : min(hi + 1, len(rows))]
         return self
 
     def execute(self):
+        if not hasattr(self, "_slice"):  # a read that never paged (live .eq read)
+            self._slice = self._frame
         return FakeResult(self._slice)
 
 
 ON_DATE = "2026-06-14"
 HISTORY_DATE = "2026-06-10"
 
+# The live snapshot's ON_DATE slate (Player-Snapshots-{ENV} shape: place-name
+# team, abbrev opponent goalie team, morning-fresh rates, no shot columns).
+LIVE_TEAMS = [
+    ("Toronto", "TOR", "MTL"),
+    ("Toronto", "TOR", "MTL"),
+    ("Montréal", "MTL", "TOR"),
+    ("Montréal", "MTL", "TOR"),
+]
 
-def fake_players():
-    prior = pd.DataFrame(
+
+def fake_live_rows():
+    return pd.DataFrame(
         {
-            "date": [HISTORY_DATE] * 4,
+            "date": [ON_DATE] * 4,
             "player_id": [1, 2, 9, 10],
             "name": ["a", "b", "g", "h"],
-            "team_name": ["T", "T", "Time", "Noise"],
+            "team_name": [t for t, _a, _o in LIVE_TEAMS],
+            "team_abbrev": [a for _t, a, _o in LIVE_TEAMS],
+            "opp_goalie_team": [o for _t, _a, o in LIVE_TEAMS],
+            "opp_goalie_name": ["brodeur"] * 4,
             "home": [1, 1, 0, 0],
-            "tims": [0, 0, 0, 0],
-            "scored": [0, 1, 0, 0],
+            "tims": [1, 1, 2, 3],
+            "scored": [None] * 4,
             "gpg": [0.5, 0.2, 0.0, 0.0],
             "hgpg": [0.1, 0.2, 0.0, 0.0],
             "five_gpg": [0.1, 0.2, 0.0, 0.0],
+            "hppg": [0.0] * 4,
             "ppg": [0.2, 0.1, 0.0, 0.0],
-            "tgpg": [3.0, 3.0, 0.0, 0.0],
-            "otga": [2.5, 2.5, 0.0, 0.0],
-            "otshga": [0.01, 0.01, 0.0, 0.0],
+            "tgpg": [3.0, 3.0, 2.0, 2.0],
+            "otga": [2.5, 2.5, 2.0, 2.0],
+            "otshga": [0.01, 0.01, 0.02, 0.02],
+            "opp_goalie_gaa": [2.5] * 4,
+            "opp_goalie_save_pct": [0.9] * 4,
+            "opp_goalie_record": ["10-4-2"] * 4,
+            "opp_goalie_shutouts": [1] * 4,
+            "opp_goalie_games_played": [10] * 4,
             "injury_status": [None] * 4,
+            "injury_desc": [None] * 4,
             "lineup_unit": [None] * 4,
-            "lineup_position_group": ["C", "W", None, None],
-            "pp_unit": [None] * 4,
+            "lineup_position_group": ["C", "W", "C", "W"],
             "lineup_status": [None] * 4,
-            "team_abbrev": ["TOR", "TOR", "MTL", "MTL"],
-            "opponent_abbrev": ["MTL", "MTL", "TOR", "TOR"],
-            **{c: [0.0] * 4 for c in mod.REQUIRED_SNAPSHOT_COLUMNS if c not in ("team_abbrev", "opponent_abbrev")},
+            "pp_unit": [None] * 4,
         }
     )
-    today = prior.copy()
-    today["date"] = ON_DATE
-    today["scored"] = None
-    today["tims"] = [1, 1, 2, 3]
-    today["lineup_position_group"] = ["C", "W", "C", "W"]
-    return pd.concat([prior, today], ignore_index=True)
+
+
+def fake_history_players():
+    """Player-Snapshots-backtrack-{ENV} shape: one row per player-game
+    STRICTLY before the pick date (the prior-games context: scored labels,
+    club identity, rates). No shot columns - the live path computes today's
+    block from the raw per-game store."""
+    days = ["2026-06-01", "2026-06-03", "2026-06-05", "2026-06-08", HISTORY_DATE]
+    rows = []
+    for index, day in enumerate(days):
+        rows.append(
+            pd.DataFrame(
+                {
+                    "date": [day] * 4,
+                    "player_id": [1, 2, 9, 10],
+                    "name": ["a", "b", "g", "h"],
+                    "team_name": ["Toronto", "Toronto", "Montréal", "Montréal"],
+                    "team_abbrev": ["TOR", "TOR", "MTL", "MTL"],
+                    "opponent_abbrev": ["MTL", "MTL", "TOR", "TOR"],
+                    "home": [1, 1, 0, 0],
+                    "tims": [0, 0, 0, 0],
+                    "scored": [(index + offset) % 2 for offset in range(4)],
+                    "gpg": [0.3, 0.2, 0.1, 0.0],
+                    "hgpg": [0.1, 0.2, 0.0, 0.0],
+                    "five_gpg": [0.1, 0.2, 0.0, 0.0],
+                    "hppg": [0.0] * 4,
+                    "ppg": [0.2, 0.1, 0.0, 0.0],
+                    "injury_status": [None] * 4,
+                    "injury_desc": [None] * 4,
+                    "lineup_unit": [None] * 4,
+                    "lineup_position_group": ["C", "W", "C", "W"],
+                    "lineup_status": [None] * 4,
+                    "pp_unit": [None] * 4,
+                }
+            )
+        )
+    return pd.concat(rows, ignore_index=True)
+
+
+# The raw per-game store the shot block is computed from (the same games the
+# history rows summarize): 2 skater-games per player per day, deterministic.
+CORE_GAME_DAYS = ["2026-06-01", "2026-06-03", "2026-06-05", "2026-06-08", HISTORY_DATE]
+
+
+def fake_player_games():
+    rows = []
+    for index, day in enumerate(CORE_GAME_DAYS):
+        for offset, player in enumerate([1, 2, 9, 10]):
+            rows.append(
+                {
+                    "player_id": player,
+                    "date": day,
+                    "season": "20252026",
+                    "goals": (index + offset) % 2,
+                    "shots": 1 + ((index + offset) % 4),
+                    "toi": f"{10 + index:02d}:{(15 * offset) % 60:02d}",
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def fake_teams():
@@ -203,19 +283,30 @@ def fake_goalies():
         {
             "date": [HISTORY_DATE, ON_DATE] * 2,
             "player_id": [9, 9, 10, 10],
+            "name": ["g", "g", "h", "h"],
             "team_abbrev": ["MTL", "MTL", "TOR", "TOR"],
             "gaa": [2.5] * 4,
             "save_pct": [0.9] * 4,
             "record": ["10-4-2"] * 4,
             "shutouts": [1] * 4,
             "games_played": [10, 10, 12, 12],
+            "season": ["20252026"] * 4,
         }
     )
 
 
 @pytest.fixture
 def prediction_tables(monkeypatch):
-    tables = {"Player-Snapshots": fake_players(), "Team-Stats": fake_teams(), "Default": fake_goalies()}
+    """Fakes for the NEW data flow: the LIVE snapshot table carries only the
+    pick-date rows; the backtrack tables carry strictly-prior history; the
+    raw per-game store is a synthetic frame (no sqlite on disk)."""
+    tables = {
+        "Player-Snapshots-backtrack": fake_history_players(),
+        "Player-Snapshots": fake_live_rows(),
+        "Team-Stats-backtrack": fake_teams(),
+        "Goalie-Snapshots-backtrack": fake_goalies(),
+        "Default": fake_goalies(),
+    }
 
     fake_client = MagicMock(name="supabase_admin")
 
@@ -227,116 +318,12 @@ def prediction_tables(monkeypatch):
 
     fake_client.table.side_effect = _table
     monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
+
+    # the shot block reads the raw store; the fake store is the frame itself
+    games = fake_player_games()
+    monkeypatch.setattr("run_daily_picks.ensure_raw_store", lambda: None)
+    monkeypatch.setattr("run_daily_picks._player_games_frame", games.copy)
     return fake_client
-
-
-def install_tables(monkeypatch, players, teams, goalies=None):
-    """Point the reads at an arbitrary synthetic (players, teams, goalies)."""
-    fake_client = MagicMock(name="supabase_admin")
-
-    def _table(name):
-        for prefix, frame in (
-            ("Player-Snapshots", players),
-            ("Team-Stats", teams),
-            ("Default", goalies if goalies is not None else fake_goalies()),
-        ):
-            if name.startswith(prefix):
-                return FakeTable(frame)
-        return FakeTable(fake_goalies())
-
-    fake_client.table.side_effect = _table
-    monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
-    return fake_client
-
-
-# ----------------------------------------------------- live/history semantics
-# The split: today's rows come from the LIVE table (Player-Snapshots-{env});
-# history is STRICTLY before the date (backtrack tables), and a missing/
-# stale backtrack publish warns instead of failing the run.
-
-
-def test_history_missing_game_date_warns_but_run_completes(env_vars, monkeypatch, capsys):
-    players = fake_players()
-    teams = fake_teams()
-    extra = pd.DataFrame(teams.iloc[0].to_dict(), index=[0])
-    extra["date"] = "2026-06-12"  # a game date the player grain never got rows for
-    teams = pd.concat([teams, extra], ignore_index=True)
-    install_tables(monkeypatch, players, teams)
-    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls: list = []
-    fake_save(monkeypatch, calls)
-
-    result = mod.handler({"date": ON_DATE}, None)  # no raise
-
-    out = capsys.readouterr().out
-    assert "no snapshot rows for game date(s) ['2026-06-12']" in out
-    assert "continuing with the days that ARE published" in out
-    assert result["statusCode"] == 200 and result["status"] == "ok"
-    assert len(calls) == 3
-
-
-def test_history_rows_missing_dates_warn(monkeypatch, capsys):
-    players = fake_players()
-    teams = fake_teams()
-    extra = pd.DataFrame(teams.iloc[0].to_dict(), index=[0])
-    extra["date"] = "2026-06-12"
-    teams = pd.concat([teams, extra], ignore_index=True)
-    install_tables(monkeypatch, players, teams)
-    history_players, _teams, _goalies = mod.history_rows("prod", ON_DATE)
-    assert not history_players.empty
-    out = capsys.readouterr().out
-    assert "['2026-06-12']" in out
-
-
-def test_live_rows_empty_skips_cleanly(env_vars, monkeypatch, capsys):
-    players = fake_players()
-    players = players[players["date"] != ON_DATE]  # no live rows for today
-    install_tables(monkeypatch, players, fake_teams(), fake_goalies())
-    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls: list = []
-    fake_save(monkeypatch, calls)
-
-    result = mod.handler({"date": ON_DATE}, None)  # exit 0, no traceback
-
-    out = capsys.readouterr().out
-    assert result["statusCode"] == 200 and result["status"] == "skipped"
-    assert "no live snapshot rows for" in out and "no picks computed" in out
-    assert calls == []  # no Picks write
-
-
-def test_attach_prior_features_nan_and_warn_for_no_history(env_vars, monkeypatch, capsys):
-    base = fake_players()
-    live_only = base[base["date"] == ON_DATE].drop(
-        columns=list(mod.APPROX_ATTACH_COLUMNS) + ["team_abbrev", "opponent_abbrev"]
-    )
-    history = base[base["date"] == HISTORY_DATE]
-    history = history[history["player_id"] != 2]  # today's player 2 has NO prior published row
-    players = pd.concat([history, live_only], ignore_index=True)
-    install_tables(monkeypatch, players, fake_teams(), fake_goalies())
-    assert mod.APPROX_ATTACH_COLUMNS  # the 14 aggregates are the approximation's attach set
-    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls: list = []
-    fake_save(monkeypatch, calls)
-    result = mod.handler({"date": ON_DATE}, None)  # the pipeline still runs...
-
-    out = capsys.readouterr().out
-    assert "NO prior published row" in out and "keep-empty-features imputer" in out
-    assert result["statusCode"] == 200 and result["status"] == "ok"
-    assert len(calls) == 3  # ... and still resolves a decision per group
-
-
-def test_history_rows_staleness_watch_beyond_7_days(env_vars, monkeypatch, capsys):
-    players = fake_players()
-    players.loc[players["date"] == HISTORY_DATE, "date"] = (
-        datetime.date.fromisoformat(ON_DATE) - datetime.timedelta(days=8)
-    ).isoformat()
-    players = players[players["date"] != ON_DATE]  # history grain only
-    install_tables(monkeypatch, players, fake_teams(), fake_goalies())
-    history_players, _teams, _goalies = mod.history_rows("prod", ON_DATE)
-    assert not history_players.empty
-    out = capsys.readouterr().out
-    assert "backtrack publish appears stale: last published" in out
-    assert "STALENESS WATCH" in out and ">7 days stale" in out
 
 
 def fake_s3(monkeypatch, bundle):
@@ -524,12 +511,12 @@ def test_staleness_note_warns_beyond_7_days(env_vars, capsys):
     assert "stale" not in capsys.readouterr().out
 
 
-def test_require_snapshot_columns_hard_fail_names_exact_missing():
-    rows = pd.DataFrame([{c: 1.0 for c in ("gpg", "sd_shots_pg", "team_abbrev")}])
+def test_require_live_columns_hard_fail_names_exact_missing():
+    rows = pd.DataFrame([{c: 1.0 for c in ("gpg", "team_name", "tims")}])
     with pytest.raises(RuntimeError) as err:
-        mod.require_snapshot_columns(rows)
+        mod.require_live_columns(rows, ON_DATE)
     msg = str(err.value)
-    for col in ("sd_goals_pg", "career_games", "opponent_abbrev"):
+    for col in ("opp_goalie_team", "hgpg", "lineup_position_group"):
         assert col in msg
     assert "missing exactly" in msg
 
@@ -569,20 +556,176 @@ def test_ensemble_scores_rank_rule():
     assert group1["ensemble"].idxmax() == 1
 
 
-def test_live_plus_history_rows_match_artifact_features(env_vars, prediction_tables):
-    live = mod.live_player_rows("prod", ON_DATE)
-    history_players, teams, goalies = mod.history_rows("prod", ON_DATE)
-    players_today = mod.attach_prior_features(live, history_players, ON_DATE)
-    mod.require_snapshot_columns(players_today)
-    players = pd.concat([history_players, players_today], ignore_index=True)
+def _assemble_frame(today, players, teams, goalies):
+    """The run()'s frame assembly, test-visible: shared-core shot block onto
+    the build_frame join, then add_derived, sliced to the pick date."""
+    shot_block = mod.derive_shot_block(ON_DATE, pd.to_numeric(today["player_id"]).tolist())
     frame = model.build_frame(players, teams, goalies, source="supabase")
+    frame = frame.drop(columns=model.SHOT_FEATURES, errors="ignore").merge(
+        shot_block, on=["date", "player_id"], how="left", validate="many_to_one"
+    )
     frame = model.add_derived(frame, teams, source="supabase")
-    frame = frame[frame["date"].astype(str) == ON_DATE].reset_index(drop=True)
+    return frame[frame["date"].astype(str) == ON_DATE].reset_index(drop=True)
+
+
+def test_supabase_frame_matches_artifact_features(env_vars, prediction_tables):
+    loaded = mod.load_prediction_tables("prod", ON_DATE)
+    assert loaded is not None
+    today, players, teams, goalies = loaded
+    frame = _assemble_frame(today, players, teams, goalies)
     bundle = make_bundle()
     assert not frame.empty
     assert all(col in frame.columns for col in bundle["all_features"])
     x = mod.encode_frame(bundle, frame)
     assert list(x.columns) == bundle["all_features"]  # same order/shape as the artifact
+
+
+# ------------------------------------------------ new data-flow semantics
+
+
+def test_no_live_rows_exits_cleanly(env_vars, prediction_tables, monkeypatch, capsys):
+    """Owner rule: NO live snapshot rows for the pick date = the morning
+    snapshot build has not run yet -> warn + no picks + CLEAN exit 0 (no
+    RuntimeError, no traceback, no Picks write)."""
+    empty_live = fake_live_rows().iloc[0:0]
+    # serve an EMPTY live table while keeping the backtrack tables
+    fake_client = MagicMock(name="supabase_admin")
+    tables = {
+        "Player-Snapshots-backtrack": fake_history_players(),
+        "Player-Snapshots": empty_live,
+        "Team-Stats-backtrack": fake_teams(),
+        "Goalie-Snapshots-backtrack": fake_goalies(),
+        "Default": fake_goalies(),
+    }
+
+    def _table(name):
+        for prefix, frame in tables.items():
+            if name.startswith(prefix):
+                return FakeTable(frame)
+        return FakeTable(tables["Default"])
+
+    fake_client.table.side_effect = _table
+    monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+
+    calls: list = []
+    fake_save(monkeypatch, calls)
+    result = mod.handler({"date": ON_DATE}, None)  # must NOT raise
+    assert result["statusCode"] == 200
+    assert result["picks"] == []
+    assert "no live snapshot rows" in result["message"]
+    assert calls == []  # no Picks write
+    out = capsys.readouterr().out
+    assert "no picks computed: no live snapshot rows for 2026-06-14" in out
+    assert "Traceback" not in out
+
+
+def test_missing_history_day_warns_but_still_picks(env_vars, prediction_tables, monkeypatch, capsys):
+    """Owner rule: a game day the backtrack publish has not covered yet is
+    NORMAL -> ONE warning line naming the day, and the run still publishes
+    its 3 picks on the history it has."""
+    # the raw store witnessed a 2026-06-12 game day (the crawl crawled it)
+    # but the published player history has no rows for it - the publish lag.
+    games_with_gap = pd.concat(
+        [
+            fake_player_games(),
+            pd.DataFrame(
+                [
+                    {
+                        "player_id": 1,
+                        "date": "2026-06-12",
+                        "season": "20252026",
+                        "goals": 1,
+                        "shots": 3,
+                        "toi": "15:00",
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    fake_client = MagicMock(name="supabase_admin")
+    tables = {
+        "Player-Snapshots-backtrack": fake_history_players(),
+        "Player-Snapshots": fake_live_rows(),
+        "Team-Stats-backtrack": fake_teams(),
+        "Goalie-Snapshots-backtrack": fake_goalies(),
+        "Default": fake_goalies(),
+    }
+
+    def _table(name):
+        for prefix, frame in tables.items():
+            if name.startswith(prefix):
+                return FakeTable(frame)
+        return FakeTable(tables["Default"])
+
+    fake_client.table.side_effect = _table
+    monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
+    monkeypatch.setattr("run_daily_picks._player_games_frame", games_with_gap.copy)
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+
+    calls: list = []
+    fake_save(monkeypatch, calls)
+    result = mod.handler({"date": ON_DATE, "dry": True}, None)
+    assert result["statusCode"] == 200
+    assert len(result["picks"]) == 3  # assembled anyway (dry: no write)
+    assert calls == []
+    out = capsys.readouterr().out
+    assert "WARNING: no published history rows for game day(s) ['2026-06-12']" in out
+    assert "continuing" in out
+
+
+def test_live_shot_block_matches_training_core(env_vars, prediction_tables):
+    """THE train/run parity gate: the live path's today shot block (raw store
+    + ONE synthetic today-row per player through the shared core) must equal
+    the training path's shot_features() values for the same rows to <1e-9.
+
+    Two shapes, both from the same synthetic per-game store:
+      1. a historical replay date (the store already owns the games) -
+         identical by construction, guards the wiring;
+      2. the pick date itself, where the training math is replayed by
+         appending the players' real ON_DATE game lines to the store and
+         comparing against the live path's synthetic-row block - the
+         synthetic zeros can never enter their own features (shift(1)).
+    """
+    games = fake_player_games()
+    # (2) the training math's hypothetical: the players' real ON_DATE games
+    today_games = pd.DataFrame(
+        {
+            "player_id": [1, 2, 9, 10],
+            "date": [ON_DATE] * 4,
+            "season": ["20252026"] * 4,
+            "goals": [1, 0, 2, 0],
+            "shots": [3, 1, 5, 2],
+            "toi": ["18:31", "12:04", "21:45", "08:59"],
+        }
+    )
+    full = model.shot_features_from_games(pd.concat([games, today_games], ignore_index=True))
+    training_rows = full[full["date"] == ON_DATE].sort_values("player_id").reset_index(drop=True)
+
+    live_block = mod.derive_shot_block(ON_DATE, [1, 2, 9, 10]).sort_values("player_id").reset_index(drop=True)
+    assert list(live_block["player_id"]) == [1, 2, 9, 10]
+    diffs = (training_rows[model.SHOT_FEATURES] - live_block[model.SHOT_FEATURES]).abs()
+    assert diffs.to_numpy().max() < 1e-9
+    # and the historical replay is exact to the core (same function, same rows)
+    historical = mod.derive_shot_block(CORE_GAME_DAYS[-1], [1, 2, 9, 10])
+    assert not historical.empty
+
+
+def test_live_shot_block_replays_historical_date_exactly(env_vars, prediction_tables):
+    """Acceptance test from the design fix: for one historical date X, the
+    live path (history < X feeding the shared core) and the local-store
+    training path produce the SAME 14 features - max abs diff < 1e-9."""
+    games = fake_player_games()
+    x_date = CORE_GAME_DAYS[-1]  # 2026-06-10: a played, published date
+    training = model.shot_features_from_games(games)
+    training_rows = training[training["date"] == x_date].sort_values("player_id").reset_index(drop=True)
+
+    # live path: the store's history + synthetic X rows (deduped by the store's
+    # own X games) -> the same core -> X rows
+    live_block = mod.derive_shot_block(x_date, [1, 2, 9, 10]).sort_values("player_id").reset_index(drop=True)
+    diffs = (training_rows[model.SHOT_FEATURES] - live_block[model.SHOT_FEATURES]).abs()
+    assert diffs.to_numpy().max() < 1e-9
 
 
 # ----------------------------------------------------------- pick assembly
@@ -679,13 +822,11 @@ def test_handler_dry_skips_write(env_vars, prediction_tables, monkeypatch):
 
 def test_handler_missing_columns_fails_instead_of_publishing(env_vars, prediction_tables, monkeypatch):
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    bare = pd.DataFrame([{"date": ON_DATE, "player_id": 1, "name": "a", "tims": 1}])
-    monkeypatch.setattr("run_daily_picks.live_player_rows", lambda _env, _d: bare)
-    empty = bare[[]]
-    monkeypatch.setattr("run_daily_picks.history_rows", lambda _env, _d: (empty, empty, empty))
+    today = fake_live_rows().drop(columns=["opp_goalie_team", "hgpg"])
+    monkeypatch.setattr("run_daily_picks.today_live_rows", lambda _env, _d: today)
     calls = []
     fake_save(monkeypatch, calls)
-    with pytest.raises(RuntimeError, match="sd_goals_pg"):
+    with pytest.raises(RuntimeError, match="opp_goalie_team"):
         mod.handler({"date": ON_DATE}, None)
     assert calls == []
 
