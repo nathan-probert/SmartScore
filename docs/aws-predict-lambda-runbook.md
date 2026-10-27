@@ -21,7 +21,8 @@ container image from a **private ECR repo in the function's own region**
 (Lambda docs, images-create: the repository "must be in the same AWS Region
 as the Lambda function"; ECR Public is not a supported ImageUri source). So
 the deploy step syncs the same image to a private repo that holds exactly
-ONE image (keep-last-1 lifecycle policy), inside the private free tier.
+ONE image (keep-last-1 lifecycle policy), bounding it to ~$0.04/month
+now that the first-year private free tier has expired (section 6).
 
 The per-account public alias needs ONE console step — the CLI cannot create
 it (`aws ecr-public` has no alias command; AWS docs: "a custom alias can be
@@ -162,14 +163,22 @@ only ≥30% (LGBM 30.36%) was leak-invalidated via same-game `lineup_unit`.
     nightly frame build ~120-180 s wall-warm at 60-day window scope: ~260k
     GB-s/month for one daily run. Cold start adds the joblib import +
     lightgbm load (a few seconds at 2048 MB).
-  * The image is free within the 50 GB/month ECR Public tier: the
-    distribution master costs nothing at ~0.2 GB compressed (storage) plus
-    anonymous pulls throttled at 500 GB/month transfer. The Lambda's pull
-    copy lives in the PRIVATE repo bounded by keep-last-1 (one ~0.2 GB
-    compressed image - ~40% of the 500 MB/month private free tier even
-    before pruning; the CI size gate keeps a runaway build from ever
-    landing; same-region Lambda pulls are free). Artifacts live in S3
-    (~a few MB per vintage).
+  * ECR PUBLIC distribution master = $0: ~0.2 GB compressed sits well inside
+    the 50 GB/month ALWAYS-FREE public tier, anonymous pulls throttled at
+    500 GB/month transfer.
+  * PRIVATE same-region mirror = ~403 MB uncompressed ~ 0.2 GB compressed x
+    ~$0.10/GB-month ≈ **$0.04/month (~48¢/year)** — NOT $0: the private
+    ECR free tier (500 MB/month) is FIRST YEAR ONLY and this account is
+    beyond year one, so the keep-last-1 image bills. Keep-last-1 still
+    matters: it bounds the bill to exactly one image (the CI size gate
+    keeps a runaway build from ever landing; same-region Lambda pulls are
+    free).
+  * Lambda GB-s = free (one daily ~260k GB-s run inside the 400k free
+    tier); artifacts live in S3 = free (a few MB per vintage). TOTAL
+    ≈ **$0.04-0.05/month**.
+  * Truly $0.00 is achievable by replacing the Lambda with a scheduled
+    GitHub Actions inference job (public repo = free minutes, no ECR at
+    all) — see the orchestrator's A/B decision.
   * EventBridge rules, log ingest (1-day retention), and the S3 GetObject
     calls are all inside free allowance at this scale.
   * Free-tier numbers are the AWS documented values as of Oct 2026; verify
