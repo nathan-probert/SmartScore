@@ -31,14 +31,16 @@ Parameters:
     Type: String
     Default: ""
     Description: PostHog project/personal API key for runtime feature-flag evaluation
-  GITHUB_DISPATCH_TOKEN:
+  GithubDispatchToken:
     Type: String
     NoEcho: true
     Default: ""
     Description: >-
       Fine-grained PAT (Actions: write, this repo only) that
       MLPicksKick-{ENV} uses to repository_dispatch 'ml-picks-game' into
-      .github/workflows/ml-picks.yml. Empty is allowed (deploy param
+      .github/workflows/ml-picks.yml. (CFN logical IDs are alphanumeric-only,
+      so the environment-variable-style GITHUB_DISPATCH_TOKEN name cannot be
+      used as a declaration key here.) Empty is allowed (deploy param
       override or GITHUB_DISPATCH_TOKEN env in deploy.sh); the relay then
       fails loudly per invocation instead of silently dropping kicks.
 Resources:
@@ -527,7 +529,7 @@ Resources:
               return {"status": "lambda function placeholder"}
       Environment:
         Variables:
-          GITHUB_DISPATCH_TOKEN: !Ref GITHUB_DISPATCH_TOKEN
+          GITHUB_DISPATCH_TOKEN: !Ref GithubDispatchToken
 
   # EventBridge -> Lambda invoke grant. Pattern carried over from the
   # removed MLPicksFunctionPermission (git history, commit b506e35:

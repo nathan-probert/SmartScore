@@ -72,7 +72,7 @@ generate_smartscore_stack() {
   # relay fails loudly per kick if it ends up empty.
   CFN_PARAM_OVERRIDES=(ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY")
   if [ -n "${GITHUB_DISPATCH_TOKEN:-}" ]; then
-    CFN_PARAM_OVERRIDES+=("ParameterKey=GITHUB_DISPATCH_TOKEN,ParameterValue=${GITHUB_DISPATCH_TOKEN}")
+    CFN_PARAM_OVERRIDES+=("ParameterKey=GithubDispatchToken,ParameterValue=${GITHUB_DISPATCH_TOKEN}")
   fi
 
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
