@@ -521,8 +521,10 @@ Resources:
       MemorySize: 512
       Code:
         ZipFile: |
-          def lambda_handler(event, context):
-              return {"status": "Lambda function placeholder"}
+          # Provisional entry matching the Handler below; deploy.sh pushes
+          # the real event_handler.py via update-function-code right after.
+          def handle_ml_picks_kick(event, context):
+              return {"status": "lambda function placeholder"}
       Environment:
         Variables:
           GITHUB_DISPATCH_TOKEN: !Ref GITHUB_DISPATCH_TOKEN

@@ -293,6 +293,9 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          # Forwarded by deploy.sh's CFN_PARAM_OVERRIDES when set; unset is
+          # allowed (MLPicksKick relays fail loudly per kick instead).
+          GITHUB_DISPATCH_TOKEN: ${{ secrets.GITHUB_DISPATCH_TOKEN }}
 
   dev-integration:
     needs: deploy
