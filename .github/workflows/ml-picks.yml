@@ -25,6 +25,13 @@ on:
         type: boolean
         required: false
         default: false
+  # Architecture A: per-game kicks. AWS EventBridge stays the source of truth
+  # for "when" - each per-game TriggerStateMachineAt_* rule (utility.py
+  # schedule_run, game_start + ML_KICK_OFFSET_MIN) fires the MLPicksKick
+  # Lambda, which repository_dispatches here. The nightly cron remains the
+  # default full-day fallback pass, and this path is ADDITIVE.
+  repository_dispatch:
+    types: [ml-picks-game]
 
 permissions:
   contents: read
@@ -91,11 +98,29 @@ jobs:
       # Steps 3+4: run_daily_picks fetches the artifact (S3 dated-prefix
       # latest, or --artifact) then performs inference via model.py +
       # utility.save_to_db - the same imports the handler did.
+      #
+      # Trigger-source resolution, workflow_dispatch semantics preserved:
+      # explicit inputs.date/inputs.dry win; repository_dispatch (the
+      # per-game kick) supplies client_payload {date, dry,
+      # context: 'post-game-start'}. Multiple kicks per date are fine and
+      # expected (one per game start): each is one extra idempotent pass -
+      # Picks writes are per-day upserts via save_to_db, so only the first
+      # run per date materially regenerates picks. docs/ml-picks-runbook.md
+      # ("Per-game kick (A-architecture)").
       - name: Run the daily ML picks pass
+        env:
+          DISPATCH_DATE: ${{ inputs.date || github.event.client_payload.date }}
+          DISPATCH_DRY: ${{ inputs.dry || github.event.client_payload.dry }}
         run: |
-          uv run --with lightgbm==4.7.0 python smartscore/scripts/backtrack/run_daily_picks.py \
-            ${{ (inputs.date && format('--date {0}', inputs.date)) || '' }} \
-            ${{ (inputs.dry && '--dry') || '' }}
+          ARGS=""
+          if [ -n "${DISPATCH_DATE}" ]; then
+            ARGS="${ARGS} --date ${DISPATCH_DATE}"
+          fi
+          if [ "${DISPATCH_DRY}" == "true" ]; then
+            ARGS="${ARGS} --dry"
+          fi
+          echo "Trigger context: ${{ github.event_name }} (date:'${DISPATCH_DATE}' dry:'${DISPATCH_DRY}')"
+          uv run --with lightgbm==4.7.0 python smartscore/scripts/backtrack/run_daily_picks.py ${ARGS}
 
       # Step 5: the script prints the single structured SMARTSCORE_ML_PICKS
       # log line and appends the headline to $GITHUB_STEP_SUMMARY; this step

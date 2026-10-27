@@ -1784,6 +1784,8 @@ The model production chain lives outside this flat tree:
 - **Predict/pass runner:** the daily ML picks pass runs as the scheduled
   `.github/workflows/ml-picks.yml` workflow; `docs/ml-picks-runbook.md` is
   its runbook (artifact refresh, secrets, cost, stale roll-forward).
+  Per-game kick: EventBridge -> MLPicksKick-{ENV} -> repository_dispatch;
+  pipeline runtime: GitHub Actions; runbook: ml-picks-runbook.md.
 - **Column spec:** `docs/supabase_shot_columns.md` on `feat/supabase-spec`
   (PR #138) is the in-force 16-column Player-Snapshots-backtrack spec
   referenced by the run code — kept on that branch, not folded here.

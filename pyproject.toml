@@ -64,6 +64,12 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"smartscore/ml_picks_kick.py" = [
+  # S310 audit is satisfied by construction: the URL is built from the
+  # constant https:// GITHUB_API_BASE plus env-provided owner/repo tokens
+  # (never user-supplied file: or custom schemes).
+  "S310",
+]
 "tests/*" = [
   "D",
   "S",

@@ -188,6 +188,62 @@ untouched.
 * Prod snapshot rows may be empty if publishes stop — the pass fails
   closed until `make backtrack-publish ENV=prod SEASON=<year>` runs (the
   warning carries into the failing log line).
+
+## 9. Per-game kick (A-architecture)
+
+ADDITIVE to the nightly cron above: AWS EventBridge remains the SOURCE OF
+TRUTH for "run ML picks ~5 minutes after every distinct game start"; the
+compute runs on the GitHub Actions runner via a tiny relay Lambda.
+
+* **Chain:** per-game `TriggerStateMachineAt_*-{ENV}` rule (created by
+  `smartscore/utility.py::schedule_run`) -> second target
+  `MLPicksKick-{ENV}` (target Id `mlPicksKickTarget`, fired at
+  game_start + `ML_KICK_OFFSET_MIN` = 5 minutes, the knob at the top of
+  `schedule_run` — change it in exactly one place) -> one
+  `repository_dispatch` (`event_type: ml-picks-game`, `client_payload:
+  {date, dry, context: 'post-game-start'}`) into `ml-picks.yml`. One EventBridge
+  rule carries both targets (state machine + kick), consistent with
+  EventBridge's multiple-targets-per-rule support and keeps the rule
+  inside `delete_expired_rules()`' existing cleanup family.
+* **The relay is bounded by design:** `smartscore/ml_picks_kick.py` uses
+  stdlib urllib only, no ML dependencies, and never touches Supabase or
+  Picks — it forwards `{date, dry}` and nothing more. The slate `date` is
+  stamped into the target's Input at schedule time (America/Toronto — the
+  pipeline's pick-date notion, cf. `service.get_date`), so a warm-lambda
+  delay cannot shift the slate; the fallback is Toronto-today.
+* **PAT setup (one time):** create a **fine-grained PAT** scoped to this
+  repository with **Actions: write** permission only, short expiry
+  (30–90 days; note rotation below). Store it as the CloudFormation
+  `GITHUB_DISPATCH_TOKEN` parameter with `NoEcho: true`: either deploy
+  with `GITHUB_DISPATCH_TOKEN=<pat> ./build_scripts/deploy.sh` (the
+  script forwards it as a parameter via `CFN_PARAM_OVERRIDES`), or set it
+  once through the console/CLI on the `SmartScore-{ENV}` stack — an
+  `update-stack` without the parameter keeps the previously stored value.
+  (Owner alternative if a CloudFormation-held PAT is not wanted: a
+  classic repo-scoped token with `repo` scope + Actions write, stored the
+  same way. NEVER commit the token; `deploy.sh` never prints it.)
+* **Idempotent kick semantics:** multiple kicks per date are fine and
+  EXPECTED (one per game start). Every kick re-runs the same daily pass;
+  Picks writes are per-day upserts via `save_to_db`, so only the FIRST
+  run per date materially regenerates picks and subsequent runs are
+  no-op upserts over identical rows. The workflow serializes reruns via
+  its `concurrency` group, so two kicks overlapping queue, not race.
+* **Cost/rates for an NHL day:** ~15 games/day after the first game
+  starts → ~15 kicks/day on the AWS side (each is one Lambda invocation
+  ~free) and ~15 one-dispatch GitHub API calls (far below the repo's 60+
+  authenticated requests/hour headroom; no self-limiting needed). The
+  Actions job itself costs ~3-6 minutes per pass, 30 passes worst case.
+* **Nightly-cron interplay:** if both the 09:30 UTC cron and per-game
+  kicks fire, the result is harmlessly ONE EXTRA pass — same upserts,
+  logged in job history as two runs for that date. Leave both on; the
+  cron remains the guaranteed full-day fallback.
+* **Open risks:** PAT expiry silently breaks kicks before the nightly
+  cron saves the day — the relay fails loudly (missing/invalid token →
+  CloudWatch error per kick) and the workflow replay knob is
+  `workflow_dispatch` with `date`; EventBridge rule fan-out is bounded
+  (2 targets/rule, ~15 rules/day, delete_expired_rules recycles them
+  nightly); duplicate kicks for the same game-start minute collapse into
+  one rule (rule names are time-keyed).
 * Actions minute limits: irrelevant for a public repo today, but if this
   repo goes private, free minutes are 2000/month — the job uses ~3-6
   minutes/day, introducing order-of-magnitude headroom before it matters.

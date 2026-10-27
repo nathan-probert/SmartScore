@@ -47,6 +47,16 @@ SHARED_ENV_VARS = (
     "POSTHOG_FEATURE_FLAG_KEY",
 )
 
+# Architecture A relay only: MLPicksKick performs a single GitHub
+# repository_dispatch (stdlib urllib) and deliberately touches no database,
+# so Supabase/PostHog wiring (and its cost of keeping them secret in a
+# no-write Lambda) is intentionally absent. Its real dependency is the
+# dispatch token, asserted separately in RelayEnvVars below.
+RELAY_ONLY_FUNCTIONS = frozenset({"MLPicksKickFunction"})
+
+# Per-function scoped credentials not covered by SHARED_ENV_VARS.
+RELAY_ENV_VARS = {"MLPicksKickFunction": ("GITHUB_DISPATCH_TOKEN",)}
+
 
 def lambda_functions() -> dict:
     return {
@@ -70,14 +80,32 @@ def test_every_lambda_function_gets_shared_env_var(env_var):
     """Every handler can reach Supabase and PostHog.
 
     A new Lambda added to the template without this variable would otherwise
-    only fail when that handler first runs.
+    only fail when that handler first runs. Relay-only functions
+    (RELAY_ONLY_FUNCTIONS) are exempt - they hold no DB access by design.
     """
-    missing = [name for name, resource in lambda_functions().items() if env_var not in env_vars(resource)]
+    missing = [
+        name
+        for name, resource in lambda_functions().items()
+        if env_var not in env_vars(resource) and name not in RELAY_ONLY_FUNCTIONS
+    ]
 
     assert not missing, (
         f"{len(missing)} Lambda function(s) missing {env_var}: {sorted(missing)}. "
         f"Add it to the Environment.Variables block of each."
     )
+
+
+@pytest.mark.parametrize("function_name,env_var", [(f, e) for f, vars_ in RELAY_ENV_VARS.items() for e in vars_])
+def test_relay_function_gets_its_scoped_env_var(function_name, env_var):
+    """Every relay-only Lambda still gets its own scoped credentials.
+
+    MLPicksKick's GitHub dispatch is a 401-only failure at runtime without
+    GITHUB_DISPATCH_TOKEN wired through the template's NoEcho parameter -
+    exactly the class of silent breakage this file exists to prevent.
+    """
+    resource = lambda_functions().get(function_name)
+    assert resource is not None, f"{function_name} missing from template.yaml"
+    assert env_var in env_vars(resource), f"{function_name} is missing {env_var} (Architecture A per-game relay)"
 
 
 def test_no_lambda_still_receives_the_retired_worker_token():

@@ -4,6 +4,7 @@ from smartscore_info_client.schemas.player import PLAYER_INFO_SCHEMA
 from smartscore_info_client.schemas.team import TEAM_INFO_SCHEMA
 
 from decorators import lambda_handler_error_responder
+from ml_picks_kick import relay_game_kick
 from nhl_lineups import get_nhl_com_lineups, get_rotowire_lineups
 from player_archive import save_player_snapshots
 from service import (
@@ -628,3 +629,26 @@ def handle_emails(event, context):
     return {
         "statusCode": 200,
     }
+
+
+@lambda_handler_error_responder
+def handle_ml_picks_kick(event, context):
+    """
+    Architecture A relay: per-game EventBridge trigger -> GitHub Actions.
+
+    Invoked by the MLPicksKick target on each per-game
+    ``TriggerStateMachineAt_*`` rule (utility.schedule_run). Understands
+    only {date, dry} and performs exactly one GitHub ``repository_dispatch``
+    (event_type ml-picks-game) per invocation - no Supabase access and no
+    picks logic; the ml-picks.yml workflow holds those.
+    docs/ml-picks-runbook.md ("Per-game kick (A-architecture)").
+
+    Args:
+        event (dict): EventBridge payload; optionally carries the slate
+            ``date`` (YYYY-MM-DD) and a ``dry`` flag.
+        context (dict): Unused Lambda context.
+
+    Returns:
+        dict: relay outcome incl. the exact client_payload sent.
+    """
+    return relay_game_kick(event)

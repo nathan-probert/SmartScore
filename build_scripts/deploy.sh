@@ -31,6 +31,7 @@ LAMBDA_FUNCTIONS=(
   "GetGoalies-$ENV"
   "GetLineups-$ENV"
   "SendEmails-$ENV"
+  "MLPicksKick-$ENV"
 )
 
 
@@ -63,6 +64,17 @@ generate_smartscore_stack() {
   # are gone with the MLPicks Lambda; the Model pass now runs as the
   # scheduled .github/workflows/ml-picks.yml workflow instead.)
 
+  # GITHUB_DISPATCH_TOKEN (optional): the fine-grained PAT (Actions: write,
+  # this repo only) used by the MLPicksKick Lambda to repository_dispatch
+  # 'ml-picks-game' into ml-picks.yml. Forwarded from the environment when
+  # set; when unset, create-stack falls back to the template's empty
+  # default and update-stack keeps the previously stored NoEcho value. The
+  # relay fails loudly per kick if it ends up empty.
+  CFN_PARAM_OVERRIDES=(ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY")
+  if [ -n "${GITHUB_DISPATCH_TOKEN:-}" ]; then
+    CFN_PARAM_OVERRIDES+=("ParameterKey=GITHUB_DISPATCH_TOKEN,ParameterValue=${GITHUB_DISPATCH_TOKEN}")
+  fi
+
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
     UPDATE_OUTPUT=$(aws cloudformation update-stack \
@@ -76,7 +88,7 @@ generate_smartscore_stack() {
         ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
-        ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
+        "${CFN_PARAM_OVERRIDES[@]}" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -98,7 +110,7 @@ generate_smartscore_stack() {
         ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
-        ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
+        "${CFN_PARAM_OVERRIDES[@]}" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."

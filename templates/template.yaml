@@ -31,7 +31,16 @@ Parameters:
     Type: String
     Default: ""
     Description: PostHog project/personal API key for runtime feature-flag evaluation
-
+  GITHUB_DISPATCH_TOKEN:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >-
+      Fine-grained PAT (Actions: write, this repo only) that
+      MLPicksKick-{ENV} uses to repository_dispatch 'ml-picks-game' into
+      .github/workflows/ml-picks.yml. Empty is allowed (deploy param
+      override or GITHUB_DISPATCH_TOKEN env in deploy.sh); the relay then
+      fails loudly per invocation instead of silently dropping kicks.
 Resources:
   # IAM Role for Lambda Execution
   LambdaExecutionRole:
@@ -495,6 +504,42 @@ Resources:
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
 
+  # Architecture A relay (additive; no Supabase access, stdlib urllib only):
+  # second target on every per-game TriggerStateMachineAt_* rule created by
+  # utility.schedule_run - turns the game-start+5min trigger into a GitHub
+  # repository_dispatch for .github/workflows/ml-picks.yml. Real code is
+  # pushed by deploy.sh's LAMBDA_FUNCTIONS loop (MLPicksKick-$ENV entry).
+  MLPicksKickFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "MLPicksKick-${ENV}"
+      Handler: event_handler.handle_ml_picks_kick
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      # One urllib POST + one backoff retry: 30s is generous headroom.
+      Timeout: 30
+      MemorySize: 512
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "Lambda function placeholder"}
+      Environment:
+        Variables:
+          GITHUB_DISPATCH_TOKEN: !Ref GITHUB_DISPATCH_TOKEN
+
+  # EventBridge -> Lambda invoke grant. Pattern carried over from the
+  # removed MLPicksFunctionPermission (git history, commit b506e35:
+  # SourceArn: !GetAtt MLPicksDailyTrigger.Arn), retargeted to the per-game
+  # rule family because the kick rides as the second target on the same
+  # TriggerStateMachineAt_* rule that utility.schedule_run creates.
+  MLPicksKickFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt MLPicksKickFunction.Arn  # accepted as the ARN for the event-source grant
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/TriggerStateMachineAt_*-${ENV}"
+
   # IAM Role for EventBridge to invoke Step Function
   EventBridgeInvokeRole:
     Type: AWS::IAM::Role
@@ -675,6 +720,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/GetGoalies-${ENV}"
+      RetentionInDays: 1
+
+  MLPicksKickLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/MLPicksKick-${ENV}"
       RetentionInDays: 1
 
 Outputs:
