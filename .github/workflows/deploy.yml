@@ -288,6 +288,7 @@ jobs:
       - name: Run deploy script
         run: |
           chmod +x build_scripts/deploy.sh
+          export GITHUB_DISPATCH_TOKEN="${MLPICKS_DISPATCH_TOKEN:-}"
           ./build_scripts/deploy.sh
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -295,7 +296,10 @@ jobs:
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
           # Forwarded by deploy.sh's CFN_PARAM_OVERRIDES when set; unset is
           # allowed (MLPicksKick relays fail loudly per kick instead).
-          GITHUB_DISPATCH_TOKEN: ${{ secrets.GITHUB_DISPATCH_TOKEN }}
+          # Repo secret is MLPICKS_DISPATCH_TOKEN (Actions forbids secret
+          # names starting with GITHUB_); deploy.sh keeps its script-env
+          # name GITHUB_DISPATCH_TOKEN, which maps to the Lambda env var.
+          MLPICKS_DISPATCH_TOKEN: ${{ secrets.MLPICKS_DISPATCH_TOKEN }}
 
   dev-integration:
     needs: deploy

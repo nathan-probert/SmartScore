@@ -213,8 +213,12 @@ compute runs on the GitHub Actions runner via a tiny relay Lambda.
   delay cannot shift the slate; the fallback is Toronto-today.
 * **PAT setup (one time):** create a **fine-grained PAT** scoped to this
   repository with **Actions: write** permission only, short expiry
-  (30–90 days; note rotation below). Store it as the CloudFormation
-  `GITHUB_DISPATCH_TOKEN` parameter with `NoEcho: true`: either deploy
+  (30–90 days; note rotation below). First store it as the GitHub repo
+  secret `MLPICKS_DISPATCH_TOKEN` (Actions forbids secret names starting
+  with `GITHUB_`; the Lambda env key stays `GITHUB_DISPATCH_TOKEN` —
+  `deploy.yml` maps one to the other). deploy.sh then sets it as the
+  CloudFormation `GITHUB_DISPATCH_TOKEN` parameter with `NoEcho: true`:
+  either deploy
   with `GITHUB_DISPATCH_TOKEN=<pat> ./build_scripts/deploy.sh` (the
   script forwards it as a parameter via `CFN_PARAM_OVERRIDES`), or set it
   once through the console/CLI on the `SmartScore-{ENV}` stack — an
