@@ -7,13 +7,20 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
   * training NEVER happens here (or anywhere in CI) - it only loads a
     versioned joblib artifact that the owner's train_export.py --upload run
     pushed from the local machine;
-  * it reads TODAY's rows read-only from the backtrack Supabase tables
-    (Player-Snapshots / Team-Stats / Goalie-Snapshots) through
+  * it reads TODAY's player rows from the LIVE snapshot table
+    (Player-Snapshots-{ENV}, the daily build) and HISTORY rows strictly
+    before the slate date from the backtrack tables (Player-Snapshots- /
+    Team-Stats- / Goalie-Snapshots-backtrack-), joined through
     ``model.build_frame(..., source="supabase")`` + ``model.add_derived`` -
-    model.py's math is imported, never forked - requires the 16 shot/TOI +
-    club columns (docs/supabase_shot_columns.md) with a hard fail naming
-    exactly what is missing, and asserts the built frame has the artifact's
-    exact ordered feature columns;
+    model.py's math is imported, never forked; requires the 16 shot/TOI +
+    club columns (docs/supabase_shot_columns.md) on today's (attached)
+    frame with a hard fail naming exactly what is missing, and asserts the
+    built frame has the artifact's exact ordered feature columns;
+
+  STAGE 1 HONEST APPROXIMATION: rolling/career values taken from the last
+  published prior day; exact same-day recomputation is stage 2 (a per-game
+  raw-columns publish) and is planned.
+
   * it picks one player per tims group (model.daily_picks' rule, applied by
     the ensemble's mean within-group rank percentile) and publishes through
     the existing Picks-{ENV} conventions, reached via the publish_public_db
@@ -93,6 +100,11 @@ REQUIRED_SNAPSHOT_COLUMNS = [
     "team_abbrev",
     "opponent_abbrev",
 ]
+
+# The 14 shot/TOI aggregates today's LIVE rows lack; attach_prior_features
+# copies each from the player's last published prior backtrack row (stage 1
+# approximation; see attach_prior_features + docs/ml-picks-runbook.md).
+APPROX_ATTACH_COLUMNS = [col for col in REQUIRED_SNAPSHOT_COLUMNS if col not in ("team_abbrev", "opponent_abbrev")]
 
 PICK_DB_COLUMNS = ["date", "player_id", "name", "team_name", "stat", "tims", "gpg", "hgpg", "ppg"]
 CHALLENGE_GROUPS = [1, 2, 3]
@@ -334,24 +346,160 @@ def fetch_window(table, order_cols, lo, hi, chunk=10_000):
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def load_prediction_tables(env, on_date):
-    history_lo = (datetime.date.fromisoformat(on_date) - datetime.timedelta(days=HISTORY_WINDOW_DAYS)).isoformat()
-    hi = (datetime.date.fromisoformat(on_date) + datetime.timedelta(days=1)).isoformat()
-    players = fetch_window(model.player_table(env), ["date", "player_id"], history_lo, hi)
-    if players.empty or (players["date"].astype(str) == on_date).sum() == 0:
-        raise RuntimeError(
-            f"no snapshot rows for {on_date} in {model.player_table(env)}; the snapshot build did not run"
+def live_player_rows(env, on_date):
+    """Today's player rows from the LIVE snapshot table (Player-Snapshots-{env}).
+
+    The daily snapshot build (the daily publish job) writes each slate's
+    pre-game rows to the live table; the backtrack tables only gain a date's
+    rows AFTER that day's games end and the daily publish runs. So TODAY's
+    prediction rows live HERE, and an empty live table means "the daily
+    snapshot build has not run for today yet" - a NORMAL state, not an error:
+    a WARNING is printed and ``None`` returned so the caller can skip the run
+    cleanly (no picks written, exit 0, no traceback). Read-only, offset-paged.
+    """
+    table = f"Player-Snapshots-{env}"
+    frames, offset = [], 0
+    while True:
+        rows = (
+            SUPABASE_ADMIN_CLIENT.table(table)
+            .select("*")
+            .eq("date", on_date)
+            .range(offset, offset + 10_000 - 1)
+            .execute()
+            .data
         )
-    teams = fetch_window(model.team_stats_table(env), ["date", "team_abbrev"], history_lo, hi)
-    goalies = fetch_window(model.goalie_table(env), ["date", "player_id"], history_lo, hi)
+        if not rows:
+            break
+        frames.append(pd.DataFrame(rows))
+        offset += len(rows)
+    frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if frame.empty:
+        print(
+            f"WARNING: no live snapshot rows for {on_date} - the daily snapshot build has not "
+            f"run for today yet; no picks computed",
+            flush=True,
+        )
+        return None
+    return frame
+
+
+def history_rows(env, before_date):
+    """Published history rows STRICTLY date < before_date from the three
+    backtrack tables ({Player,Team,Goalie}-*-backtrack-{env}) via the
+    existing month-window pagination (model._month_windows, the same windows
+    fetch_table uses). Read-only.
+
+    Published-lag semantics, in order of loudness:
+
+      * a game-date inside the window (a Team-Stats date) that the player
+        table has NO rows for -> ONE warn listing the missing dates, then
+        CONTINUE (a single day can be absent from the player grain without
+        the archive being unusable);
+      * the last published player row is NOT yesterday -> 'backtrack publish
+        appears stale' WARN (the daily publish normally lands the previous
+        day's rows the same night);
+      * the last published player row is >7 days old -> the career-staleness
+        LOUD watch line (career_* columns attached below would be market
+        stale); still proceed.
+    """
+    lo = (datetime.date.fromisoformat(before_date) - datetime.timedelta(days=HISTORY_WINDOW_DAYS)).isoformat()
+    hi = before_date
+    players_parts, teams_parts, goalie_parts = [], [], []
+    for win_lo, win_hi in model._month_windows(
+        lo, (datetime.date.fromisoformat(before_date) - datetime.timedelta(days=1)).isoformat()
+    ):
+        players_parts.append(fetch_window(model.player_table(env), ["date", "player_id"], win_lo, min(win_hi, hi)))
+        teams_parts.append(fetch_window(model.team_stats_table(env), ["date", "team_abbrev"], win_lo, min(win_hi, hi)))
+        goalie_parts.append(fetch_window(model.goalie_table(env), ["date", "player_id"], win_lo, min(win_hi, hi)))
+    players = _concat_nonempty(players_parts)
+    teams = _concat_nonempty(teams_parts)
+    goalies = _concat_nonempty(goalie_parts)
+    if players.empty:
+        print(
+            f"WARNING: backtrack publish appears stale: last published none (no rows in "
+            f"{model.player_table(env)} within the {HISTORY_WINDOW_DAYS}-day window before {before_date})",
+            flush=True,
+        )
+        return players, teams, goalies
+    snapped_dates = set(players["date"].astype(str))
+    game_dates = set(teams["date"].astype(str)) if not teams.empty else set()
+    missing = sorted(game_dates - snapped_dates)
+    if missing:
+        print(
+            f"WARN: {model.player_table(env)} has no snapshot rows for game date(s) {missing} inside the "
+            f"{HISTORY_WINDOW_DAYS}-day window - continuing with the days that ARE published",
+            flush=True,
+        )
+    last = max(snapped_dates)
+    lag_days = (datetime.date.fromisoformat(before_date) - datetime.date.fromisoformat(last)).days
+    if lag_days > 1:
+        print(f"WARNING: backtrack publish appears stale: last published {last}", flush=True)
+    if lag_days > ARTIFACT_STALE_DAYS:
+        print(
+            f"STALENESS WATCH: {model.player_table(env)} last published {last} ({lag_days} days before "
+            f"{before_date}) - career_* features attached from that day are >7 days stale; publish the "
+            f"backtrack archive before trusting the picks",
+            flush=True,
+        )
     return players, teams, goalies
+
+
+def _concat_nonempty(frames):
+    frames = [f for f in frames if not f.empty]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def attach_prior_features(live_players, history_players, before_date):
+    """STAGE 1 HONEST APPROXIMATION (documented verbatim in the runbook):
+
+    stage 1: honest approximation: rolling/career values taken from the last
+    published prior day; exact same-day recomputation is stage 2 (a per-game
+    raw-columns publish) and is planned.
+
+    Today's live rows (Player-Snapshots-{env}) carry the slate/odds/lineup
+    columns but NOT the 14 shot/TOI aggregates (sd_*, r5_*, r10_*, ewm_*,
+    career_*) - those are published on the backtrack grain only (smoke
+    2026-10-27: live columns stop at odds/lineup/opp-goalie; the 16 migrated
+    columns live on Player-Snapshots-backtrack-prod). For each player, attach
+    the values of the missing aggregates (+ the 2 club abbrevs when absent -
+    provenance, not rolling math) from that player's LAST published prior row
+    (max(date) < before_date). At most 1 day stale for rolling columns;
+    puts career_* right within the published window.
+
+    A player with NO prior published row (call-up / first artifact coverage)
+    gets NaN on the attached columns and a LOUD warn; the NaN stays and the
+    artifact's already-committed keep-empty-features imputer resolves the row.
+    """
+    live = live_players.copy()
+    hist = history_players.copy()
+    if not hist.empty:
+        hist["date"] = hist["date"].astype(str)
+        hist = hist[hist["date"] < before_date].sort_values("date")
+        prior = hist.drop_duplicates("player_id", keep="last").set_index("player_id")
+    else:
+        prior = pd.DataFrame()
+    attach_cols = [col for col in APPROX_ATTACH_COLUMNS + ["team_abbrev", "opponent_abbrev"] if col not in live.columns]
+    for col in attach_cols:
+        if col in prior.columns:
+            live[col] = live["player_id"].map(prior[col])
+    uncovered_ids = set(live.loc[~live["player_id"].isin(prior.index), "player_id"])
+    if uncovered_ids:
+        names = live[live["player_id"].isin(uncovered_ids)]["name"].unique().tolist()
+        print(
+            f"WARNING: {len(uncovered_ids)} today-row player(s) have NO prior published row in "
+            f"{model.player_table(ENV)} (call-up / first artifact coverage): "
+            f"players {names} (ids {sorted(uncovered_ids)}) - their attached rolling/career features "
+            "stay NaN; the artifact's keep-empty-features imputer resolves the row",
+            flush=True,
+        )
+    return live
 
 
 def require_snapshot_columns(players_today):
     missing = [col for col in REQUIRED_SNAPSHOT_COLUMNS if col not in players_today.columns]
     if missing:
         raise RuntimeError(
-            f"{model.player_table(ENV)} today's rows lack the 16 migrated columns "
+            f"Player-Snapshots-{ENV}: today's (attached) rows lack the 16 migrated columns "
             f"(docs/supabase_shot_columns.md): missing exactly {missing}. "
             "Run/finish the shot-columns backfill for this env before the ML pick pass."
         )
@@ -583,6 +731,52 @@ def job_summary(on_date, key, meta, n_picks, mean_max_prob, dry):
         handle.write("\n".join(lines) + "\n")
 
 
+def _skip_run(on_date, key, meta, dry):
+    """Clean soft skip: no live snapshot rows for the date -> the job summary
+    line, a flat print, and a 200 without ANY exception (exit 0, no pickle/
+    traceback on Actions). ``picks`` is empty and ``status`` is 'skipped', a
+    marker a workflow can gate on for an explicit red if it ever needs one
+    (the default presentation is a green no-op step)."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    lines = [
+        f"## ML picks run: {on_date} - SKIPPED",
+        "",
+        f"- no picks computed: no live snapshot rows for {on_date}",
+        f"- artifact: `{key}` (train_through {meta.get('train_through')}, seed {meta.get('seed')})",
+    ]
+    if path:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+    print(
+        json.dumps(
+            {
+                "log": "SMARTSCORE_ML_PICKS",
+                "date": on_date,
+                "status": "skipped",
+                "n_picks": 0,
+                "published": False,
+                "dry": dry,
+            },
+            default=str,
+        ),
+        flush=True,
+    )
+    return {
+        "statusCode": 200,
+        "date": on_date,
+        "status": "skipped",
+        "message": f"no picks computed: no live snapshot rows for {on_date}",
+        "artifact": {
+            "bucket": "(storage)",
+            "key": key,
+            "through": meta.get("train_through"),
+            "seed": meta.get("seed"),
+        },
+        "picks": [],
+        "dry": dry,
+    }
+
+
 def load_artifact_storage(client, bucket, prefix):
     """Lexically latest <prefix>/artifact_<through>_<seed>.joblib from
     Supabase Storage -> bundle (the SAME dated-prefix-latest convention as
@@ -645,7 +839,11 @@ def pick_daily_bundle(bucket, prefix, artifact_path, storage_bucket=None, storag
 
 
 def run(event=None, context=None):
-    """The former Lambda handler, unchanged in behaviour. `event` carries
+    """The former Lambda handler, updated for the live/backtrack split:
+    today's rows come from the LIVE table (skip with status='skipped', exit 0,
+    when the daily build has not run yet), history from the backtrack tables;
+    today's rolling/career features come from the last published prior row
+    (stage 1 approximation - see attach_prior_features). `event` carries
     optional date / dry / artifact_path / s3_bucket / s3_prefix; `context`
     is kept in the signature so the lifted test surface stays drop-in."""
     event = event or {}
@@ -666,8 +864,19 @@ def run(event=None, context=None):
         flush=True,
     )
 
-    players, teams, goalies = load_prediction_tables(ENV, on_date)
-    require_snapshot_columns(players[players["date"].astype(str) == on_date])
+    live_players = live_player_rows(ENV, on_date)
+    if live_players is None:
+        # Clean soft skip: the daily snapshot build has not produced today's
+        # rows yet (NORMAL on the early schedule) - no Picks write, exit 0.
+        # The Actions job shows a green 'skipped' step, not a traceback - if a
+        # workflow ever needs an explicit red, gate on result["status"].
+        return _skip_run(on_date, key, meta, dry)
+    history_players, teams, goalies = history_rows(ENV, on_date)
+    players_today = attach_prior_features(live_players, history_players, on_date)
+    require_snapshot_columns(players_today)
+    players = (
+        pd.concat([history_players, players_today], ignore_index=True) if not history_players.empty else players_today
+    )
     frame = model.build_frame(players, teams, goalies, source="supabase")
     frame = model.add_derived(frame, teams, source="supabase")
     frame = frame[frame["date"].astype(str) == on_date].reset_index(drop=True)
@@ -713,6 +922,7 @@ def run(event=None, context=None):
     return {
         "statusCode": 200,
         "date": on_date,
+        "status": "ok",
         "artifact": {
             "bucket": bucket or "(local file)",
             "key": key,

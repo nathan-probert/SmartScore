@@ -124,6 +124,10 @@ class FakeTable:
         self._high = value
         return self
 
+    def eq(self, _col, value):
+        self._equal = value
+        return self
+
     def order(self, _col, **_kw):
         return self
 
@@ -133,6 +137,8 @@ class FakeTable:
             rows = rows[rows["date"] >= self._low]
         if self._high is not None:
             rows = rows[rows["date"] < self._high]
+        if getattr(self, "_equal", None) is not None:
+            rows = rows[rows["date"].astype(str) == self._equal]
         self._slice = rows.iloc[lo : min(hi + 1, len(rows))]
         return self
 
@@ -222,6 +228,115 @@ def prediction_tables(monkeypatch):
     fake_client.table.side_effect = _table
     monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
     return fake_client
+
+
+def install_tables(monkeypatch, players, teams, goalies=None):
+    """Point the reads at an arbitrary synthetic (players, teams, goalies)."""
+    fake_client = MagicMock(name="supabase_admin")
+
+    def _table(name):
+        for prefix, frame in (
+            ("Player-Snapshots", players),
+            ("Team-Stats", teams),
+            ("Default", goalies if goalies is not None else fake_goalies()),
+        ):
+            if name.startswith(prefix):
+                return FakeTable(frame)
+        return FakeTable(fake_goalies())
+
+    fake_client.table.side_effect = _table
+    monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
+    return fake_client
+
+
+# ----------------------------------------------------- live/history semantics
+# The split: today's rows come from the LIVE table (Player-Snapshots-{env});
+# history is STRICTLY before the date (backtrack tables), and a missing/
+# stale backtrack publish warns instead of failing the run.
+
+
+def test_history_missing_game_date_warns_but_run_completes(env_vars, monkeypatch, capsys):
+    players = fake_players()
+    teams = fake_teams()
+    extra = pd.DataFrame(teams.iloc[0].to_dict(), index=[0])
+    extra["date"] = "2026-06-12"  # a game date the player grain never got rows for
+    teams = pd.concat([teams, extra], ignore_index=True)
+    install_tables(monkeypatch, players, teams)
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls: list = []
+    fake_save(monkeypatch, calls)
+
+    result = mod.handler({"date": ON_DATE}, None)  # no raise
+
+    out = capsys.readouterr().out
+    assert "no snapshot rows for game date(s) ['2026-06-12']" in out
+    assert "continuing with the days that ARE published" in out
+    assert result["statusCode"] == 200 and result["status"] == "ok"
+    assert len(calls) == 3
+
+
+def test_history_rows_missing_dates_warn(monkeypatch, capsys):
+    players = fake_players()
+    teams = fake_teams()
+    extra = pd.DataFrame(teams.iloc[0].to_dict(), index=[0])
+    extra["date"] = "2026-06-12"
+    teams = pd.concat([teams, extra], ignore_index=True)
+    install_tables(monkeypatch, players, teams)
+    history_players, _teams, _goalies = mod.history_rows("prod", ON_DATE)
+    assert not history_players.empty
+    out = capsys.readouterr().out
+    assert "['2026-06-12']" in out
+
+
+def test_live_rows_empty_skips_cleanly(env_vars, monkeypatch, capsys):
+    players = fake_players()
+    players = players[players["date"] != ON_DATE]  # no live rows for today
+    install_tables(monkeypatch, players, fake_teams(), fake_goalies())
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls: list = []
+    fake_save(monkeypatch, calls)
+
+    result = mod.handler({"date": ON_DATE}, None)  # exit 0, no traceback
+
+    out = capsys.readouterr().out
+    assert result["statusCode"] == 200 and result["status"] == "skipped"
+    assert "no live snapshot rows for" in out and "no picks computed" in out
+    assert calls == []  # no Picks write
+
+
+def test_attach_prior_features_nan_and_warn_for_no_history(env_vars, monkeypatch, capsys):
+    base = fake_players()
+    live_only = base[base["date"] == ON_DATE].drop(
+        columns=list(mod.APPROX_ATTACH_COLUMNS) + ["team_abbrev", "opponent_abbrev"]
+    )
+    history = base[base["date"] == HISTORY_DATE]
+    history = history[history["player_id"] != 2]  # today's player 2 has NO prior published row
+    players = pd.concat([history, live_only], ignore_index=True)
+    install_tables(monkeypatch, players, fake_teams(), fake_goalies())
+    assert mod.APPROX_ATTACH_COLUMNS  # the 14 aggregates are the approximation's attach set
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls: list = []
+    fake_save(monkeypatch, calls)
+    result = mod.handler({"date": ON_DATE}, None)  # the pipeline still runs...
+
+    out = capsys.readouterr().out
+    assert "NO prior published row" in out and "keep-empty-features imputer" in out
+    assert result["statusCode"] == 200 and result["status"] == "ok"
+    assert len(calls) == 3  # ... and still resolves a decision per group
+
+
+def test_history_rows_staleness_watch_beyond_7_days(env_vars, monkeypatch, capsys):
+    players = fake_players()
+    players.loc[players["date"] == HISTORY_DATE, "date"] = (
+        datetime.date.fromisoformat(ON_DATE) - datetime.timedelta(days=8)
+    ).isoformat()
+    players = players[players["date"] != ON_DATE]  # history grain only
+    install_tables(monkeypatch, players, fake_teams(), fake_goalies())
+    history_players, _teams, _goalies = mod.history_rows("prod", ON_DATE)
+    assert not history_players.empty
+    out = capsys.readouterr().out
+    assert "backtrack publish appears stale: last published" in out
+    assert "STALENESS WATCH" in out and ">7 days stale" in out
 
 
 def fake_s3(monkeypatch, bundle):
@@ -454,9 +569,12 @@ def test_ensemble_scores_rank_rule():
     assert group1["ensemble"].idxmax() == 1
 
 
-def test_supabase_frame_matches_artifact_features(env_vars, prediction_tables):
-    players, teams, goalies = mod.load_prediction_tables("prod", ON_DATE)
-    mod.require_snapshot_columns(players[players["date"].astype(str) == ON_DATE])
+def test_live_plus_history_rows_match_artifact_features(env_vars, prediction_tables):
+    live = mod.live_player_rows("prod", ON_DATE)
+    history_players, teams, goalies = mod.history_rows("prod", ON_DATE)
+    players_today = mod.attach_prior_features(live, history_players, ON_DATE)
+    mod.require_snapshot_columns(players_today)
+    players = pd.concat([history_players, players_today], ignore_index=True)
     frame = model.build_frame(players, teams, goalies, source="supabase")
     frame = model.add_derived(frame, teams, source="supabase")
     frame = frame[frame["date"].astype(str) == ON_DATE].reset_index(drop=True)
@@ -561,8 +679,10 @@ def test_handler_dry_skips_write(env_vars, prediction_tables, monkeypatch):
 
 def test_handler_missing_columns_fails_instead_of_publishing(env_vars, prediction_tables, monkeypatch):
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    players = pd.DataFrame([{"date": ON_DATE, "player_id": 1, "name": "a"}])
-    monkeypatch.setattr("run_daily_picks.load_prediction_tables", lambda _env, _d: (players, players, players))
+    bare = pd.DataFrame([{"date": ON_DATE, "player_id": 1, "name": "a", "tims": 1}])
+    monkeypatch.setattr("run_daily_picks.live_player_rows", lambda _env, _d: bare)
+    empty = bare[[]]
+    monkeypatch.setattr("run_daily_picks.history_rows", lambda _env, _d: (empty, empty, empty))
     calls = []
     fake_save(monkeypatch, calls)
     with pytest.raises(RuntimeError, match="sd_goals_pg"):
