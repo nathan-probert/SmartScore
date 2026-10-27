@@ -285,33 +285,6 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      # ---------------- MLPicks image (ECR Public master) ------------------
-      # The image's distribution master ships from ECR PUBLIC (public.ecr.aws,
-      # the 50 GB/month always-free tier). Needs the one-time per-account
-      # alias (Amazon ECR console -> Registries -> <Public registry> ->
-      # Edit -> Custom alias) exposed as the PUBLIC_ECR_ALIAS repo secret;
-      # without it make build-ml-image fails loudly with the setup
-      # walkthrough. docs/aws-predict-lambda-runbook.md
-      #
-      # NOTE: Lambda cannot pull public.ecr.aws images, so the Lambda's
-      # ImageUri points at a PRIVATE copy of the same image (kept to one
-      # image by a keep-last-1 lifecycle policy, inside the private 500 MB/month
-      # free tier). --sync-only does that sync and exports MLECR_IMAGE_URI
-      # for the deploy step below.
-      - name: Build and push MLPicks image (ECR Public)
-        env:
-          PUBLIC_ECR_ALIAS: ${{ secrets.PUBLIC_ECR_ALIAS }}
-        run: make build-ml-image
-        # The build target carries the image-size SANITY gate (docker image
-        # inspect vs DOCKER_IMAGE_MAX_MB, default 5120 MB, job-failing): a
-        # runaway build (fat base, accidental data COPY) must never become
-        # the pull copy. It is deliberately NOT a 500 MB "free-tier mirror" —
-        # ECR Public's always-free tier is 50 GB/month; the 500 MB private
-        # figure is first-year-only and ~10x under any plausible image here.
-
-      - name: Sync MLPicks image to private ECR (Lambda pull copy)
-        run: bash build_scripts/deploy_ml_lambda.sh --sync-only
-
       - name: Run deploy script
         run: |
           chmod +x build_scripts/deploy.sh
@@ -320,11 +293,6 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-          # ML pick-pass parameters (deploy.sh passes them as CloudFormation
-          # parameter overrides when set): the bucket honors the ML_S3_BUCKET
-          # repo secret, the image URI comes from the sync step above.
-          MLS3_BUCKET: ${{ secrets.ML_S3_BUCKET || 'smartscore-ml-artifacts' }}
-          MLECR_IMAGE_URI: ${{ env.MLECR_IMAGE_URI }}
 
   dev-integration:
     needs: deploy

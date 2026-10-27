@@ -1781,14 +1781,12 @@ lightgbm==4.7.0 python smartscore/scripts/backtrack/<script> --env dev
 
 The model production chain lives outside this flat tree:
 
-- **Deploy chain:** `smartscore/scripts/backtrack/train_export.py` builds the
-  on-demand predict-Lambda joblib artifact from the committed dumps, and
-  `docs/aws-predict-lambda-runbook.md` is the day-of deploy runbook — both
-  live on the `feat/aws-relambda` branch (keep it there; this PR does not
-  move or duplicate them). `- heads: 0d98cda`.
+- **Predict/pass runner:** the daily ML picks pass runs as the scheduled
+  `.github/workflows/ml-picks.yml` workflow; `docs/ml-picks-runbook.md` is
+  its runbook (artifact refresh, secrets, cost, stale roll-forward).
 - **Column spec:** `docs/supabase_shot_columns.md` on `feat/supabase-spec`
   (PR #138) is the in-force 16-column Player-Snapshots-backtrack spec
-  referenced by the Lambda code — kept on that branch, not folded here.
+  referenced by the run code — kept on that branch, not folded here.
 - **Operational runbooks in this tree:** `PROJECTED_LINEUP_RUNBOOK.md`
   (lineup-unit collection), `FEED_FIDELITY_RUNBOOK.md` (nightly unit-match
   tracking), and the per-season data-capture flow documented via the

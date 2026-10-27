@@ -31,22 +31,6 @@ Parameters:
     Type: String
     Default: ""
     Description: PostHog project/personal API key for runtime feature-flag evaluation
-  MLS3Bucket:
-    Type: String
-    Default: ""
-    Description: S3 bucket holding the versioned ML artifacts (predict/ml/artifact_*.joblib)
-  MLEcrImageUri:
-    Type: String
-    Default: ""
-    Description: >-
-      ECR image URI:tag of the predict-picks image, set by
-      build_scripts/deploy_ml_lambda.sh. The function pulls from the PRIVATE
-      repo in this region (Lambda cannot pull public.ecr.aws); the
-      public.ecr.aws copy of the same image is the distribution master.
-
-Conditions:
-  MLS3Configured: !Not [!Equals [!Ref MLS3Bucket, ""]]
-  MLImageConfigured: !Not [!Equals [!Ref MLEcrImageUri, ""]]
 
 Resources:
   # IAM Role for Lambda Execution
@@ -83,10 +67,6 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: "*"
-              # (ML artifact S3 read moved to MLPicksArtifactReadPolicy below:
-              # a policy statement cannot carry a resource-level Condition, and
-              # with MLS3Bucket empty the ARN collapses to
-              # arn:aws:s3:::/predict/ml/*, which fails the role update.)
 
   # State Machine Execution Role
   StateMachineExecutionRole:
@@ -696,82 +676,6 @@ Resources:
     Properties:
       LogGroupName: !Sub "/aws/lambda/GetGoalies-${ENV}"
       RetentionInDays: 1
-
-  # ---------------- Predict-only ML picks Lambda (ADDITIVE) ----------------
-  # Trains nothing: loads the owner-uploaded artifact from S3 and publishes
-  # picks (docs/aws-predict-lambda-runbook.md).
-  MLPicksFunction:
-    Type: AWS::Lambda::Function
-    Condition: MLS3Configured
-    Properties:
-      FunctionName: !Sub "MLPicks-${ENV}"
-      PackageType: Image
-      Role: !GetAtt LambdaExecutionRole.Arn
-      MemorySize: 2048          # 600k-row frame build + 4 sklearn/lightgbm estimators
-      Timeout: 300
-      ImageUri: !Ref MLEcrImageUri
-      Environment:
-        Variables:
-          ENV: !Ref ENV
-          SUPABASE_URL: !Ref SupabaseUrl
-          SUPABASE_API_KEY: !Ref SupabaseApiKey
-          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
-          POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
-          ML_S3_BUCKET: !Ref MLS3Bucket
-          ML_ARTIFACT_PREFIX: "predict/ml"
-          ML_HISTORY_WINDOW_DAYS: "60"
-
-  MLPicksLogGroup:
-    Type: AWS::Logs::LogGroup
-    Condition: MLS3Configured
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/MLPicks-${ENV}"
-      RetentionInDays: 1
-
-  # 09:30 UTC anchors the ML pass after the 08:00 UTC pipeline slate build.
-  # DST note: cron is a fixed UTC clock, but America/Toronto (the pipeline's
-  # "today" notion, see handler.today_et) observes DST - local morning time
-  # drifts between 04:30 and 05:30 ET across clock changes. Accepted, same as
-  # DailyStepFunctionTrigger's cron(0 8 * * ? *).
-  MLPicksDailyTrigger:
-    Type: AWS::Events::Rule
-    Condition: MLS3Configured
-    Properties:
-      ScheduleExpression: "cron(30 9 * * ? *)"  # 09:30 UTC daily; DST note above
-      State: ENABLED
-      Targets:
-        - Arn: !GetAtt MLPicksFunction.Arn
-          Id: MLPicksFunctionTarget
-
-  MLPicksFunctionPermission:
-    Type: AWS::Lambda::Permission
-    Condition: MLS3Configured
-    Properties:
-      FunctionName: !GetAtt MLPicksFunction.Arn  # accepted as the ARN for the event-source grant
-      Action: lambda:InvokeFunction
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt MLPicksDailyTrigger.Arn
-
-  # The artifact-read grant is a separate (conditioned) policy because a policy
-  # STATEMENT inside LambdaExecutionRole cannot carry a Condition: with
-  # MLS3Bucket unset it would resolve to the invalid ARN
-  # arn:aws:s3:::/predict/ml/* and fail the role's IAM update.
-  MLPicksArtifactReadPolicy:
-    Type: AWS::IAM::Policy
-    Condition: MLS3Configured
-    Properties:
-      PolicyName: MLPicksArtifactRead
-      Roles:
-        - !Ref LambdaExecutionRole
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          # Predict-only ML picks (additive): read the versioned artifact
-          # that the OWNER's local train_export.py --upload run ships.
-          - Effect: Allow
-            Action:
-              - s3:GetObject
-            Resource: !Sub "arn:aws:s3:::${MLS3Bucket}/predict/ml/*"
 
 Outputs:
   StepFunctionExecutionRoleArn:

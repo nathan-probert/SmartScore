@@ -1,0 +1,110 @@
+name: ML Daily Picks
+
+# Predict-only daily ML picks (Picks-{ENV}) - the replacement for the retired
+# MLPicks Lambda/image surface. SAME inference path (the artifact -> Supabase
+# read -> build_frame/add_derived -> ensemble rank-mean -> daily_picks ->
+# save_to_db chain in smartscore/scripts/backtrack/run_daily_picks.py, lifted
+# verbatim from the former handler); $0.00 infra. docs/ml-picks-runbook.md.
+
+on:
+  schedule:
+    # 05:30 ET-equivalent to the retired EventBridge trigger's cron 30 9.
+    # DST caveat: GitHub cron is a FIXED UTC clock while the pipeline's
+    # "today" is America/Toronto - 09:30 UTC is 05:30 EDT but 04:30 EST,
+    # so the local wall-clock anchor shifts one hour across clock changes
+    # (same accepted behaviour the template documented for its crons).
+    - cron: '30 9 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Slate date YYYY-MM-DD (default: ET-today)'
+        required: false
+        default: ''
+      dry:
+        description: 'Smoke run: assemble the picks, skip the Picks write'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+# Picks writes are per-day upserts; serialize reruns rather than racing them.
+concurrency:
+  group: ml-picks
+  cancel-in-progress: false
+
+jobs:
+  picks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ENV: prod
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # Artifact-fact convention: whatever the last local
+      # `train_export.py --upload` pushed, under the dated prefix read at
+      # run time (ML_ARTIFACT_PREFIX, default predict/ml). The bucket name is
+      # the ML_S3_BUCKET repo secret when set (same default the old deploy
+      # used). docs/ml-picks-runbook.md
+      ML_S3_BUCKET: ${{ secrets.ML_S3_BUCKET || 'smartscore-ml-artifacts' }}
+      ML_ARTIFACT_PREFIX: predict/ml
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/setup-uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
+      # Mirror of deploy.yml's deploy-job install (uv sync --no-dev, pinned
+      # by uv.lock) - runtime deps only; lint/dev groups are not needed here.
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      # Step 3: the artifact source. DEFAULT is the S3 read (read-only keys;
+      # the loading/listing code is the same load_artifact the handler used).
+      # NO-AWS FALLBACK keeps the exact same downstream inference: the owner
+      # passes --artifact to a local .joblib (one fetched outside the repo,
+      # or one committed under data/ml/) and removes this step -
+      # docs/ml-picks-runbook.md section 3.
+      - name: Configure AWS credentials (S3 artifact read)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      # Steps 3+4: run_daily_picks fetches the artifact (S3 dated-prefix
+      # latest, or --artifact) then performs inference via model.py +
+      # utility.save_to_db - the same imports the handler did.
+      - name: Run the daily ML picks pass
+        run: |
+          uv run --with lightgbm==4.7.0 python smartscore/scripts/backtrack/run_daily_picks.py \
+            ${{ (inputs.date && format('--date {0}', inputs.date)) || '' }} \
+            ${{ (inputs.dry && '--dry') || '' }}
+
+      # Step 5: the script prints the single structured SMARTSCORE_ML_PICKS
+      # log line and appends the headline to $GITHUB_STEP_SUMMARY; this step
+      # surfaces the run verdict in the job log as well.
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -s "${GITHUB_STEP_SUMMARY:-}" ]; then
+            echo "ML picks run complete - see the job summary for the headline."
+          else
+            echo "ML picks run finished (no summary written: the pass did not reach job_summary)."
+          fi

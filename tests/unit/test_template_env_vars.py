@@ -9,7 +9,6 @@ PerformBackfillingFunction or UpdateHistoryFunction, which call the same
 worker.
 """
 
-import json
 import re
 from pathlib import Path
 
@@ -107,41 +106,6 @@ def test_every_ref_points_at_a_declared_parameter_or_resource():
     assert not undeclared, f"!Ref to undeclared parameter(s)/resource(s): {undeclared}"
 
 
-def test_ml_resources_are_condition_gated_on_mls3bucket():
-    """MLPicks resources must not be created when MLS3Bucket is unset.
-
-    deploy.sh never passes MLS3Bucket/MLEcrImageUri, so both default to "".
-    Without the Condition, the unconditioned MLPicksFunction create fails on
-    the empty ImageUri (and the role's S3 ARN collapses to
-    arn:aws:s3:::/predict/ml/*), rolling back the whole stack update
-    (UPDATE_ROLLBACK_COMPLETE). Same failure as PR #146's first deploy run.
-    """
-    gated = [
-        "MLPicksFunction",
-        "MLPicksLogGroup",
-        "MLPicksDailyTrigger",
-        "MLPicksFunctionPermission",
-        "MLPicksArtifactReadPolicy",
-    ]
-    resources = TEMPLATE["Resources"]
-
-    ungated = [logical_id for logical_id in gated if resources[logical_id].get("Condition") != "MLS3Configured"]
-    assert not ungated, f"ML resource(s) missing Condition: MLS3Configured: {sorted(ungated)}"
-
-    # The Condition expression must key off MLS3Bucket exactly (not the
-    # sibling MLEcrImageUri), so an empty default short-circuits creation.
-    assert re.search(r'MLS3Configured: !Not \[!Equals \[!Ref MLS3Bucket, ""\]\]', TEMPLATE_TEXT), (
-        'MLS3Configured must be !Not [!Equals [!Ref MLS3Bucket, ""]]'
-    )
-
-    # The S3 artifact ARN may only appear inside the conditioned policy, never
-    # back in the (unconditional) LambdaExecutionRole.
-    role = resources["LambdaExecutionRole"]["Properties"]["Policies"][0]["PolicyDocument"]["Statement"]
-    assert all(
-        "arn:aws:s3:::${MLS3Bucket}" not in json.dumps(stmt) if isinstance(stmt, dict) else True for stmt in role
-    ), "LambdaExecutionRole still embeds the MLS3Bucket ARN unconditionally"
-
-
 def _deploy_script() -> Path:
     for parent in Path(__file__).resolve().parents:
         candidate = parent / "build_scripts" / "deploy.sh"
@@ -173,21 +137,6 @@ def test_every_lambda_gets_its_code_deployed():
     successful and does nothing.
     """
     declared = _declared_function_names()
-    # Image-packaged functions (MLPicks) carry their code INSIDE a container
-    # image pushed to ECR (smartscore/lambda/predict_picks/Dockerfile via
-    # `make build-ml-image`), not through deploy.sh's zip flow - exempt them.
-    image_packaged = set()
-    text = TEMPLATE_TEXT
-    for match in re.finditer(r'FunctionName: !Sub "([A-Za-z0-9_]+)-\$\{ENV\}"', text):
-        # the resource's own properties block runs until the next two-space
-        # resource key; PackageType inside that window marks image packaging
-        window_start = match.start()
-        window_end = min(m.start() for m in re.finditer(r"^  [A-Za-z]", text[window_start + 1 :], flags=re.M)) + (
-            window_start + 1 if len(re.findall(r"^  [A-Za-z]", text[window_start + 1 :], flags=re.M)) > 0 else len(text)
-        )
-        if re.search(r"^\s*PackageType: Image$", text[window_start:window_end], flags=re.M):
-            image_packaged.add(match.group(1))
-    declared -= image_packaged
     deployed = _deployed_function_names()
 
     assert declared, "expected to parse FunctionName entries from template.yaml"

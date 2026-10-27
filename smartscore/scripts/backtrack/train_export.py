@@ -2,11 +2,12 @@
 
 GOAL (owner rules, binding)
 
-Training NEVER runs on AWS. The owner runs this script locally on demand, it
-produces a versioned artifact, and (with --upload) puts that artifact on S3
-for the predict-only Lambda (MLPicks-{ENV}). Nothing in this file is
-scheduled; nothing daily runs locally either - this is an owner-invoked,
-one-shot command.
+Training NEVER runs on AWS or in CI. The owner runs this script locally on
+demand, it produces a versioned artifact, and (with --upload) puts that
+artifact on S3 for the **predict-only daily pass** (the scheduled
+.github/workflows/ml-picks.yml job via run_daily_picks.py).
+Nothing in this file is scheduled; nothing daily runs locally either - this
+is an owner-invoked, one-shot command.
 
 RAMBLE FREE / NO FORKING
 
@@ -26,21 +27,21 @@ seed 0 = 29.92%, seed 1 = 29.41%, seed 3 = 29.82% (96f0ff2 cache/MODEL_NOTES.md)
 The table is recorded in the artifact metadata so any vintage traces to a
 measured expected accuracy. Regenerating the ensemble on the current cache
 (617,310 rows incl. the V15 2013-17 rows) measured seeds 1/3 at 29.28/29.82%;
-era table lives in the runbook (aws-predict-lambda-runbook.md).
+era table lives in the runbook (docs/ml-picks-runbook.md).
 
 ARTIFACT
 
 ``data/ml/artifact_<train_through>_<seed>.joblib`` (zlib-compressed joblib),
-emitting BOTH agreed designs at once (the Lambda's normalise_bundle reads
+emitting BOTH agreed designs at once (run_daily_picks.normalise_bundle reads
 either; joblib dedupes the shared estimator references):
 
     version                      1
     train_through / seed
     git_hash / generated_at
     feature_order                the EXACT ordered feature list the frame must
-                                 be rebuilt in (the Lambda asserts this)
+                                 be rebuilt in (the daily pass asserts this)
     categorical_maps             {col: [values]} per CATEGORICAL_FEATURE -
-                                 the trained vocabulary the Lambda's encoding
+                                 the trained vocabulary the prediction encoding
                                  step needs
     derived_params               the documented ensemble scoring recipe:
                                  mean of within-(date, tims) rank(pct=True)
@@ -207,7 +208,7 @@ def fit_bundle(frame, args):
     logreg = captured["LogisticRegression"]
 
     bundle = {
-        # --- ARTIFACT CONTRACT keys (sibling-agreed; the Lambda reads both
+        # --- ARTIFACT CONTRACT keys (sibling-agreed; the daily pass reads both
         # --- designs via normalise_bundle) ------------------------------
         "version": 1,
         "train_through": str(frame["date"].max()),
@@ -219,7 +220,7 @@ def fit_bundle(frame, args):
             col: sorted(str(value) for value in frame[col].dropna().astype(str).unique())
             for col in model.CATEGORICAL_FEATURES
         },
-        # The documented ensemble scoring recipe, verbatim the Lambda must
+        # The documented ensemble scoring recipe, verbatim the daily pass must
         # reproduce: per model.run_folds' ensemble column - predict each
         # member, fillna(0), rank(pct=True) within (date, tims), MEAN across
         # the {hgb, lgbm, logreg} ranks (the ranker is exported for
@@ -241,7 +242,7 @@ def fit_bundle(frame, args):
             "logreg": logreg,
             "ranker": ranker,
         },
-        # --- legacy envelope keys (same objects; the Lambda's legacy path
+        # --- legacy envelope keys (same objects; the legacy reader path
         # --- and any older reader keep working) --------------------------
         "hgb": hgb,
         "lgbm": lgbm,

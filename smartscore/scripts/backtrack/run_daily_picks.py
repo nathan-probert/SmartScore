@@ -1,10 +1,12 @@
-"""Predict-only ML picks Lambda: SmartScore ensemble -> Picks-{ENV}.
+"""Predict-only ML picks, on a scheduled GitHub Actions run: SmartScore
+ensemble -> Picks-{ENV}. Replaces the retired MLPicks Lambda/image surface
+(docs/ml-picks-runbook.md) - SAME inference path, $0.00 infra.
 
-Owner rules this handler implements (docs/aws-predict-lambda-runbook.md):
+Owner rules this script implements (docs/ml-picks-runbook.md):
 
-  * training NEVER happens here (or anywhere on AWS) - the Lambda only loads
-    a versioned joblib artifact from S3 that the owner's train_export.py run
-    uploaded from the local machine;
+  * training NEVER happens here (or anywhere in CI) - it only loads a
+    versioned joblib artifact that the owner's train_export.py --upload run
+    pushed from the local machine;
   * it reads TODAY's rows read-only from the backtrack Supabase tables
     (Player-Snapshots / Team-Stats / Goalie-Snapshots) through
     ``model.build_frame(..., source="supabase")`` + ``model.add_derived`` -
@@ -17,10 +19,20 @@ Owner rules this handler implements (docs/aws-predict-lambda-runbook.md):
     the existing Picks-{ENV} conventions (smartscore/utility.py save_to_db,
     reached via the publish_public_db row shape) - no manual Supabase writes.
 
-Manual trigger: ``{"date": "YYYY-MM-DD"}`` overrides ET-today; ``dry: true``
-skips the Picks write (smoke invoke).
+Manual trigger: the workflow's ``date`` input (or ``--date YYYY-MM-DD``)
+overrides ET-today; ``dry``/``--dry`` skips the Picks write (smoke run).
+
+Artifact source (the artifact-fact convention): by DEFAULT the lexically
+latest .joblib under the S3 dated prefix (whatever the last
+``train_export.py --upload`` pushed - newest train_through wins, no config
+file to keep in sync); fallback ``--artifact PATH`` reads a local file
+(e.g. one committed under data/ml/ or fetched privately), so the exact same
+code path also works without AWS credentials. No rewrite, no fork: every
+function below is the former smartscore/lambda/predict_picks/handler.py
+logic verbatim, only moved and re-anchored.
 """
 
+import argparse
 import datetime
 import io
 import json
@@ -32,13 +44,13 @@ import boto3
 import numpy as np
 import pandas as pd
 
-# model.py (cherry-picked from feat/supabase-shot-cols) ships in the container
-# at /var/task/frame/model.py; locally and in unit tests the repo's own copy
-# under smartscore/scripts/backtrack is used - both resolve to the SAME code,
-# this script never forks it.
+# model.py ships in this same backtrack directory; config/utility live one
+# tree up in smartscore/ - the SAME modules the handler imported, just
+# reached through the repo layout instead of a container image.
 _here = Path(__file__).resolve()
-sys.path.insert(0, str(_here.parent / "frame"))
-sys.path.insert(1, str(_here.parents[2] / "scripts" / "backtrack"))
+_root = _here.parents[2]
+sys.path.insert(0, str(_root / "smartscore"))
+sys.path.insert(1, str(_here.parent))
 import model  # noqa: E402
 
 from config import ENV, SUPABASE_ADMIN_CLIENT  # noqa: E402
@@ -89,13 +101,13 @@ def load_artifact(s3_client, bucket, prefix):
     KEY KATA (dated-prefix-latest, not a pinned key): the owner's day-of
     refresh uploads `artifact_<train_through>_<seed>.joblib` under ARTIFACT
     PREFIX (ML_ARTIFACT_PREFIX, default predict/ml); every old vintage stays
-    in place. The Lambda lists the prefix and takes the lexically greatest
+    in place. The daily job lists the prefix and takes the lexically greatest
     .joblib - newest train_through wins, no config file to keep in sync,
     no redeploy on a refresh, and a rollback is a manual
     `aws s3 cp` of the older key back under the prefix (or trim the newer
     key away) - the newest artifact is always "whatever the last
-    `train_export.py --upload` pushed", by construction. (An explicit
-    event override `{"artifact_key": "..."}` is not supported; the prefix
+    `train_export.py --upload` pushed", by construction. (An explicit input
+    override `{"artifact_key": "..."}` is not supported; the prefix
     scan stays the single source of truth on purpose.)
     """
     listing = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix.rstrip("/") + "/")
@@ -104,10 +116,24 @@ def load_artifact(s3_client, bucket, prefix):
         raise RuntimeError(f"no artifact .joblib found under s3://{bucket}/{prefix}")
     key = keys[-1]
     payload = s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
-    import joblib  # noqa: PLC0415  (S3 payload-time, artifact bytes already in memory) (S3 payload-time import keeps container cold-start flat)
+    import joblib  # noqa: PLC0415  (payload-time import keeps the runner boot flat)
 
     bundle = joblib.load(io.BytesIO(payload))
     return key, normalise_bundle(bundle, key=key)
+
+
+def load_artifact_file(path):
+    """Fallback source: read a LOCAL .joblib (same bundle -> same canonical
+    shape). Used when no AWS credentials are configured - the workflow then
+    fetches the artifact itself (or one is committed under data/ml/), and
+    this keeps the DOWNSTREAM inference identical either way."""
+    import joblib  # noqa: PLC0415
+
+    path = Path(path)
+    if not path.is_file():
+        raise RuntimeError(f"artifact file not found: {path}")
+    bundle = joblib.load(path)
+    return str(path), normalise_bundle(bundle, key=path.name)
 
 
 def normalise_bundle(bundle, key="artifact"):
@@ -334,26 +360,58 @@ def pick_rows_to_picks_db(picks):
     return rows
 
 
-# ------------------------------------------------------------------ handler
+# ------------------------------------------------------------------ run
 
 
 def today_et():
-    import pytz  # noqa: PLC0415  (lazy; single call per invoke)
+    import pytz  # noqa: PLC0415  (lazy; single call per run)
 
     return datetime.datetime.now(pytz.timezone("America/Toronto")).strftime("%Y-%m-%d")
 
 
-def handler(event, context):
+def job_summary(on_date, key, meta, n_picks, mean_max_prob, dry):
+    """Append the run's headline to $GITHUB_STEP_SUMMARY when one exists
+    (on GitHub Actions); a no-op anywhere else."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    lines = [
+        f"## ML picks run: {on_date}",
+        "",
+        f"- artifact: `{key}` (train_through {meta.get('train_through')}, seed {meta.get('seed')})",
+        f"- picks published: {n_picks}{'' if not dry else ' (DRY - no Picks write)'}",
+        f"- mean ensemble percentile: {mean_max_prob}",
+    ]
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
+def pick_daily_bundle(bucket, prefix, artifact_path):
+    """Resolve the artifact exactly per the artifact-fact convention: an
+    explicit --artifact PATH wins (local fallback), otherwise S3
+    (bucket/prefix) is the default source of truth."""
+    if artifact_path:
+        return load_artifact_file(artifact_path)
+    if not bucket:
+        raise RuntimeError(
+            "no artifact source: set ML_S3_BUCKET (or pass --s3-bucket) for the "
+            "default S3 read, or pass --artifact PATH for the local fallback"
+        )
+    return load_artifact(boto3.client("s3"), bucket, prefix)
+
+
+def run(event=None, context=None):
+    """The former Lambda handler, unchanged in behaviour. `event` carries
+    optional date / dry / artifact_path / s3_bucket / s3_prefix; `context`
+    is kept in the signature so the lifted test surface stays drop-in."""
     event = event or {}
     on_date = str(event.get("date") or today_et())
     dry = bool(event.get("dry"))
 
-    bucket = os.environ.get("ML_S3_BUCKET")
-    prefix = os.environ.get("ML_ARTIFACT_PREFIX", "predict/ml")
-    if not bucket:
-        raise RuntimeError("ML_S3_BUCKET is not configured on this Lambda")
+    bucket = event.get("s3_bucket") or os.environ.get("ML_S3_BUCKET")
+    prefix = event.get("s3_prefix") or os.environ.get("ML_ARTIFACT_PREFIX", "predict/ml")
 
-    key, bundle = load_artifact(boto3.client("s3"), bucket, prefix)
+    key, bundle = pick_daily_bundle(bucket, prefix, event.get("artifact_path"))
     meta = bundle["metadata"]
     stale = staleness_note(bundle)
     print(
@@ -401,11 +459,53 @@ def handler(event, context):
     )
     if dry:
         print(f"dry: assembled {len(rows)} ML picks for {on_date} (no Picks write)", flush=True)
+    job_summary(on_date, key, meta, len(rows), mean_max_prob, dry)
 
     return {
         "statusCode": 200,
         "date": on_date,
-        "artifact": {"bucket": bucket, "key": key, "through": meta.get("train_through"), "seed": meta.get("seed")},
+        "artifact": {
+            "bucket": bucket or "(local file)",
+            "key": key,
+            "through": meta.get("train_through"),
+            "seed": meta.get("seed"),
+        },
         "picks": rows,
         "dry": dry,
     }
+
+
+# Kept as the module's canonical entry name so callers (and tests) get the
+# same interface the Lambda handler exposed; run() is the same function.
+handler = run
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--date", default=None, help="slate date YYYY-MM-DD (default: ET-today)")
+    parser.add_argument("--dry", action="store_true", help="smoke run: assemble picks, skip the Picks write")
+    parser.add_argument(
+        "--artifact",
+        default=os.environ.get("ML_ARTIFACT_PATH"),
+        help="local .joblib path (fallback when AWS credentials or ML_S3_BUCKET are not configured)",
+    )
+    parser.add_argument("--s3-bucket", default=None, help="override the ML_S3_BUCKET env (default S3 source)")
+    parser.add_argument("--s3-prefix", default=None, help="override the ML_ARTIFACT_PREFIX env (default predict/ml)")
+    args = parser.parse_args(argv)
+
+    event = {}
+    if args.date:
+        event["date"] = args.date
+    if args.dry:
+        event["dry"] = True
+    if args.artifact:
+        event["artifact_path"] = args.artifact
+    if args.s3_bucket:
+        event["s3_bucket"] = args.s3_bucket
+    if args.s3_prefix:
+        event["s3_prefix"] = args.s3_prefix
+    return run(event)
+
+
+if __name__ == "__main__":
+    main()

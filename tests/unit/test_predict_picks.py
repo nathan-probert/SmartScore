@@ -1,12 +1,15 @@
-"""Unit tests for the predict-only ML picks Lambda (no AWS, no Supabase).
+"""Unit tests for the predict-only ML picks daily pass (no AWS, no Supabase).
 
-Stubbed surfaces: boto3.client("s3") returns an in-memory fake (the bundle is
-joblib-dumped into a BytesIO), the Supabase reads go through a fake table
-builder shaped like supabase-py's builder chain, and the Picks write is a
-fake save_to_db. Asserted: the 16-column hard fail naming exactly what is
-missing, the stale-artifact warning, encode order/categories (the artifact's
-order/shape assertion), the ensemble within-group rank rule, one-pick-per-
-group assembly, payload whitelisting, and the dry/published handler paths.
+The entry point under test is smartscore/scripts/backtrack/run_daily_picks.py
+(the former Lambda handler's logic, now driven by the scheduled
+.github/workflows/ml-picks.yml run). Stubbed surfaces: boto3.client("s3")
+returns an in-memory fake (the bundle is joblib-dumped into a BytesIO), the
+Supabase reads go through a fake table builder shaped like supabase-py's
+builder chain, and the Picks write is a fake save_to_db. Asserted: the
+16-column hard fail naming exactly what is missing, the stale-artifact
+warning, encode order/categories (the artifact's order/shape assertion), the
+ensemble within-group rank rule, one-pick-per-group assembly, payload
+whitelisting, and the dry/published run paths.
 """
 
 import datetime
@@ -43,10 +46,10 @@ sys.modules.setdefault("make_predictions_rust", _rust_stub)
 # (bootstrap deliberately precedes these imports)
 # noqa anchor
 _SPEC = importlib.util.spec_from_file_location(  # noqa: E402
-    "ml_picks_handler", ROOT / "smartscore" / "lambda" / "predict_picks" / "handler.py"
+    "run_daily_picks", ROOT / "smartscore" / "scripts" / "backtrack" / "run_daily_picks.py"
 )
 mod = importlib.util.module_from_spec(_SPEC)
-sys.modules["ml_picks_handler"] = mod
+sys.modules["run_daily_picks"] = mod
 _SPEC.loader.exec_module(mod)
 
 model = mod.model
@@ -217,7 +220,7 @@ def prediction_tables(monkeypatch):
         return FakeTable(tables["Default"])
 
     fake_client.table.side_effect = _table
-    monkeypatch.setattr("ml_picks_handler.SUPABASE_ADMIN_CLIENT", fake_client)
+    monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
     return fake_client
 
 
@@ -237,7 +240,7 @@ def fake_s3(monkeypatch, bundle):
         ]
     }
     s3.get_object.return_value = {"Body": io.BytesIO(payload)}
-    monkeypatch.setattr("ml_picks_handler.boto3.client", lambda service, **_kw: s3)
+    monkeypatch.setattr("run_daily_picks.boto3.client", lambda service, **_kw: s3)
     return s3
 
 
@@ -246,7 +249,7 @@ def fake_save(monkeypatch, calls):
         calls.extend(rows)
         return rows
 
-    monkeypatch.setattr("ml_picks_handler.save_to_db", _fake)
+    monkeypatch.setattr("run_daily_picks.save_to_db", _fake)
 
 
 # --------------------------------------------------------------- artifacts
@@ -500,7 +503,7 @@ def test_handler_dry_skips_write(env_vars, prediction_tables, monkeypatch):
 def test_handler_missing_columns_fails_instead_of_publishing(env_vars, prediction_tables, monkeypatch):
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     players = pd.DataFrame([{"date": ON_DATE, "player_id": 1, "name": "a"}])
-    monkeypatch.setattr("ml_picks_handler.load_prediction_tables", lambda _env, _d: (players, players, players))
+    monkeypatch.setattr("run_daily_picks.load_prediction_tables", lambda _env, _d: (players, players, players))
     calls = []
     fake_save(monkeypatch, calls)
     with pytest.raises(RuntimeError, match="sd_goals_pg"):
@@ -516,7 +519,7 @@ def test_handler_ambiguous_slate_fails(env_vars, prediction_tables, monkeypatch)
     def _only_one_group(sim, col):
         return sim[sim["tims"] == 1].head(1)
 
-    monkeypatch.setattr("ml_picks_handler.model.daily_picks", _only_one_group)
+    monkeypatch.setattr("run_daily_picks.model.daily_picks", _only_one_group)
     with pytest.raises(RuntimeError, match="3 picks"):
         mod.handler({"date": ON_DATE}, None)
     assert calls == []

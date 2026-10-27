@@ -106,73 +106,19 @@ backtrack-publish:
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-team $(SEASON)
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-goalies $(SEASON)
 
-# ---------------- Predict-only ML picks Lambda (ADDITIVE) ----------------
-# Owner-run, on-demand only: training NEVER happens on AWS, and no target
-# here is scheduled. The image ships feature inference + a Picks write; the
-# artifact always comes from this machine via train_export.py.
-#   docs: docs/aws-predict-lambda-runbook.md
-#
-# The image is distributed from ECR PUBLIC (public.ecr.aws) - the 50 GB/month
-# always-free public tier - NOT private-only. PUBLIC_ECR_ALIAS is the
-# per-account public registry alias, a ONE-TIME console setup (Amazon ECR
-# console -> Registries -> your Public registry -> Edit -> Custom alias; one
-# alias per account, AWS reviews the request "within a few days"). Until it
-# is approved, the DEFAULT alias works for pushes - find it with:
-#   aws ecr-public describe-registries --region us-east-1
-PUBLIC_ECR_ALIAS ?=
-PUBLIC_ECR_REPO  ?= smartscore/predict-picks
+# ---------------- On-demand ML artifact refresh --------------------------
+# Owner-run, on-demand only: training NEVER happens on AWS or in CI, and no
+# target here is scheduled. The workflow (.github/workflows/ml-picks.yml) is
+# predict-only and reads the artifact this target's upload produces.
+#   docs: docs/ml-picks-runbook.md
 MLS3_BUCKET      ?= $(if $(ML_S3_BUCKET),$(ML_S3_BUCKET),smartscore-ml-artifacts)
-ML_ENV           ?= $(if $(ENV),$(ENV),prod)
-ML_REGION        ?= us-east-1
-# Size SANITY gate, not a budget: ECR Public's always-free allowance is
-# 50 GB/month of storage, so this only trips a runaway build (a bad base
-# image, an accidental training-data COPY) long before it costs money.
-DOCKER_IMAGE_MAX_MB ?= 5120
 
-# Local dry training + export + upload (the on-demand artifact refresh):
+# Local dry training + export + upload (the on-demand artifact refresh): the
+# artifact-fact convention is s3://$(MLS3_BUCKET)/predict/ml/artifact_<through>_<seed>.joblib
+# (names sort by vintage; the daily workflow reads the lexically latest .joblib).
 #   make train-ml-export ENV=prod SEASON=2023 THROUGH=2026-06-14 SEED=0
 train-ml-export:
 	ENV=$(ENV) uv run --with lightgbm==4.7.0 python $(BACKTRACK)/train_export.py \
 	  --env $(ENV) $(if $(SEASON),--season $(SEASON),) $(if $(THROUGH),--through-date $(THROUGH),) \
 	  --seed $(if $(SEED),$(SEED),0) --upload --s3-bucket $(MLS3_BUCKET)
-
-# Build the predict-picks image and push it to ECR PUBLIC (one-time per code
-# change; CI does this automatically on main-push/deploy-label deploys):
-#   export PUBLIC_ECR_ALIAS=<alias>; make build-ml-image
-build-ml-image:
-	@test -n "$(PUBLIC_ECR_ALIAS)" || { \
-	  echo "Error: PUBLIC_ECR_ALIAS is not set."; \
-	  echo "The public registry alias is a ONE-TIME console step (CLI cannot create it):"; \
-	  echo "  Amazon ECR console -> Registries -> <Public registry> -> Edit -> Custom alias."; \
-	  echo "One alias per account; AWS reviews the request within a few days. The default"; \
-	  echo "alias also works meanwhile: aws ecr-public describe-registries --region us-east-1"; \
-	  echo "Then: export PUBLIC_ECR_ALIAS=<alias> and re-run."; \
-	  echo "Full walkthrough: docs/aws-predict-lambda-runbook.md step 1."; \
-	  exit 1; }
-	docker build --platform linux/amd64 -f smartscore/lambda/predict_picks/Dockerfile -t $(PUBLIC_ECR_REPO):latest .
-	@size=$$(docker image inspect -f '{{.Size}}' $(PUBLIC_ECR_REPO):latest); \
-	  mb=$$(($$size / 1000000)); \
-	  echo "Image size: $$mb MB (gate: DOCKER_IMAGE_MAX_MB=$(DOCKER_IMAGE_MAX_MB))"; \
-	  [ "$$mb" -le "$(DOCKER_IMAGE_MAX_MB)" ] || { \
-	    echo "Error: image is $$mb MB, over the $(DOCKER_IMAGE_MAX_MB) MB image-size gate."; \
-	    echo "Local default is the 5120MB sanity bound (ECR Public always-free is 50 GB/month);"; \
-	    echo "CI sets DOCKER_IMAGE_MAX_MB=500 as the HARD gate (ECR free-tier cap) via deploy.yml."; \
-	    exit 1; }
-	@# ECR Public API lives in us-east-1 only, regardless of the stack region.
-	aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
-	aws ecr-public describe-repositories --repository-names $(PUBLIC_ECR_REPO) --region us-east-1 >/dev/null 2>&1 || \
-	  aws ecr-public create-repository --repository-name $(PUBLIC_ECR_REPO) --region us-east-1 >/dev/null 2>&1 || true
-	docker tag $(PUBLIC_ECR_REPO):latest public.ecr.aws/$(PUBLIC_ECR_ALIAS)/$(PUBLIC_ECR_REPO):latest
-	docker push public.ecr.aws/$(PUBLIC_ECR_ALIAS)/$(PUBLIC_ECR_REPO):latest
-	@echo "Pushed public.ecr.aws/$(PUBLIC_ECR_ALIAS)/$(PUBLIC_ECR_REPO):latest (distribution master; 50 GB/month free tier)"
-
-# Create/refresh the MLPicks Lambda + trigger (additive; runs the same
-# `cloudformation deploy` an owner would run manually after build-ml-image:
-#   ENV=prod make deploy-ml-lambda
-# The script syncs the built image to the PRIVATE repo for the function's
-# ImageUri (Lambda can only pull private ECR in its own region) and passes
-# the full stack parameter set.
-deploy-ml-lambda:
-	ENV=$(ML_ENV) MLS3_BUCKET=$(MLS3_BUCKET) \
-	  bash build_scripts/deploy_ml_lambda.sh
-.PHONY: train-ml-export build-ml-image deploy-ml-lambda
+.PHONY: train-ml-export

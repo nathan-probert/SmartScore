@@ -15,10 +15,6 @@ TEMPLATE_FILE="./templates/template.yaml"
 
 KEY="$STACK_NAME.zip"
 
-# NOTE: MLPicks-$ENV is deliberately NOT in this list. It is image-packaged
-# (PackageType: Image in templates/template.yaml); its code ships inside a
-# container pushed to ECR Public by `make build-ml-image` /
-# build_scripts/deploy_ml_lambda.sh, never through this zip flow.
 LAMBDA_FUNCTIONS=(
   "GetTeams-$ENV"
   "GetPlayersFromTeam-$ENV"
@@ -63,21 +59,9 @@ generate_smartscore_stack() {
     exit 1
   fi
 
-  # Optional ML pick-pass resources (MLPicks-*): when the caller exports
-  # MLS3_BUCKET / MLECR_IMAGE_URI (the CI deploy job does), pass them as
-  # parameter overrides so the Conditions (keyed off MLS3Bucket only, per
-  # templates/template.yaml) open and MLPicks deploys in the same stack
-  # update as the app. When unset they are NOT sent: update-stack resets
-  # omitted parameters to their template defaults (""), so the ML resources
-  # drop out of the stack until the next ML deploy - the owner's manual
-  # `make deploy-ml-lambda` re-adds them.
-  ML_STACK_PARAMS=""
-  if [ -n "${MLS3_BUCKET:-}" ]; then
-    ML_STACK_PARAMS="$ML_STACK_PARAMS ParameterKey=MLS3Bucket,ParameterValue=$MLS3_BUCKET"
-  fi
-  if [ -n "${MLECR_IMAGE_URI:-}" ]; then
-    ML_STACK_PARAMS="$ML_STACK_PARAMS ParameterKey=MLEcrImageUri,ParameterValue=$MLECR_IMAGE_URI"
-  fi
+  # (The retired ML pick-pass parameter overrides (MLS3Bucket/MLEcrImageUri)
+  # are gone with the MLPicks Lambda; the Model pass now runs as the
+  # scheduled .github/workflows/ml-picks.yml workflow instead.)
 
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
     echo "Updating CloudFormation stack $STACK_NAME..."
@@ -93,7 +77,6 @@ generate_smartscore_stack() {
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
         ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
-        $ML_STACK_PARAMS \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
@@ -116,7 +99,6 @@ generate_smartscore_stack() {
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
         ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
-        $ML_STACK_PARAMS \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
