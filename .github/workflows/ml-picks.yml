@@ -1,0 +1,45 @@
+name: ML Daily Picks
+
+# STARTER SCAFFOLD - REGISTRATION ONLY, NOT THE REAL PIPELINE.
+#
+# GitHub only registers (and only allows manual dispatch of) workflows that
+# live on the default branch. Until PR #146 merges, this placeholder is that
+# registration for .github/workflows/ml-picks.yml: once this lands on main,
+# the Actions page shows the workflow and its "Run workflow" branch selector
+# can dispatch ANY branch. Choose feat/final-clean to run the REAL pipeline:
+# workflow_dispatch executes the workflow file AS IT EXISTS ON THE SELECTED
+# REF (main -> this placeholder; feat/final-clean -> the real pipeline, with
+# the repo secrets the owner configured).
+#
+# It deliberately does NOT run the inference here: main has no Supabase
+# secrets/credentials yet, and this placeholder exists only so the workflow
+# is registered and dispatch-able. PR #146 replaces this file's content with
+# the full real pipeline (schedule + repository_dispatch + the picks job);
+# the `name:` matches the real workflow so the registration carries over as
+# ONE workflow, not a rename. docs/ml-picks-runbook.md (S3 note).
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Slate date YYYY-MM-DD (default: ET-today)'
+        required: false
+        default: ''
+        type: string
+      dry:
+        description: 'Smoke run: skip the Picks write (starter default true)'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  ml-picks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Placeholder registration scaffold
+        run: |
+          echo "starter scaffold: real pipeline lives on PR #146"
+          exit 0
