@@ -284,6 +284,46 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
+
+      # ---------------- MLPicks image (ECR Public master) ------------------
+      # The image's distribution master ships from ECR PUBLIC (public.ecr.aws,
+      # the 50 GB/month always-free tier). Needs the one-time per-account
+      # alias (Amazon ECR console -> Registries -> <Public registry> ->
+      # Edit -> Custom alias) exposed as the PUBLIC_ECR_ALIAS repo secret;
+      # without it make build-ml-image fails loudly with the setup
+      # walkthrough. docs/aws-predict-lambda-runbook.md
+      #
+      # NOTE: Lambda cannot pull public.ecr.aws images, so the Lambda's
+      # ImageUri points at a PRIVATE copy of the same image (kept to one
+      # image by a keep-last-1 lifecycle policy, inside the private 500 MB/month
+      # free tier). --sync-only does that sync and exports MLECR_IMAGE_URI
+      # for the deploy step below.
+      - name: Build and push MLPicks image (ECR Public)
+        env:
+          PUBLIC_ECR_ALIAS: ${{ secrets.PUBLIC_ECR_ALIAS }}
+        run: make build-ml-image
+
+      - name: Enforce 500MB image-size gate (ECR free-tier cap)
+        env:
+          # HARD gate, not a sanity check: mirrors the ECR free-tier monthly
+          # storage cap (500MB). Override via the repo variable
+          # DOCKER_IMAGE_MAX_MB (make build-ml-image's local default remains
+          # the wider 5120MB sanity bound). Runs before the private sync so
+          # an oversized image never becomes the Lambda's pull copy.
+          DOCKER_IMAGE_MAX_MB: ${{ vars.DOCKER_IMAGE_MAX_MB || 500 }}
+        run: |
+          set -euo pipefail
+          SIZE=$(docker image inspect --format '{{.Size}}' smartscore/predict-picks:latest)
+          SIZE_MB=$(( (SIZE + 1048575) / 1048576 ))  # rounds up
+          echo "ML predict-picks image: ${SIZE} bytes = ${SIZE_MB} MB (threshold: ${DOCKER_IMAGE_MAX_MB} MB)"
+          if [ "$SIZE_MB" -gt "$DOCKER_IMAGE_MAX_MB" ]; then
+            echo "::error::ML predict-picks image is ${SIZE_MB} MB over the ${DOCKER_IMAGE_MAX_MB} MB hard gate (mirrors the 500MB ECR free-tier storage cap). Slim the Dockerfile / drop unneeded deps before deploying."
+            exit 1
+          fi
+
+      - name: Sync MLPicks image to private ECR (Lambda pull copy)
+        run: bash build_scripts/deploy_ml_lambda.sh --sync-only
+
       - name: Run deploy script
         run: |
           chmod +x build_scripts/deploy.sh
@@ -292,6 +332,11 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          # ML pick-pass parameters (deploy.sh passes them as CloudFormation
+          # parameter overrides when set): the bucket honors the ML_S3_BUCKET
+          # repo secret, the image URI comes from the sync step above.
+          MLS3_BUCKET: ${{ secrets.ML_S3_BUCKET || 'smartscore-ml-artifacts' }}
+          MLECR_IMAGE_URI: ${{ env.MLECR_IMAGE_URI }}
 
   dev-integration:
     needs: deploy

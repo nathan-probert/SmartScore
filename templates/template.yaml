@@ -38,7 +38,11 @@ Parameters:
   MLEcrImageUri:
     Type: String
     Default: ""
-    Description: ECR image URI:tag of the predict-picks image (set by make deploy-ml-lambda)
+    Description: >-
+      ECR image URI:tag of the predict-picks image, set by
+      build_scripts/deploy_ml_lambda.sh. The function pulls from the PRIVATE
+      repo in this region (Lambda cannot pull public.ecr.aws); the
+      public.ecr.aws copy of the same image is the distribution master.
 
 Conditions:
   MLS3Configured: !Not [!Equals [!Ref MLS3Bucket, ""]]
