@@ -523,3 +523,87 @@ def test_handler_ambiguous_slate_fails(env_vars, prediction_tables, monkeypatch)
     with pytest.raises(RuntimeError, match="3 picks"):
         mod.handler({"date": ON_DATE}, None)
     assert calls == []
+
+
+# ---------------------------------------------------- artifact v2 / v1 frag
+
+
+def _real_logreg_pipeline():
+    """The full fit_logreg chain, fitted on a tiny deterministic fold.
+
+    Used both as artifact v2's logreg member and (unwrapped: the inner bare LR)
+    as the v1 fixture member.
+    """
+    from sklearn.impute import SimpleImputer  # noqa: PLC0415 (test-local fixture)
+    from sklearn.linear_model import LogisticRegression  # noqa: PLC0415
+    from sklearn.pipeline import make_pipeline  # noqa: PLC0415
+    from sklearn.preprocessing import StandardScaler  # noqa: PLC0415
+
+    frame = pd.DataFrame(
+        {
+            "gpg": [0.5, 0.2, 0.9, 1.1, 0.0, 0.8],
+            "hgpg": [0.1, 0.2, 0.3, 0.35, 0.0, 0.28],
+            "tims": [1, 1, 1, 2, 2, 2],
+            "scored": [0, 0, 1, 0, 0, 1],
+        }
+    )
+    x = frame[["gpg", "hgpg"]]
+    pipe = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), LogisticRegression())
+    pipe.fit(x, frame["scored"])
+    return pipe, pipe[-1], x
+
+
+def test_artifact_v2_nan_frame_pipeline_member_succeeds():
+    """Artifact v2: logreg IS the imputing pipeline -> NaN frames score fine.
+
+    The v1 miss this regression-tests: a bare LogisticRegression raised
+    'ValueError: Input X contains NaN' on every live frame (live frames always
+    carry NaNs - debut rows, opp-goalie gaps), killing the whole run.
+    """
+    pipe, _bare, _x = _real_logreg_pipeline()
+    bundle = make_contract_bundle()
+    bundle["version"] = 2  # the v2 contract: version is a TOP-LEVEL key
+    bundle["models"]["logreg"] = pipe
+    bundle["logreg"] = pipe  # legacy alias, same object (the v2 shape)
+    canon = mod.normalise_bundle(bundle)
+    assert hasattr(canon["logreg"], "steps")  # the pipeline member, exported as-is
+
+    frame = pd.DataFrame(
+        {
+            "date": [ON_DATE, ON_DATE],
+            "player_id": [1, 2],
+            "tims": [1, 1],
+            "gpg": [np.nan, 0.4],  # the NaNs the v1 path crashed on
+            "hgpg": [np.nan, 0.1],
+        }
+    )
+    sim = mod.ensemble_scores(canon, frame)
+    assert len(sim) == 2
+    assert sim["logreg"].notna().all()  # imputed inside the member, not crashed
+
+
+def test_artifact_v1_fallback_warns_loud_and_still_picks(capsys):
+    """v1 artifact (bare LR): loud LEGACY warning + the adapter still picks."""
+    _pipe, bare, x = _real_logreg_pipeline()
+    bundle = make_contract_bundle()  # version stays 1
+    bundle["models"]["logreg"] = bare  # the v1 miss: bare inner estimator
+    bundle["logreg"] = bare
+    canon = mod.normalise_bundle(bundle, key="artifact_2026-06-14_0.joblib")
+
+    frame = pd.DataFrame(
+        {
+            "date": [ON_DATE, ON_DATE],
+            "player_id": [1, 2],
+            "tims": [1, 1],
+            "gpg": [np.nan, 0.4],  # NaNs the bare member would have crashed on
+            "hgpg": [np.nan, 0.1],
+        }
+    )
+    sim = mod.ensemble_scores(canon, frame)
+    assert len(sim) == 2
+    assert sim["logreg"].notna().all()
+    # the loud retrain warning is printed at load time
+    assert "LEGACY ARTIFACT FORMAT" in capsys.readouterr().out
+    # and the shape the daily pass needs: one pick per (date, tims) group
+    picks = model.daily_picks(sim, "ensemble")
+    assert len(picks) == 1

@@ -73,6 +73,13 @@ key away). The local file `train_export.py` writes,
 `data/ml/artifact_<train_through>_<seed>.joblib`, and the upload key share
 the same object — the workflow reads the UPLOADED key by default.
 
+Artifact **version 2** carries the logreg member as the FULL fitted train-time
+preprocessing pipeline (SimpleImputer -> StandardScaler -> LogisticRegression);
+version 1 artifacts auto-patch at load with a loud
+"LEGACY ARTIFACT FORMAT" retrain warning (`train_export.py` below commit
+"fix(artifact): export train-time preprocessing pipeline..." exported the bare
+inner estimator, which crashed on NaN-bearing live frames).
+
 ## 3. First-time setup (4 owner steps)
 
 1. **Add/confirm the Supabase secrets** (the workflow's inference reads):

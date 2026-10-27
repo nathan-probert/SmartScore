@@ -829,7 +829,7 @@ def fit_extratrees(train, test):
 
 def fit_logreg(train, test):
     model = make_pipeline(
-        SimpleImputer(strategy="median"),
+        SimpleImputer(strategy="median", keep_empty_features=True),
         StandardScaler(),
         LogisticRegression(max_iter=2000),
     )
@@ -876,7 +876,7 @@ def _fit_pairwise_logistic(x_train, y_train, groups, x_test):
     if not diffs:
         return pd.Series(0.0, index=getattr(x_test, "index", None))
     model = make_pipeline(
-        SimpleImputer(strategy="median"),
+        SimpleImputer(strategy="median", keep_empty_features=True),
         StandardScaler(),
         SGDClassifier(loss="log_loss", alpha=1e-4, max_iter=30, tol=None, random_state=0),
     )

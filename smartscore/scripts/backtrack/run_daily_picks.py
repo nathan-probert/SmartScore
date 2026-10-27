@@ -149,11 +149,22 @@ def normalise_bundle(bundle, key="artifact"):
         derived_params          the documented ensemble scoring recipe (opt.)
 
     Design A - ARTIFACT CONTRACT (sibling train_export.py): a zlib joblib
-    dict with top-level version:int(1), train_through, seed, git_hash,
+    dict with top-level version:int, train_through, seed, git_hash,
     generated_at, feature_order:[ordered features], categorical_maps:dict,
     derived_params (the documented ensemble recipe), models: dict of the
-    4 pickled estimators - plus ONLY those keys (metadata is synthesized
+    pickled estimators - plus ONLY those keys (metadata is synthesized
     from the top-level fields).
+
+    Version 2 artifacts carry ``logreg`` as the FULL fitted pipeline
+    (SimpleImputer(median) -> StandardScaler -> LogisticRegression), the exact
+    object chain fit_logreg produced, so the member runs NaN-bearing live
+    frames natively. Version 1 artifacts (pre-fix) exported the bare
+    inner LogisticRegression - broken on NaN-bearing numeric frames, since the
+    bare LR never saw the imputer/scaler its training pipeline ran - and are
+    auto-patched here with a LOUD "LEGACY ARTIFACT FORMAT" warning: the
+    adapter imputes medians and rescales PER RUN rather than using the
+    train-fold preprocessing (not carried in v1), so retrain with the fixed
+    train_export at your next owner-run to get v2.
 
     Missing required keys raise with the exact key names either way.
     """
@@ -207,10 +218,60 @@ def normalise_bundle(bundle, key="artifact"):
         meta = _pick(["metadata"], required=True)
         if not isinstance(meta, dict):
             raise RuntimeError(f"artifact {key}: metadata must be a dict")
+
+    # ARTIFACT VERSION 2 primary path: logreg is the full fitted preprocessing
+    # pipeline (SimpleImputer -> StandardScaler -> LogisticRegression), so the
+    # NaN-bearing live frames impute/rescale inside the member exactly as they
+    # did at training. Version 1 (and ANY bare-LR member, whether contract or
+    # legacy design) falls back to a per-run adapter with a LOUD retrain
+    # warning. Detection tolerates the Fake-style stub members used by tests
+    # (no ``steps`` is only sufficient with sklearn's ``coef_`` present).
+    logreg = members["logreg"]
+    if not hasattr(logreg, "steps") and hasattr(logreg, "coef_"):
+        import pandas as pd  # noqa: PLC0415  (hot path import kept lean)
+
+        print(
+            "LEGACY ARTIFACT FORMAT - retrain with the fixed train_export "
+            f"(artifact {key} ships v{meta.get('version', 1)} which exported the bare "
+            "logistic estimator without its train-time preprocessing pipeline; "
+            "falling back to a per-run median-impute/scale adapter)",
+            flush=True,
+        )
+
+        class _LegacyLogRegAdapter:
+            """Per-run preprocessing patched around a bare v1 logreg member.
+
+            The v1 artifact lost SimpleImputer/StandardScaler at export, so a
+            v1 artifact fed NaN-bearing numeric frames crashed (ValueError:
+            Input X contains NaN). Patch: impute medians + standardise per
+            predict call, then run the bare LR. NOT the training-fold medians
+            (v2 fixes that); a ranking-quality degradation to be retired by the
+            next train_export --upload.
+            """
+
+            def __init__(self, estimator):
+                self._estimator = estimator
+
+            def predict_proba(self, x):
+                from sklearn.impute import SimpleImputer  # noqa: PLC0415
+                from sklearn.preprocessing import StandardScaler  # noqa: PLC0415
+
+                arr = pd.DataFrame(x).to_numpy(dtype=float)
+                # keep_empty_features: a live window can carry an all-NaN
+                # column (rank_* on a tims=0-heavy slate, opp-goalie gaps);
+                # without the flag SimpleImputer DROPS it and the bare LR's
+                # 40-feature expectation mis-shapes. All-NaN columns impute
+                # with the training-era filler (0) instead.
+                arr = SimpleImputer(strategy="median", keep_empty_features=True).fit_transform(arr)
+                arr = StandardScaler().fit_transform(arr)
+                return self._estimator.predict_proba(arr)
+
+        logreg = _LegacyLogRegAdapter(logreg)
+
     return {
         "hgb": members["hgb"],
         "lgbm": members["lgbm"],
-        "logreg": members["logreg"],
+        "logreg": logreg,
         "ranker": models.get("ranker") if contract else _pick(["ranker"], required=False),
         "all_features": list(feature_order),
         "categorical_features": list(categorical_features),

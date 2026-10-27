@@ -48,7 +48,16 @@ either; joblib dedupes the shared estimator references):
                                  across {hgb, lgbm, logreg}, fillna(0) before
                                  ranking, ranker excluded, daily_picks takes
                                  the per-group max
-    models                       {hgb, lgbm, logreg, ranker} fitted estimators
+    models                       {hgb, lgbm, logreg, ranker} fitted estimators.
+                                 ARTIFACT VERSION 2: ``logreg`` is the FULL
+                                 fitted sklearn Pipeline
+                                 (SimpleImputer(median) -> StandardScaler ->
+                                 LogisticRegression) exactly as fit_logreg
+                                 produced it - live frames carry NaNs and the
+                                 member runs on them unharmed. v1 artifacts
+                                 exported the bare inner LR (broken on NaNs
+                                 and scaling at inference); readers auto-patch
+                                 v1 with a LOUD retrain warning.
 
     legacy aliases (same objects): hgb, lgbm, logreg, ranker,
     numeric_features / categorical_features / all_features, categories,
@@ -166,6 +175,8 @@ def fit_bundle(frame, args):
         (lightgbm, "LGBMClassifier"),
         (lightgbm, "LGBMRanker"),
         (model, "LogisticRegression"),  # model.py binds it from sklearn.linear_model
+        (model, "SimpleImputer"),  # logreg's pipeline preprocessing (artifact v2)
+        (model, "StandardScaler"),  # logreg's pipeline preprocessing (artifact v2)
     ):
         if module is not None and hasattr(module, attr):
             _wrap(module, attr)
@@ -182,6 +193,14 @@ def fit_bundle(frame, args):
         start = time.time()
         model.fit_logreg(frame, probe)
         timings["logreg_s"] = round(time.time() - start, 1)
+
+        # Pin logreg's pipeline members NOW: model.fit_ranker's pairwise
+        # fallback (when lightgbm is missing) constructs its own
+        # SimpleImputer/StandardScaler in the same module namespace, and an
+        # earlier capture-list entry would otherwise grab the ranker's
+        # pair-diff-fitted preprocessing for the logreg pipeline.
+        logreg_imputer = captured.get("SimpleImputer")
+        logreg_scaler = captured.get("StandardScaler")
 
         ranker = None
         try:
@@ -205,12 +224,22 @@ def fit_bundle(frame, args):
 
     hgb = captured["HistGradientBoostingClassifier"]
     lgbm = captured.get("LGBMClassifier")
-    logreg = captured["LogisticRegression"]
+    # ARTIFACT v2: export logreg as the FULL fitted pipeline
+    # (SimpleImputer(median) -> StandardScaler -> LogisticRegression) - exactly
+    # the object chain fit_logreg produced. Exporting the bare inner estimator
+    # (v1) left live inference broken two ways: the imputer never ran on the
+    # NaN-bearing live frames (ValueError: Input X contains NaN) and the LR ran
+    # on unscaled features (it was fitted on the scaled block). The trained
+    # sklearn Pipeline is plain-picklable, so option (a) is used.
+    logreg = model.make_pipeline(logreg_imputer, logreg_scaler, captured["LogisticRegression"])
 
     bundle = {
         # --- ARTIFACT CONTRACT keys (sibling-agreed; the daily pass reads both
         # --- designs via normalise_bundle) ------------------------------
-        "version": 1,
+        # version 2: the logreg member carries its train-time preprocessing
+        # pipeline (documented in the module docstring and
+        # docs/ml-picks-runbook.md); v1 artifacts auto-patch with a warning.
+        "version": 2,
         "train_through": str(frame["date"].max()),
         "seed": args.seed,
         "git_hash": (g := git_commit()),
@@ -259,7 +288,7 @@ def fit_bundle(frame, args):
         "metadata": {
             "train_through": str(frame["date"].max()),
             "seed": args.seed,
-            "version": 1,
+            "version": 2,
             "generated_at": generated_at,
             "expected_oof_pct": {str(k): v for k, v in EXPECTED_OOF.items()},
             "oof_measured": False,
