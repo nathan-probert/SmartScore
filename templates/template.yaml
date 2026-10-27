@@ -79,12 +79,10 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: "*"
-              # Predict-only ML picks (additive): read the versioned artifact
-              # that the OWNER's local train_export.py --upload run ships.
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                Resource: !Sub "arn:aws:s3:::${MLS3Bucket}/predict/ml/*"
+              # (ML artifact S3 read moved to MLPicksArtifactReadPolicy below:
+              # a policy statement cannot carry a resource-level Condition, and
+              # with MLS3Bucket empty the ARN collapses to
+              # arn:aws:s3:::/predict/ml/*, which fails the role update.)
 
   # State Machine Execution Role
   StateMachineExecutionRole:
@@ -700,6 +698,7 @@ Resources:
   # picks (docs/aws-predict-lambda-runbook.md).
   MLPicksFunction:
     Type: AWS::Lambda::Function
+    Condition: MLS3Configured
     Properties:
       FunctionName: !Sub "MLPicks-${ENV}"
       PackageType: Image
@@ -720,6 +719,7 @@ Resources:
 
   MLPicksLogGroup:
     Type: AWS::Logs::LogGroup
+    Condition: MLS3Configured
     Properties:
       LogGroupName: !Sub "/aws/lambda/MLPicks-${ENV}"
       RetentionInDays: 1
@@ -731,6 +731,7 @@ Resources:
   # DailyStepFunctionTrigger's cron(0 8 * * ? *).
   MLPicksDailyTrigger:
     Type: AWS::Events::Rule
+    Condition: MLS3Configured
     Properties:
       ScheduleExpression: "cron(30 9 * * ? *)"  # 09:30 UTC daily; DST note above
       State: ENABLED
@@ -740,11 +741,33 @@ Resources:
 
   MLPicksFunctionPermission:
     Type: AWS::Lambda::Permission
+    Condition: MLS3Configured
     Properties:
       FunctionName: !GetAtt MLPicksFunction.Arn  # accepted as the ARN for the event-source grant
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt MLPicksDailyTrigger.Arn
+
+  # The artifact-read grant is a separate (conditioned) policy because a policy
+  # STATEMENT inside LambdaExecutionRole cannot carry a Condition: with
+  # MLS3Bucket unset it would resolve to the invalid ARN
+  # arn:aws:s3:::/predict/ml/* and fail the role's IAM update.
+  MLPicksArtifactReadPolicy:
+    Type: AWS::IAM::Policy
+    Condition: MLS3Configured
+    Properties:
+      PolicyName: MLPicksArtifactRead
+      Roles:
+        - !Ref LambdaExecutionRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Predict-only ML picks (additive): read the versioned artifact
+          # that the OWNER's local train_export.py --upload run ships.
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${MLS3Bucket}/predict/ml/*"
 
 Outputs:
   StepFunctionExecutionRoleArn:

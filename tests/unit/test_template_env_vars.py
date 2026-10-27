@@ -9,6 +9,7 @@ PerformBackfillingFunction or UpdateHistoryFunction, which call the same
 worker.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -97,13 +98,48 @@ def test_no_lambda_still_receives_the_retired_worker_token():
     assert "SMARTSCORE_API_TOKEN" not in TEMPLATE_TEXT
 
 
-def test_every_ref_points_at_a_declared_parameter():
+def test_every_ref_points_at_a_declared_parameter_or_resource():
     """Catches typos in !Ref targets, which CloudFormation only rejects at deploy."""
-    declared = set(TEMPLATE.get("Parameters", {}))
+    declared = set(TEMPLATE.get("Parameters", {})) | set(TEMPLATE.get("Resources", {}))
     referenced = set(re.findall(r"!Ref\s+([A-Za-z0-9_]+)", TEMPLATE_TEXT))
 
     undeclared = sorted(referenced - declared)
-    assert not undeclared, f"!Ref to undeclared parameter(s): {undeclared}"
+    assert not undeclared, f"!Ref to undeclared parameter(s)/resource(s): {undeclared}"
+
+
+def test_ml_resources_are_condition_gated_on_mls3bucket():
+    """MLPicks resources must not be created when MLS3Bucket is unset.
+
+    deploy.sh never passes MLS3Bucket/MLEcrImageUri, so both default to "".
+    Without the Condition, the unconditioned MLPicksFunction create fails on
+    the empty ImageUri (and the role's S3 ARN collapses to
+    arn:aws:s3:::/predict/ml/*), rolling back the whole stack update
+    (UPDATE_ROLLBACK_COMPLETE). Same failure as PR #146's first deploy run.
+    """
+    gated = [
+        "MLPicksFunction",
+        "MLPicksLogGroup",
+        "MLPicksDailyTrigger",
+        "MLPicksFunctionPermission",
+        "MLPicksArtifactReadPolicy",
+    ]
+    resources = TEMPLATE["Resources"]
+
+    ungated = [logical_id for logical_id in gated if resources[logical_id].get("Condition") != "MLS3Configured"]
+    assert not ungated, f"ML resource(s) missing Condition: MLS3Configured: {sorted(ungated)}"
+
+    # The Condition expression must key off MLS3Bucket exactly (not the
+    # sibling MLEcrImageUri), so an empty default short-circuits creation.
+    assert re.search(r'MLS3Configured: !Not \[!Equals \[!Ref MLS3Bucket, ""\]\]', TEMPLATE_TEXT), (
+        'MLS3Configured must be !Not [!Equals [!Ref MLS3Bucket, ""]]'
+    )
+
+    # The S3 artifact ARN may only appear inside the conditioned policy, never
+    # back in the (unconditional) LambdaExecutionRole.
+    role = resources["LambdaExecutionRole"]["Properties"]["Policies"][0]["PolicyDocument"]["Statement"]
+    assert all(
+        "arn:aws:s3:::${MLS3Bucket}" not in json.dumps(stmt) if isinstance(stmt, dict) else True for stmt in role
+    ), "LambdaExecutionRole still embeds the MLS3Bucket ARN unconditionally"
 
 
 def _deploy_script() -> Path:
