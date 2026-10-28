@@ -1,5 +1,11 @@
 # SmartScore Model Notes
 
+> **2026-10-27 (stage-2 exactness):** inference recomputes the rolling/career
+> shot block EXACTLY from the published per-game raw columns
+> (game_goals/game_shots/game_toi_min on Player-Snapshots-backtrack) — the
+> stage-1 approximation is gone; only missing recent days are fetched from
+> the NHL API.
+
 ## FINAL RESULT — corrected, leak-free (2026-10-19)
 
 **Default:** fixed equal-weight rank ensemble `hgb+logreg+lgbm`

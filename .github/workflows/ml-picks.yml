@@ -45,10 +45,11 @@ concurrency:
 jobs:
   picks:
     runs-on: ubuntu-latest
-    # Refresh adds ~14 min worst case (dump load ~6 + current-season crawl ~8
-    # when the HTTP cache missed a chunk; the nightly cron run itself is
-    # still near that ceiling only at season start, well under it later),
-    # 45 keeps a misbehaving crawl from hanging the job.
+    # The picks pass is now narrow: one bounded gap-fill (a couple of NHL API
+    # requests per missing completed day - rarely more than yesterday's slate)
+    # + one artifact download + inference over published history. 45 min keeps
+    # a pathological NHL API lag (a long missing-days gap, capped at 14) from
+    # hanging the job; typical runs finish well under 10.
     timeout-minutes: 45
     env:
       ENV: prod
@@ -90,60 +91,56 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --no-dev
 
-      # ---------------- Runner-side store refresh (exact-features path) ----
-      # The 14 shot/TOI features are computed EXACTLY from the raw per-game
-      # store (model.shot_features_from_games over player_games - see
-      # run_daily_picks.derive_shot_block), so the store is rebuilt on the
-      # runner BEFORE inference: (1) un-gzip the committed season dumps into
-      # data/raw_nhl.sqlite (no credentials, no Supabase, no crawl); (2)
-      # crawl THIS season's played games on cache-miss through the public
-      # NHL endpoints via nhl_client (the store's --build mechanism; zero
-      # Supabase). The dumps hold completed seasons only, so step (2) is
-      # what makes today's block exact - a season's games cannot be in a
-      # dump until the export/commit.
-      #
-      # data/cache (nhl_client's on-disk HTTP cache) is cached between runs:
-      # box scores / shift charts / game logs are content-addressed per
-      # game/player, so a warm cache re-fetches only newly FINAL games
-      # (~2-5/day; ~165 around season start with a cold cache). It is NOT
-      # the runner's own filesystem surviving anything - each job starts
-      # with an empty checkout and this step's restore.
-      - name: Resolve the slate date (ET) + cache key
+      # ---------------- Stage-2 gap-fill (published per-game raw columns) ----
+      # The 14 shot/TOI features are recomputed EXACTLY at inference time from
+      # the published per-game record in Supabase (run_daily_picks.
+      # shot_block_from_history -> model.shot_features_from_games over the
+      # stage-2 raw columns game_goals/game_shots/game_toi_min). This FIRST
+      # step tops up any completed game days the nightly publish has not
+      # covered yet - bounded: the schedule endpoint once per missing DAY
+      # (typically exactly one: yesterday) plus one boxscore request per
+      # FINAL game that day; NO season sweeps, no local store, no dumps.
+      # Games in a non-terminal state (LIVE/FUT) are skipped - the
+      # fetch_boxscore cache-hostage guard (backfill_missing_days.
+      # TERMINAL_GAME_STATES) - and replayed on a later pass once final.
+      # dry=true: the step runs READ-ONLY (fetch + log, no upserts) and the
+      # inference pass below also skips its Picks write.
+      # NOTE: this step needs the stage-2 DDL to have landed on
+      # Player-Snapshots-backtrack-{env}; run_daily_picks fails loudly naming
+      # 20261027_add_per_game_raw_columns_player_snapshots_backtrack.sql if
+      # the columns are missing.
+      - name: Resolve the slate date (ET)
         id: slate
         run: |
           D="${DISPATCH_DATE:-$(TZ=America/Toronto date +%F)}"
           echo "et_date=${D}" >> "$GITHUB_OUTPUT"
         env:
           DISPATCH_DATE: ${{ inputs.date || github.event.client_payload.date }}
-      - name: Keep the NHL HTTP crawl cache between runs
-        uses: actions/cache@v4
-        with:
-          path: data/cache
-          key: nhl-crawl-${{ steps.slate.outputs.et_date }}
-          # Any newer/older snapshot of the crawl cache beats a cold start;
-          # refresh_store re-walks the season schedule (never trusts a warm
-          # schedule file - the stale-schedule gotcha in
-          # DAILY_DATA_RUNBOOK.md section 2), then serves only
-          # already-fetched games from it.
-          restore-keys: |
-            nhl-crawl-
-      - name: Rebuild the raw per-game store from the committed dumps
-        run: uv run --frozen python smartscore/scripts/backtrack/dump_store.py --load
-      # Warn-not-exit semantics: a crawl failure degrades, it does not kill
-      # the picks pass - the store stays at the dumps' vintage and
-      # run_daily_picks prints its ONE stale-store warning for the affected
-      # game days (docs/ml-picks-runbook.md section 1.1) and continues.
-      # --skip-load: the step above just loaded the dumps; refresh crawls
-      # only (its guard still loads if the store went missing anyway), so a
-      # pass pays the ~6 min dump load exactly once. A same-day second pass
-      # repeats this chain; the dumps load re-truncates and rebuilds the
-      # committed rows and the crawl re-upserts the season - idempotent,
-      # never duplicating (COALESCE merge on (player_id, game_id)).
-      - name: Incremental crawl of the current season (public NHL API)
-        continue-on-error: true
+      - name: Backfill the last published date's missing completed game days (NHL API, bounded)
+        env:
+          THROUGH_DATE: ${{ steps.slate.outputs.et_date }}
+          DISPATCH_DRY: ${{ inputs.dry || github.event.client_payload.dry }}
         run: |
-          uv run --frozen python smartscore/scripts/backtrack/refresh_store.py \
-            --skip-load --through ${{ steps.slate.outputs.et_date }}
+          ARGS="--env ${ENV}"
+          if [ -n "${THROUGH_DATE:-}" ]; then
+            ARGS="${ARGS} --through-date ${THROUGH_DATE}"
+          else
+            ARGS="${ARGS} --through-date $(TZ=America/Toronto date -d yesterday +%F)"
+          fi
+          if [ "${DISPATCH_DRY:-false}" == "true" ]; then
+            ARGS="${ARGS} --dry"
+            echo "dry=true: the backfill step runs READ-ONLY (no upserts)"
+          fi
+          uv run --frozen python smartscore/scripts/backtrack/backfill_missing_days.py ${ARGS}
+      # Prior stages this replaced (both REMOVED from the picks path):
+      #  * `dump_store.py --load` (rebuild data/raw_nhl.sqlite from the
+      #    committed data/dumps/ dumps) and `refresh_store.py --skip-load`
+      #    (incremental NHL crawl of the current season, incl. the
+      #    data/cache crawl-cache step). The runner no longer holds or
+      #    rebuilds the raw store at all: Supabase IS the live data plane,
+      #    the dumps stay the committed backup, and refresh_store.py
+      #    survives ONLY as an owner-side offline utility (make
+      #    backtrack-refresh) for store maintenance.
 
       # Artifact source step: the script resolves the artifact in this order
       # (docs/ml-picks-runbook.md §2): --artifact PATH (local file, always

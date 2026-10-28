@@ -219,8 +219,13 @@ def fake_live_rows():
 def fake_history_players():
     """Player-Snapshots-backtrack-{ENV} shape: one row per player-game
     STRICTLY before the pick date (the prior-games context: scored labels,
-    club identity, rates). No shot columns - the live path computes today's
-    block from the raw per-game store."""
+    club identity, rates), PLUS the stage-2 per-game raw columns."""
+    return attach_fake_raw(fake_history_players_base())
+
+
+def fake_history_players_base():
+    """The pre-20261027 frame shape (16 club columns, no raw) - test source
+    for the fail-closed migration-col check."""
     days = ["2026-06-01", "2026-06-03", "2026-06-05", "2026-06-08", HISTORY_DATE]
     rows = []
     for index, day in enumerate(days):
@@ -251,6 +256,29 @@ def fake_history_players():
             )
         )
     return pd.concat(rows, ignore_index=True)
+
+
+def attach_fake_raw(frame):
+    """The stage-2 raw columns for one fake-history frame: each row's OWN
+    game stats, matching fake_player_games()'s per-(player, date) lines
+    (toi already decimal minutes - what game_toi_min publishes)."""
+    games = fake_player_games()
+    lookup = {
+        (str(row["date"]), int(row["player_id"])): (
+            int(row["goals"]),
+            int(row["shots"]),
+            float(row["toi"].split(":")[0]) + int(row["toi"].split(":")[1]) / 60,
+        )
+        for row in games.to_dict("records")
+    }
+    keys = list(zip(frame["date"].astype(str), frame["player_id"].astype(int)))
+    missing = [key for key in keys if key not in lookup]
+    assert not missing, f"fake raw columns undefined for {missing[:3]}"
+    frame = frame.copy()
+    frame["game_goals"] = [lookup[key][0] for key in keys]
+    frame["game_shots"] = [lookup[key][1] for key in keys]
+    frame["game_toi_min"] = [lookup[key][2] for key in keys]
+    return frame
 
 
 # The raw per-game store the shot block is computed from (the same games the
@@ -329,10 +357,10 @@ def prediction_tables(monkeypatch):
     fake_client.table.side_effect = _table
     monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
 
-    # the shot block reads the raw store; the fake store is the frame itself
-    games = fake_player_games()
-    monkeypatch.setattr("run_daily_picks.ensure_raw_store", lambda: None)
-    monkeypatch.setattr("run_daily_picks._player_games_frame", games.copy)
+    # the stage-2 raw columns are "landed" on the fake table: the exact
+    # recompute reads the published record (fake_history_players' raw block),
+    # no local store exists or is needed.
+    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"prod": True})
     return fake_client
 
 
@@ -566,10 +594,11 @@ def test_ensemble_scores_rank_rule():
     assert group1["ensemble"].idxmax() == 1
 
 
-def _assemble_frame(today, players, teams, goalies):
-    """The run()'s frame assembly, test-visible: shared-core shot block onto
-    the build_frame join, then add_derived, sliced to the pick date."""
-    shot_block = mod.derive_shot_block(ON_DATE, pd.to_numeric(today["player_id"]).tolist())
+def _assemble_frame(today, players, teams, goalies, history):
+    """The run()'s frame assembly, test-visible: the shared-core shot block
+    over the published per-game record, onto the build_frame join, then
+    add_derived, sliced to the pick date."""
+    shot_block = mod.shot_block_from_history(ON_DATE, pd.to_numeric(today["player_id"]).tolist(), history)
     frame = model.build_frame(players, teams, goalies, source="supabase")
     frame = frame.drop(columns=model.SHOT_FEATURES, errors="ignore").merge(
         shot_block, on=["date", "player_id"], how="left", validate="many_to_one"
@@ -581,8 +610,8 @@ def _assemble_frame(today, players, teams, goalies):
 def test_supabase_frame_matches_artifact_features(env_vars, prediction_tables):
     loaded = mod.load_prediction_tables("prod", ON_DATE)
     assert loaded is not None
-    today, players, teams, goalies = loaded
-    frame = _assemble_frame(today, players, teams, goalies)
+    today, players, teams, goalies, history = loaded
+    frame = _assemble_frame(today, players, teams, goalies, history)
     bundle = make_bundle()
     assert not frame.empty
     assert all(col in frame.columns for col in bundle["all_features"])
@@ -616,6 +645,7 @@ def test_no_live_rows_exits_cleanly(env_vars, prediction_tables, monkeypatch, ca
 
     fake_client.table.side_effect = _table
     monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
+    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"prod": True})
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
 
     calls: list = []
@@ -631,32 +661,18 @@ def test_no_live_rows_exits_cleanly(env_vars, prediction_tables, monkeypatch, ca
 
 
 def test_missing_history_day_warns_but_still_picks(env_vars, prediction_tables, monkeypatch, capsys):
-    """Owner rule: a game day the backtrack publish has not covered yet is
-    NORMAL -> ONE warning line naming the day, and the run still publishes
-    its 3 picks on the history it has."""
-    # the raw store witnessed a 2026-06-12 game day (the crawl crawled it)
-    # but the published player history has no rows for it - the publish lag.
-    games_with_gap = pd.concat(
-        [
-            fake_player_games(),
-            pd.DataFrame(
-                [
-                    {
-                        "player_id": 1,
-                        "date": "2026-06-12",
-                        "season": "20252026",
-                        "goals": 1,
-                        "shots": 3,
-                        "toi": "15:00",
-                    }
-                ]
-            ),
-        ],
-        ignore_index=True,
-    )
+    """Owner rule: a game day the published record does not cover is NORMAL ->
+    ONE warning line naming the day, and the run still assembles its 3 picks
+    on the history it has (missing-day semantics: no hard-fail)."""
+    # HISTORY_DATE (2026-06-10) is published but carries NO per-game raw
+    # stats (a row predating the one-shot top-up): its games cannot enter
+    # the shift(1)/rolling math - warn + continue.
+    history_gapped = fake_history_players()
+    gap_day = history_gapped["date"] == HISTORY_DATE
+    history_gapped.loc[gap_day, ["game_goals", "game_shots", "game_toi_min"]] = pd.NA
     fake_client = MagicMock(name="supabase_admin")
     tables = {
-        "Player-Snapshots-backtrack": fake_history_players(),
+        "Player-Snapshots-backtrack": history_gapped,
         "Player-Snapshots": fake_live_rows(),
         "Team-Stats-backtrack": fake_teams(),
         "Goalie-Snapshots-backtrack": fake_goalies(),
@@ -671,7 +687,7 @@ def test_missing_history_day_warns_but_still_picks(env_vars, prediction_tables, 
 
     fake_client.table.side_effect = _table
     monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
-    monkeypatch.setattr("run_daily_picks._player_games_frame", games_with_gap.copy)
+    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"prod": True})
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
 
     calls: list = []
@@ -681,17 +697,19 @@ def test_missing_history_day_warns_but_still_picks(env_vars, prediction_tables, 
     assert len(result["picks"]) == 3  # assembled anyway (dry: no write)
     assert calls == []
     out = capsys.readouterr().out
-    assert "WARNING: no published history rows for game day(s) ['2026-06-12']" in out
+    assert "WARNING: 1 published game day(s) inside the lookback window carry no per-game raw stat(s)" in out
+    assert HISTORY_DATE in out
     assert "continuing" in out
 
 
 def test_live_shot_block_matches_training_core(env_vars, prediction_tables):
-    """THE train/run parity gate: the live path's today shot block (raw store
-    + ONE synthetic today-row per player through the shared core) must equal
-    the training path's shot_features() values for the same rows to <1e-9.
+    """THE train/run parity gate: the live path's today shot block (the
+    PUBLISHED per-game record + ONE synthetic today-row per player through
+    the shared core) must equal the training path's shot_features() values
+    for the same rows to <1e-9.
 
-    Two shapes, both from the same synthetic per-game store:
-      1. a historical replay date (the store already owns the games) -
+    Two shapes:
+      1. a historical replay date (the record already covers the games) -
          identical by construction, guards the wiring;
       2. the pick date itself, where the training math is replayed by
          appending the players' real ON_DATE game lines to the store and
@@ -713,29 +731,49 @@ def test_live_shot_block_matches_training_core(env_vars, prediction_tables):
     full = model.shot_features_from_games(pd.concat([games, today_games], ignore_index=True))
     training_rows = full[full["date"] == ON_DATE].sort_values("player_id").reset_index(drop=True)
 
-    live_block = mod.derive_shot_block(ON_DATE, [1, 2, 9, 10]).sort_values("player_id").reset_index(drop=True)
+    history = mod.load_prediction_tables("prod", ON_DATE)[4]
+    live_block = (
+        mod.shot_block_from_history(ON_DATE, [1, 2, 9, 10], history).sort_values("player_id").reset_index(drop=True)
+    )
     assert list(live_block["player_id"]) == [1, 2, 9, 10]
     diffs = (training_rows[model.SHOT_FEATURES] - live_block[model.SHOT_FEATURES]).abs()
     assert diffs.to_numpy().max() < 1e-9
     # and the historical replay is exact to the core (same function, same rows)
-    historical = mod.derive_shot_block(CORE_GAME_DAYS[-1], [1, 2, 9, 10])
+    historical = mod.shot_block_from_history(CORE_GAME_DAYS[-1], [1, 2, 9, 10], history)
     assert not historical.empty
 
 
 def test_live_shot_block_replays_historical_date_exactly(env_vars, prediction_tables):
     """Acceptance test from the design fix: for one historical date X, the
-    live path (history < X feeding the shared core) and the local-store
-    training path produce the SAME 14 features - max abs diff < 1e-9."""
+    live path (the published per-game record < X feeding the shared core)
+    and the local-store training path produce the SAME 14 features - max
+    abs diff < 1e-9."""
     games = fake_player_games()
     x_date = CORE_GAME_DAYS[-1]  # 2026-06-10: a played, published date
     training = model.shot_features_from_games(games)
     training_rows = training[training["date"] == x_date].sort_values("player_id").reset_index(drop=True)
 
-    # live path: the store's history + synthetic X rows (deduped by the store's
-    # own X games) -> the same core -> X rows
-    live_block = mod.derive_shot_block(x_date, [1, 2, 9, 10]).sort_values("player_id").reset_index(drop=True)
+    history = mod.load_prediction_tables("prod", x_date)[4]
+    live_block = (
+        mod.shot_block_from_history(x_date, [1, 2, 9, 10], history).sort_values("player_id").reset_index(drop=True)
+    )
     diffs = (training_rows[model.SHOT_FEATURES] - live_block[model.SHOT_FEATURES]).abs()
     assert diffs.to_numpy().max() < 1e-9
+
+
+def test_history_rows_fail_closed_without_raw_columns(env_vars, monkeypatch):
+    """The stage-2 gate: a picks run reaching the read BEFORE the raw-column
+    migration has landed fails LOUDLY, naming the migration file - not a
+    silent stage-1-style feature approximation. (The fake client rejects the
+    `game_shots` probe the way a real PostgREST 400s an unknown column.)"""
+    fake_client = MagicMock(name="supabase_admin")
+    probe = MagicMock(name="client_table")
+    probe.select.side_effect = Exception("PGRST204: column game_shots does not exist")
+    fake_client.table.return_value = probe
+    monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
+    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {})
+    with pytest.raises(RuntimeError, match="20261027_add_per_game_raw_columns_player_snapshots_backtrack"):
+        mod.history_rows("prod", ON_DATE)
 
 
 # ----------------------------------------------------------- refresh store

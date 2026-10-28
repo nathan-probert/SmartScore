@@ -33,7 +33,8 @@ runner:
 
 Either way the job does: checkout -> `uv sync --frozen --no-dev` (the same
 runtime dependency surface `deploy.yml`'s deploy job installs) -> artifact
-fetch (default: S3 dated-prefix-latest; see section 3) ->
+fetch (default: Supabase Storage dated-prefix-latest; see section 3) ->
+`backfill_missing_days.py` (the bounded gap-fill, section 1.2) ->
 `run_daily_picks.py`, which loads the artifact, then assembles the day's
 frame from THREE read-only sources (docs/ml-picks-runbook.md §1.1 below):
 
@@ -45,49 +46,52 @@ frame from THREE read-only sources (docs/ml-picks-runbook.md §1.1 below):
   fetched FULL-history (career_* are expanding career sums; a bounded
   window mis-states every veteran's block) via `model.fetch_table`'s
   month-window pagination;
-* **the 14 shot/TOI features** for today's rows — computed EXACTLY — the
+* **the 14 shot/TOI features** for today's rows — recomputed EXACTLY by the
   SAME pandas core `model.shot_features()` runs
-  (`shot_features_from_games`, imported, never forked) over the raw
-  per-game store `data/raw_nhl.sqlite` + one synthetic today-row per
-  player. The store is rebuilt ON THE RUNNER before inference by the job's
-  refresh steps (section 1.2): the committed `data/dumps/<season>.sql.gz`
-  dumps (`dump_store.load`) plus the current season's played games, crawled
-  on HTTP-cache miss through the public NHL endpoints (`refresh_store.py`
-  -> `local_store.build`/`nhl_client`). No Supabase anywhere in the
-  refresh; no credentials in it at all.
+  (`shot_features_from_games`, imported, never forked) over the PUBLISHED
+  per-game record: the stage-2 raw columns
+  (`game_goals` / `game_shots` / `game_toi_min`,
+  20261027_add_per_game_raw_columns_player_snapshots_backtrack.sql) turn
+  every published backtrack row into one per-player-game line. Supabase IS
+  the live data plane — no local sqlite, no dumps, no NHL-API sweep on the
+  runner; the older stage-1 "last published row" carry-forward attach and
+  the runner-side store refresh are both RETIRED. The only inputs not on
+  the player table are the team/goalie rates, read at publish cadence from
+  Team-Stats / Goalie-Snapshots-backtrack (a lagging one prints a staleness
+  warning, never an exit).
 
-### 1.2 The runner-side store refresh (ml-picks.yml, before inference)
+### 1.2 The daily gap-fill (ml-picks.yml, FIRST step, before inference)
 
-The job's `picks` job runs, before the picks pass:
+The job's `picks` job runs `backfill_missing_days.py --env <ENV>` before the
+picks pass, to close the only gap the exact recompute can still see:
 
-1. `dump_store.py --load` — un-gzips the committed season dumps into the
-   runner's `data/raw_nhl.sqlite` (~6 min, measured 2026-10-27: 685,914
-   player-games for 13 dumps). The dumps hold COMPLETED seasons; the
-   current season's rows are not in any dump until the owner's
-   `make backtrack-export` + commit, which is why step 2 exists.
-2. `refresh_store.py --skip-load --through <ET slate date>` — `--skip-load`
-   because step 1 already loaded the dumps (a pass pays the ~6 min dump
-   load once; refresh_store falls back to a full load if the store is
-   missing anyway). It drops the season
-   schedule cache (never trusts a warm schedule file: DAILY_DATA_RUNBOOK §2
-   gotcha), then `local_store.build(season)` walks the season schedule and
-   fetches every played game the store lacks on HTTP-cache miss (box score
-   + shift charts per game, per-player game logs, tims/goalie feeds).
-   ~8 min cold on a fresh season start, ~1-3 min warm-served (measured
-   nightly cadence: 7.5-8.2 min on the owner box, DAILY_DATA_RUNBOOK).
+1. Reads the table's latest published date (one query).
+2. For every completed-game date after it — usually exactly ONE day
+   (yesterday) — it makes ONE schedule request per missing day
+   (`nhl_client.fetch_schedule`) plus ONE boxscore request per game the
+   schedule reports FINAL/OFF; games in any other state (LIVE/FUT) are
+   SKIPPED — the FINAL-only guard keeps an in-flight box score out of
+   nhl_client's HTTP cache (the cache-hostage bug) — and replayed on a
+   later pass once final. Typical run: 2-5 NHL API requests total; a
+   longer gap is capped at 14 days (`MAX_MISSING_DAYS`): anything larger
+   needs the owner-side dump/local-store top-up (`publish_shot_cols.py`),
+   never a runner sweep.
+3. It upserts ONLY the per-game raw columns (+ PK + `name`) on
+   (date, player_id) merge-duplicates — a row the nightly publish already
+   wrote is top-upped, never overwritten; a row that is missing is CREATED
+   sparse so the exact recompute can still see the game. It does NOT
+   recompute the 16 rolling columns: those stay the training-side history
+   the publish's attach carries.
 
-Idempotency/nature of the cache: `data/cache` (nhl_client's HTTP cache) is
-kept between runs by an `actions/cache` step, so the second pass of a day —
-the per-game kicks — re-fetches only newly FINAL games. Nothing else of the
-refresh survives the job: `data/raw_nhl.sqlite` itself is rebuildable in
-~that same time by the committed dumps, so the runner's per-run ephemeral
-filesystem is fine. Steps run TWICE/day (nightly cron + kicks) without
-re-downloading already-cached games; the crawl step is
-`continue-on-error` — an NHL-endpoint flake DEGRADES the pass (the store
-stays at the dumps' vintage; `run_daily_picks` prints its ONE stale-store
-warning for the affected game days and continues, section 1.1), it never
-kills the schedule. Say it plainly: **the refresh adds ~10-20 min per pass
-and is cache-bounded**; on a public repo the runner minutes stay free.
+`dry=true` (the workflow's smoke input) makes this step READ-ONLY: it
+fetches and logs what it would write, performs no upserts, and warns.
+
+Ordering note: the step needs the stage-2 DDL. `run_daily_picks` fails
+LOUDLY naming the migration file when the columns are missing — apply
+`20261027_add_per_game_raw_columns_player_snapshots_backtrack.sql`
+(deploy.yml's migrate job does it automatically on merge to main; label a
+`deploy` PR to apply it to dev first) and run the one-shot history top-up
+BEFORE the first post-merge picks run.
 
 then builds the frame via `model.build_frame`/`add_derived(source="supabase")`
 (a pick-date context row per fixture is injected from the live snapshot's
@@ -103,11 +107,13 @@ warning when the artifact trains through a date older than 7 days.
 ### 1.1 Missing-day and empty-snapshot semantics (owner-approved)
 
 * A missing backtrack day is **NORMAL**: the tables only gain a date's rows
-  after that day's games end and the publish runs. The run prints ONE
-  warning listing the uncovered game days inside the 60-day lookback
-  (`WARNING: no history rows for game day(s) [...] ... continuing`) and
-  proceeds — the affected prior-games features simply lag by those days.
-  Never an exit.
+  after that day's games end and the publish runs. The job's FIRST step
+  (backfill_missing_days, section 1.2) tops up the completed game days
+  after the latest published date directly from the NHL API, and the
+  inference pass prints ONE warning (`WARNING: published history ends at
+  <date>` / a "carry no per-game raw stat(s)" line) naming any day the
+  recompute will miss, then proceeds — the affected features are computed
+  over the published record it has. Never an exit.
 * If the LIVE snapshot itself has no rows for the pick date (the snapshot
   build has not run yet), there is nothing to score: the run prints
   `no picks computed: no live snapshot rows for <date>`, appends the same

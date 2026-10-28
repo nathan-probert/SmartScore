@@ -49,6 +49,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+import model  # noqa: E402
 from model import (  # noqa: E402
     RAW_DB,
     SHOT_FEATURES,
@@ -63,6 +64,17 @@ CLUB_TABLE_COLS = (
     "team_abbrev",
 )  # Block B semantics; the payload ships both key columns first.
 
+# Stage-2 RAW block (20261027_add_per_game_raw_columns_player_snapshots_
+# backtrack.sql): each published row's OWN game stats - exactly the inputs
+# model.shot_features_from_games consumes (goals/shots/toi; points is not a
+# feature input, so it is not shipped). These ride the SAME upsert paths:
+# the daily publish's attach and the one-shot history top-up below.
+RAW_TABLE_COLS = (
+    "game_goals",  # INTEGER
+    "game_shots",  # INTEGER
+    "game_toi_min",  # NUMERIC decimal minutes (mm:ss -> m + s/60)
+)
+
 SHOT_TABLE_COLS = tuple(SHOT_FEATURES)  # Block A, in SHOT_FEATURES order.
 
 PAYLOAD_COLUMNS = (
@@ -71,6 +83,15 @@ PAYLOAD_COLUMNS = (
     "name",
     *SHOT_TABLE_COLS,
     *CLUB_TABLE_COLS,
+)
+
+PAYLOAD_COLUMNS_WITH_RAW = (
+    "date",
+    "player_id",
+    "name",
+    *SHOT_TABLE_COLS,
+    *CLUB_TABLE_COLS,
+    *RAW_TABLE_COLS,
 )
 
 
@@ -90,6 +111,34 @@ def club_map_cols(db_path=RAW_DB):
     dup = frame.duplicated(["date", "player_id"]).any()
     if dup:
         raise RuntimeError("player_games has duplicate (game_date, player_id) club rows")
+    return frame
+
+
+def raw_game_stats(db_path=RAW_DB):
+    """(date, player_id) -> game_goals, game_shots, game_toi_min from the raw
+    store's player_games - the row's OWN game, un-shifted: the aggregates of
+    shot_features() exclude the current row, the raw columns ARE it.
+
+    toi is converted to decimal minutes here (model._toi_minutes parsing) so
+    the published NUMERIC column stores what the inference core would
+    reconstruct - downstream feeding pushes these straight into
+    shot_features_from_games without re-parsing.
+    """
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        frame = pd.read_sql_query(
+            "SELECT game_date AS date, player_id, goals, shots, toi FROM player_games",
+            con,
+        )
+    finally:
+        con.close()
+    frame["date"] = frame["date"].astype(str)
+    frame["player_id"] = frame["player_id"].astype("int64")
+    frame = frame.rename(columns={"goals": "game_goals", "shots": "game_shots", "toi": "game_toi_min"})
+    frame["game_toi_min"] = model._toi_minutes(frame["game_toi_min"])
+    dup = frame.duplicated(["date", "player_id"]).any()
+    if dup:
+        raise RuntimeError("player_games has duplicate (game_date, player_id) rows")
     return frame
 
 
@@ -137,10 +186,25 @@ def snapshot_keys(env):
 
 
 def build_payload(env, limit=None):
-    """Frame of the 16 published columns joined with the table's existing keys."""
+    """Frame of the published columns joined with the table's existing keys.
+
+    Stage-2: the frame also carries the per-game RAW columns (raw_game_stats)
+    when the target table has them - the one-shot history top-up ships the
+    aggregates AND each row's own game stats in the same idempotent upsert.
+    """
     frame = shot_features()
     print(f"shot_features: {len(frame):,} player-game rows", flush=True)
     frame = frame.merge(club_map_cols(), on=["date", "player_id"], how="left", validate="many_to_one")
+    raw_landed = raw_columns_landed(player_table(env))
+    if raw_landed:
+        frame = frame.merge(raw_game_stats(), on=["date", "player_id"], how="left", validate="many_to_one")
+        print("stage-2 raw columns landed: shipping game_goals/game_shots/game_toi_min too", flush=True)
+    else:
+        print(
+            "20261027 raw-columns migration not landed on this table yet: "
+            "shipping the stage-1 (16-column) payload only; re-run after it lands for the top-up",
+            flush=True,
+        )
     keys = snapshot_keys(env)
     before = len(frame)
     frame = keys.merge(frame, on=["date", "player_id"], how="inner", validate="many_to_one")
@@ -164,8 +228,12 @@ def build_payload(env, limit=None):
     frame["player_id"] = frame["player_id"].astype("int64")
     frame["name"] = frame["name"].astype(str)
     frame["career_games"] = frame["career_games"].astype("int64")
+    if raw_landed:
+        frame["game_goals"] = frame["game_goals"].astype("Int64")
+        frame["game_shots"] = frame["game_shots"].astype("Int64")
     # list(...) - a bare tuple would go through the multiindex path in pandas.
-    return frame[list(PAYLOAD_COLUMNS)]
+    cols = PAYLOAD_COLUMNS_WITH_RAW if raw_landed else PAYLOAD_COLUMNS
+    return frame[list(cols)]
 
 
 def payload_records(frame):
@@ -298,6 +366,20 @@ def columns_landed(table):
 _PROBE = {}
 
 
+def raw_columns_landed(table):
+    """True once the stage-2 per-game raw migration has created its columns.
+
+    Same probe pattern as columns_landed: PostgREST 400s any request naming
+    an unknown column, so a select naming `game_shots` is the cheapest
+    owner-independent DDL check. Until it lands, callers must not send the
+    raw keys (unknown keys drop the whole batch)."""
+    try:
+        SUPABASE_ADMIN_CLIENT.table(table).select("game_shots").limit(1).execute()
+        return True
+    except Exception:  # noqa: BLE001 - any failure means "not landed yet"
+        return False
+
+
 def attach_shot_columns(payload, table, block=None):
     """Add the 16 published columns onto a daily upsert payload in place.
 
@@ -327,6 +409,17 @@ def attach_shot_columns(payload, table, block=None):
         frame["career_games"] = frame["career_games"].astype("int64")
     else:
         frame = block
+    raw_landed = raw_columns_landed(table)
+    if raw_landed:
+        try:
+            if not set(RAW_TABLE_COLS).issubset(frame.columns) and not frame.empty:
+                frame = frame.merge(raw_game_stats(), on=["date", "player_id"], how="left", validate="many_to_one")
+        except sqlite3.OperationalError as exc:
+            print(f"note: the raw store is unreadable ({exc}); attaching the 16-column block only", flush=True)
+            raw_landed = False
+    if raw_landed:
+        frame["game_goals"] = frame["game_goals"].astype("Int64")
+        frame["game_shots"] = frame["game_shots"].astype("Int64")
 
     frame = frame.astype(object).where(pd.notna(frame), None)
     by_key = {}
@@ -339,6 +432,14 @@ def attach_shot_columns(payload, table, block=None):
             for col in PAYLOAD_COLUMNS
             if col not in ("date", "player_id", "name")
         }
+        if raw_landed:
+            by_key[(row["date"], int(row["player_id"]))].update(
+                {
+                    col: row[col].item() if isinstance(row[col], np.generic) else row[col]
+                    for col in RAW_TABLE_COLS
+                    if col in row
+                }
+            )
     hits = 0
     for row in payload:
         key = (row["date"], int(row["player_id"]))

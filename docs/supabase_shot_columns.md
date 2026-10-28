@@ -203,6 +203,27 @@ is the smallest cloud-neutral change.
 
 ## 4. SQL migration sketch (NOT executed by this PR)
 
+> **STAGE-2 (2026-10-27) — per-game RAW columns.** Supabase is the LIVE data
+> plane. The rolling/career block above stays the training-side history; the
+> picks pass now RECOMPUTES it exactly from the published per-game record.
+> `supabase/migrations/20261027_add_per_game_raw_columns_player_snapshots_
+> backtrack.sql` adds exactly the three per-player-game inputs
+> `model.shot_features_from_games` consumes:
+>
+> ```sql
+> ALTER TABLE "Player-Snapshots-backtrack-__ENV__"
+>     ADD COLUMN IF NOT EXISTS "game_goals"   INTEGER,
+>     ADD COLUMN IF NOT EXISTS "game_shots"   INTEGER,
+>     ADD COLUMN IF NOT EXISTS "game_toi_min" NUMERIC;
+> ```
+>
+> (no `game_points` — no feature consumes it; no `game_played` — row
+> existence IS the played flag). Values ride the SAME upsert paths:
+> `publish_shot_cols.attach_shot_columns` attaches them nightly, the
+> one-shot `publish_shot_cols.py` top-up fills history, and
+> `backfill_missing_days.py` creates/only-top-ups missed recent days
+> (2-5 bounded NHL API requests, FINAL-state games only).
+
 One migration file, `supabase/migrations/2026MMDD_add_shot_columns_player_snapshots_backtrack.sql`,
 `__ENV__` placeholder, idempotent because deploy.yml re-pipes it through psql:
 

@@ -1,0 +1,58 @@
+-- Player-Snapshots-backtrack: per-game RAW stats (stage-2 exactness enabling).
+--
+-- WHY: with 20261024's rolling block published, the daily picks pass could
+-- read the aggregate features from Supabase but still needed the local raw
+-- store (data/raw_nhl.sqlite) to recompute TODAY's block exactly. This
+-- migration makes inference self-sufficient from Supabase alone:
+--
+--   * The daily publish (local_store.publish via
+--     publish_shot_cols.attach_raw_columns / attach_shot_columns) now carries
+--     each published row's OWN game raw stats alongside the aggregates.
+--   * The gap-filler (smartscore/scripts/backtrack/backfill_missing_days.py)
+--     writes ONLY these raw columns for missed recent days (2-4 NHL API
+--     requests per missing DAY, no sweeps), so the
+--     picks pass can recompute the exact rolling/career block for any date
+--     where every prior game is a published row.
+--   * run_daily_picks feeds the published per-game rows through
+--     model.shot_features_from_games VERBATIM (same sorted
+--     (player_id, date, season) + shift(1) core the training frames ran),
+--     replacing the last local-store dependency on the picks path.
+--
+-- COLUMN SET: exactly the inputs model.shot_features_from_games consumes -
+-- per-player-per-game goals, shots and toi (model.py:428-483 uses
+-- games[("goals", "shots", "toi")] only; it derives the 14 SHOT_FEATURES
+-- aggregates plus the synthetic today-row handling from those three). A
+-- game-points column is deliberately NOT added: no feature consumes it, and
+-- the one-shot local-store top-up keeps only what the core reads.
+--
+-- game_played is deliberately NOT added: a published backtrack row EXISTS
+-- only because the player appeared in that game (local_store.publish joins
+-- derived_features to player_games; backfill_missing_days writes rows only
+-- for box-score participants), so row existence IS the played flag.
+--
+-- Dtypes: goals/shots are INTEGER counts (boxscore `goals` / `sog`, already
+-- ints in the raw store); toi is decimal minutes (`mm:ss` -> mm + ss/60, the
+-- same parsing model._toi_minutes runs - stored as NUMERIC so PostgREST/
+-- pandas round-trips it losslessly). NULL is the honest "unknown" for
+-- legacy rows until the one-shot top-up fills them.
+--
+-- HOW IT APPLIES: idempotent (ADD COLUMN IF NOT EXISTS), so the standing
+-- deploy.yml migrate job applies it automatically - to DEV on a 'deploy'-
+-- labelled PR run, to PROD on the merge-to-main push (deploy.yml "Apply
+-- migrations" step, psql with __ENV__ substitution; no migration-history
+-- table exists, which is why the file must be idempotent).
+-- Pre-merge manual application (same command host-side, connection from
+-- secrets.SUPABASE_DB_URL):
+--   psql "$SUPABASE_DB_URL" -c "$(sed 's/__ENV__/prod/g' \
+--     supabase/migrations/20261027_add_per_game_raw_columns_player_snapshots_backtrack.sql)"
+-- NOTE: inference FAILS LOUDLY (naming this file) if the picks run reaches
+-- the read before these columns exist - apply BEFORE pointing the picks job
+-- at the new path.
+ALTER TABLE "Player-Snapshots-backtrack-__ENV__"
+    ADD COLUMN IF NOT EXISTS "game_goals"   INTEGER,
+    ADD COLUMN IF NOT EXISTS "game_shots"   INTEGER,
+    ADD COLUMN IF NOT EXISTS "game_toi_min" NUMERIC;
+
+-- Down-migration: DROP COLUMN "game_goals", "game_shots", "game_toi_min"
+-- (no index/constraint touches them; the picks path hard-fails until stage
+-- 20261024 columns are also present, so dropping this set degrades loudly).
