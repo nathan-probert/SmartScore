@@ -430,9 +430,9 @@ def shot_features_from_games(games):
 
     Single source of truth for the 14 SHOT_FEATURES: consumed BOTH by
     ``shot_features`` (local raw store path - ``player_games`` straight from
-    data/raw_nhl.sqlite) and by run_daily_picks' live path (a per-game series
-    reconstructed from the published Player-Snapshots-backtrack rows - see
-    reconstruct_game_series there). ``games`` needs exactly the columns the
+    data/raw_nhl.sqlite) and by run_daily_picks' live path
+    (shot_block_from_history - a per-game series reconstructed from the
+    published Player-Snapshots-backtrack raw columns). ``games`` needs exactly the columns the
     raw query selects: player_id, date, season, goals, shots, toi - one row
     per player per game, any prior-games-agnostic ordering (it is re-sorted
     here). Every column is an aggregate over that player's *strictly earlier*

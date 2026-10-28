@@ -203,6 +203,34 @@ is the smallest cloud-neutral change.
 
 ## 4. SQL migration sketch (NOT executed by this PR)
 
+> **STAGE-2 (2026-10-27) — per-game RAW columns.** Supabase is the LIVE data
+> plane. The rolling/career block above stays the training-side history; the
+> picks pass now RECOMPUTES it exactly from the published per-game record.
+> `supabase/migrations/20261027_add_per_game_raw_columns_player_snapshots_
+> backtrack.sql` adds the per-player-game columns:
+>
+> ```sql
+> ALTER TABLE "Player-Snapshots-backtrack-__ENV__"
+>     ADD COLUMN IF NOT EXISTS "game_goals"   INTEGER,
+>     ADD COLUMN IF NOT EXISTS "game_shots"   INTEGER,
+>     ADD COLUMN IF NOT EXISTS "game_points"  INTEGER,
+>     ADD COLUMN IF NOT EXISTS "game_toi_min" DOUBLE PRECISION;
+> ```
+>
+> The published per-game column list is therefore the FOUR raw columns
+> (`game_shots` / `game_goals` / `game_points` / `game_toi_min`) beside the
+> 14 precomputed aggregates + 2 club columns of Blocks A/B: goals/shots/toi
+> are exactly what `model.shot_features_from_games` consumes (the picks
+> pass's verbatim recompute core); `game_points` rides along as the
+> per-game provenance the trending rates quote (no feature consumes it);
+> no `game_played` — row existence/non-null `game_shots` IS the played
+> flag (a boxscore lists exactly the players who appeared). Values ride
+> the SAME upsert paths: `publish_shot_cols.attach_shot_columns` attaches
+> them nightly, the one-shot `publish_shot_cols.py` top-up
+> (`topup_raw_game_cols.py`) fills history, and `backfill_missing_days.py`
+> creates/only-top-ups missed recent days (2-5 bounded NHL API requests,
+> FINAL-state games only, per-date markers for idempotency).
+
 One migration file, `supabase/migrations/2026MMDD_add_shot_columns_player_snapshots_backtrack.sql`,
 `__ENV__` placeholder, idempotent because deploy.yml re-pipes it through psql:
 

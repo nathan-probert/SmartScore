@@ -103,18 +103,6 @@ def make_bundle(today="2026-06-14"):
     }
 
 
-def empty_markers():
-    """An empty marker table with stable dtypes (object date vs float64: the
-    fake's date comparisons must never coerce an empty column to float)."""
-    return pd.DataFrame(
-        {
-            "date": pd.Series([], dtype=object),
-            "games": pd.Series([], dtype="int64"),
-            "player_games": pd.Series([], dtype="int64"),
-        }
-    )
-
-
 @pytest.fixture
 def env_vars(monkeypatch):
     monkeypatch.setenv("ENV", "prod")
@@ -139,17 +127,8 @@ class FakeTable:
         self._low = None
         self._high = None
         self._eq = None
-        self._page = None
-        self.upserts = []  # every on_conflict upsert lands here (the write witness)
 
     def select(self, *_cols, **_kw):
-        # every new query chain starts with fresh filters + no paging: the
-        # same FakeTable instance serves several back-to-back queries on
-        # this fixture, and a leftover .eq/.gte from the previous query
-        # would silently mis-filter the next one
-        self._page = None
-        self._low = self._high = self._eq = None
-        self._strict = False
         return self
 
     def limit(self, _n):
@@ -163,11 +142,6 @@ class FakeTable:
         self._low = value
         return self
 
-    def gt(self, _col, value):
-        self._low = value
-        self._strict = True
-        return self
-
     def lt(self, _col, value):
         self._high = value
         return self
@@ -175,67 +149,22 @@ class FakeTable:
     def order(self, _col, **_kw):
         return self
 
-    def _visible(self):
+    def range(self, lo, hi):
         rows = self._frame
         if self._eq is not None:
             col = "date"
             rows = rows[rows[col].astype(str) == str(self._eq)]
-        if getattr(self, "_strict", False) and self._low is not None:
-            rows = rows[rows["date"] > self._low]
-        elif self._low is not None:
+        if self._low is not None:
             rows = rows[rows["date"] >= self._low]
         if self._high is not None:
             rows = rows[rows["date"] < self._high]
-        return rows
-
-    def range(self, lo, hi):
-        self._page = (lo, hi)
+        self._slice = rows.iloc[lo : min(hi + 1, len(rows))]
         return self
 
     def execute(self):
-        # Re-apply the window over the LATEST filters: the same FakeTable
-        # instance serves several back-to-back queries (probe, keyed reads,
-        # marker reads), so this chain's own page offsets must win.
-        window = self._visible()
-        page = getattr(self, "_page", None)
-        if page is None:
-            self._slice = window
-        else:
-            lo, hi = page
-            self._slice = window.iloc[lo : min(hi + 1, len(window))]
+        if not hasattr(self, "_slice"):  # a read that never paged (live .eq read)
+            self._slice = self._frame
         return FakeResult(self._slice)
-
-    def upsert(self, rows, on_conflict=None, returning=None):
-        """Merge the payload into THIS table's frame by the conflict keys.
-
-        PostgREST-shaped enough for the asserts: the frame the NEXT read
-        sees is the upserted one (the marker writes must become visible to
-        a later marker read; the player-table writes must be readable back
-        by their key columns). An existing row keeps EVERY column the
-        payload does not name - exactly the semantic test (b) needs."""
-        self.upserts.append({"rows": list(rows), "on_conflict": on_conflict, "returning": returning})
-        keys = [key for key in (on_conflict or "").split(",") if key]
-        if not keys:
-            return self
-        incoming = pd.DataFrame(rows)
-        if self._frame.empty:
-            self._frame = incoming
-            return self
-        base = self._frame.reset_index(drop=True).copy()
-        for col in incoming.columns:
-            if col not in base.columns:
-                base[col] = np.nan
-        for _, row in incoming.iterrows():
-            match = pd.Series(True, index=base.index)
-            for key in keys:
-                match &= base[key].astype(str) == str(row[key])
-            if match.any():
-                for col in incoming.columns:
-                    base.loc[match, col] = row[col]
-            else:
-                base.loc[len(base)] = row
-        self._frame = base.drop_duplicates(subset=keys, keep="last").reset_index(drop=True)
-        return self
 
 
 ON_DATE = "2026-06-14"
@@ -290,10 +219,13 @@ def fake_live_rows():
 def fake_history_players():
     """Player-Snapshots-backtrack-{ENV} shape: one row per player-game
     STRICTLY before the pick date (the prior-games context: scored labels,
-    club identity, rates) + the per-game RAW columns (Block C, migration
-    20261027) - null here: these dates predate the same-day backfill, which
-    only ever covers the dates the raw store does not (the store already
-    owns every game the fake store holds)."""
+    club identity, rates), PLUS the stage-2 per-game raw columns."""
+    return attach_fake_raw(fake_history_players_base())
+
+
+def fake_history_players_base():
+    """The pre-20261027 frame shape (16 club columns, no raw) - test source
+    for the fail-closed migration-col check."""
     days = ["2026-06-01", "2026-06-03", "2026-06-05", "2026-06-08", HISTORY_DATE]
     rows = []
     for index, day in enumerate(days):
@@ -320,14 +252,34 @@ def fake_history_players():
                     "lineup_position_group": ["C", "W", "C", "W"],
                     "lineup_status": [None] * 4,
                     "pp_unit": [None] * 4,
-                    "game_shots": [None] * 4,
-                    "game_goals": [None] * 4,
-                    "game_points": [None] * 4,
-                    "game_toi_min": [None] * 4,
                 }
             )
         )
     return pd.concat(rows, ignore_index=True)
+
+
+def attach_fake_raw(frame):
+    """The stage-2 raw columns for one fake-history frame: each row's OWN
+    game stats, matching fake_player_games()'s per-(player, date) lines
+    (toi already decimal minutes - what game_toi_min publishes)."""
+    games = fake_player_games()
+    lookup = {
+        (str(row["date"]), int(row["player_id"])): (
+            int(row["goals"]),
+            int(row["shots"]),
+            float(row["toi"].split(":")[0]) + int(row["toi"].split(":")[1]) / 60,
+        )
+        for row in games.to_dict("records")
+    }
+    keys = list(zip(frame["date"].astype(str), frame["player_id"].astype(int)))
+    missing = [key for key in keys if key not in lookup]
+    assert not missing, f"fake raw columns undefined for {missing[:3]}"
+    frame = frame.copy()
+    frame["game_goals"] = [lookup[key][0] for key in keys]
+    frame["game_shots"] = [lookup[key][1] for key in keys]
+    frame["game_points"] = [lookup[key][0] for key in keys]  # provenance column; goals==points in the fixture
+    frame["game_toi_min"] = [lookup[key][2] for key in keys]
+    return frame
 
 
 # The raw per-game store the shot block is computed from (the same games the
@@ -385,16 +337,13 @@ def fake_goalies():
 @pytest.fixture
 def prediction_tables(monkeypatch):
     """Fakes for the NEW data flow: the LIVE snapshot table carries only the
-    pick-date rows; the backtrack tables carry strictly-prior history (with
-    per-game RAW columns, null: the store covers those dates); the raw
-    per-game store is a synthetic frame (no sqlite on disk); the backfill's
-    crawl is a no-op (no schedule games) and the probes pre-cleared."""
+    pick-date rows; the backtrack tables carry strictly-prior history; the
+    raw per-game store is a synthetic frame (no sqlite on disk)."""
     tables = {
         "Player-Snapshots-backtrack": fake_history_players(),
         "Player-Snapshots": fake_live_rows(),
         "Team-Stats-backtrack": fake_teams(),
         "Goalie-Snapshots-backtrack": fake_goalies(),
-        "Player-Game-Raw-Markers": empty_markers(),
         "Default": fake_goalies(),
     }
 
@@ -408,16 +357,29 @@ def prediction_tables(monkeypatch):
 
     fake_client.table.side_effect = _table
     monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
+    # the gap-fill helper shares the admin client; patch it too so a run()'s
+    # first-step invocation (and the dry witness) never leaves the fakes.
+    monkeypatch.setattr("backfill_missing_days.SUPABASE_ADMIN_CLIENT", fake_client)
+    # the first-step backfill itself is patched to a no-op summary here; the
+    # wiring tests below re-patch it with a call recorder.
+    monkeypatch.setattr(
+        "run_daily_picks.backfill_missing_days.backfill",
+        lambda *a, **k: {
+            "status": "up-to-date",
+            "games": 0,
+            "rows": 0,
+            "created": 0,
+            "backfilled": [],
+            "skipped": [],
+            "failed_days": [],
+            "pending": [],
+        },
+    )
 
-    # the shot block reads the raw store; the fake store is the frame itself
-    games = fake_player_games()
-    monkeypatch.setattr("run_daily_picks.ensure_raw_store", lambda: None)
-    monkeypatch.setattr("run_daily_picks._player_games_frame", games.copy)
-    # the backfill's crawl is unit-test-static: no schedule games anywhere
-    monkeypatch.setattr("run_daily_picks._slate_day_games", lambda *_a, **_k: [])
-    # the schema probe is per-table cached; clear it so no test depends on
-    # probe order (the fakes answer any probe: the columns are "landed")
-    monkeypatch.setattr("run_daily_picks._RAW_SCHEMA_PROBE", {})
+    # the stage-2 raw columns are "landed" on the fake table: the exact
+    # recompute reads the published record (fake_history_players' raw block),
+    # no local store exists or is needed.
+    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"prod": True})
     return fake_client
 
 
@@ -651,10 +613,11 @@ def test_ensemble_scores_rank_rule():
     assert group1["ensemble"].idxmax() == 1
 
 
-def _assemble_frame(today, players, teams, goalies):
-    """The run()'s frame assembly, test-visible: shared-core shot block onto
-    the build_frame join, then add_derived, sliced to the pick date."""
-    shot_block = mod.derive_shot_block(ON_DATE, pd.to_numeric(today["player_id"]).tolist())
+def _assemble_frame(today, players, teams, goalies, history):
+    """The run()'s frame assembly, test-visible: the shared-core shot block
+    over the published per-game record, onto the build_frame join, then
+    add_derived, sliced to the pick date."""
+    shot_block = mod.shot_block_from_history(ON_DATE, pd.to_numeric(today["player_id"]).tolist(), history)
     frame = model.build_frame(players, teams, goalies, source="supabase")
     frame = frame.drop(columns=model.SHOT_FEATURES, errors="ignore").merge(
         shot_block, on=["date", "player_id"], how="left", validate="many_to_one"
@@ -666,8 +629,8 @@ def _assemble_frame(today, players, teams, goalies):
 def test_supabase_frame_matches_artifact_features(env_vars, prediction_tables):
     loaded = mod.load_prediction_tables("prod", ON_DATE)
     assert loaded is not None
-    today, players, teams, goalies = loaded
-    frame = _assemble_frame(today, players, teams, goalies)
+    today, players, teams, goalies, history = loaded
+    frame = _assemble_frame(today, players, teams, goalies, history)
     bundle = make_bundle()
     assert not frame.empty
     assert all(col in frame.columns for col in bundle["all_features"])
@@ -690,7 +653,6 @@ def test_no_live_rows_exits_cleanly(env_vars, prediction_tables, monkeypatch, ca
         "Player-Snapshots": empty_live,
         "Team-Stats-backtrack": fake_teams(),
         "Goalie-Snapshots-backtrack": fake_goalies(),
-        "Player-Game-Raw-Markers": empty_markers(),
         "Default": fake_goalies(),
     }
 
@@ -702,8 +664,7 @@ def test_no_live_rows_exits_cleanly(env_vars, prediction_tables, monkeypatch, ca
 
     fake_client.table.side_effect = _table
     monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
-    monkeypatch.setattr("run_daily_picks._slate_day_games", lambda *_a, **_k: [])
-    monkeypatch.setattr("run_daily_picks._RAW_SCHEMA_PROBE", {})
+    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"prod": True})
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
 
     calls: list = []
@@ -719,36 +680,21 @@ def test_no_live_rows_exits_cleanly(env_vars, prediction_tables, monkeypatch, ca
 
 
 def test_missing_history_day_warns_but_still_picks(env_vars, prediction_tables, monkeypatch, capsys):
-    """Owner rule: a game day the backtrack publish has not covered yet is
-    NORMAL -> ONE warning line naming the day, and the run still publishes
-    its 3 picks on the history it has."""
-    # the raw store witnessed a 2026-06-12 game day (the crawl crawled it)
-    # but the published player history has no rows for it - the publish lag.
-    games_with_gap = pd.concat(
-        [
-            fake_player_games(),
-            pd.DataFrame(
-                [
-                    {
-                        "player_id": 1,
-                        "date": "2026-06-12",
-                        "season": "20252026",
-                        "goals": 1,
-                        "shots": 3,
-                        "toi": "15:00",
-                    }
-                ]
-            ),
-        ],
-        ignore_index=True,
-    )
+    """Owner rule: a game day the published record does not cover is NORMAL ->
+    ONE warning line naming the day, and the run still assembles its 3 picks
+    on the history it has (missing-day semantics: no hard-fail)."""
+    # HISTORY_DATE (2026-06-10) is published but carries NO per-game raw
+    # stats (a row predating the one-shot top-up): its games cannot enter
+    # the shift(1)/rolling math - warn + continue.
+    history_gapped = fake_history_players()
+    gap_day = history_gapped["date"] == HISTORY_DATE
+    history_gapped.loc[gap_day, ["game_goals", "game_shots", "game_toi_min"]] = pd.NA
     fake_client = MagicMock(name="supabase_admin")
     tables = {
-        "Player-Snapshots-backtrack": fake_history_players(),
+        "Player-Snapshots-backtrack": history_gapped,
         "Player-Snapshots": fake_live_rows(),
         "Team-Stats-backtrack": fake_teams(),
         "Goalie-Snapshots-backtrack": fake_goalies(),
-        "Player-Game-Raw-Markers": empty_markers(),
         "Default": fake_goalies(),
     }
 
@@ -760,9 +706,7 @@ def test_missing_history_day_warns_but_still_picks(env_vars, prediction_tables, 
 
     fake_client.table.side_effect = _table
     monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
-    monkeypatch.setattr("run_daily_picks._player_games_frame", games_with_gap.copy)
-    monkeypatch.setattr("run_daily_picks._slate_day_games", lambda *_a, **_k: [])
-    monkeypatch.setattr("run_daily_picks._RAW_SCHEMA_PROBE", {})
+    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"prod": True})
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
 
     calls: list = []
@@ -772,17 +716,19 @@ def test_missing_history_day_warns_but_still_picks(env_vars, prediction_tables, 
     assert len(result["picks"]) == 3  # assembled anyway (dry: no write)
     assert calls == []
     out = capsys.readouterr().out
-    assert "WARNING: no published history rows for game day(s) ['2026-06-12']" in out
+    assert "WARNING: 1 published game day(s) inside the lookback window carry no per-game raw stat(s)" in out
+    assert HISTORY_DATE in out
     assert "continuing" in out
 
 
 def test_live_shot_block_matches_training_core(env_vars, prediction_tables):
-    """THE train/run parity gate: the live path's today shot block (raw store
-    + ONE synthetic today-row per player through the shared core) must equal
-    the training path's shot_features() values for the same rows to <1e-9.
+    """THE train/run parity gate: the live path's today shot block (the
+    PUBLISHED per-game record + ONE synthetic today-row per player through
+    the shared core) must equal the training path's shot_features() values
+    for the same rows to <1e-9.
 
-    Two shapes, both from the same synthetic per-game store:
-      1. a historical replay date (the store already owns the games) -
+    Two shapes:
+      1. a historical replay date (the record already covers the games) -
          identical by construction, guards the wiring;
       2. the pick date itself, where the training math is replayed by
          appending the players' real ON_DATE game lines to the store and
@@ -804,29 +750,64 @@ def test_live_shot_block_matches_training_core(env_vars, prediction_tables):
     full = model.shot_features_from_games(pd.concat([games, today_games], ignore_index=True))
     training_rows = full[full["date"] == ON_DATE].sort_values("player_id").reset_index(drop=True)
 
-    live_block = mod.derive_shot_block(ON_DATE, [1, 2, 9, 10]).sort_values("player_id").reset_index(drop=True)
+    history = mod.load_prediction_tables("prod", ON_DATE)[4]
+    live_block = (
+        mod.shot_block_from_history(ON_DATE, [1, 2, 9, 10], history).sort_values("player_id").reset_index(drop=True)
+    )
     assert list(live_block["player_id"]) == [1, 2, 9, 10]
     diffs = (training_rows[model.SHOT_FEATURES] - live_block[model.SHOT_FEATURES]).abs()
     assert diffs.to_numpy().max() < 1e-9
     # and the historical replay is exact to the core (same function, same rows)
-    historical = mod.derive_shot_block(CORE_GAME_DAYS[-1], [1, 2, 9, 10])
+    historical = mod.shot_block_from_history(CORE_GAME_DAYS[-1], [1, 2, 9, 10], history)
     assert not historical.empty
 
 
 def test_live_shot_block_replays_historical_date_exactly(env_vars, prediction_tables):
     """Acceptance test from the design fix: for one historical date X, the
-    live path (history < X feeding the shared core) and the local-store
-    training path produce the SAME 14 features - max abs diff < 1e-9."""
+    live path (the published per-game record < X feeding the shared core)
+    and the local-store training path produce the SAME 14 features - max
+    abs diff < 1e-9."""
     games = fake_player_games()
     x_date = CORE_GAME_DAYS[-1]  # 2026-06-10: a played, published date
     training = model.shot_features_from_games(games)
     training_rows = training[training["date"] == x_date].sort_values("player_id").reset_index(drop=True)
 
-    # live path: the store's history + synthetic X rows (deduped by the store's
-    # own X games) -> the same core -> X rows
-    live_block = mod.derive_shot_block(x_date, [1, 2, 9, 10]).sort_values("player_id").reset_index(drop=True)
+    history = mod.load_prediction_tables("prod", x_date)[4]
+    live_block = (
+        mod.shot_block_from_history(x_date, [1, 2, 9, 10], history).sort_values("player_id").reset_index(drop=True)
+    )
     diffs = (training_rows[model.SHOT_FEATURES] - live_block[model.SHOT_FEATURES]).abs()
     assert diffs.to_numpy().max() < 1e-9
+
+
+def test_season_label_matches_the_store_keying_incl_covid():
+    """The published record carries no season column, so season_label IS the
+    season key the recompute groups on - it must reproduce the raw store's
+    ids. The two COVID-era post-seasons are the trap: the 2019-20 bubble
+    (Jul-Sep 2020, keyed 20192020) and the delayed 2020-21 post-season
+    (July 2021, keyed 20202021) - a plain month rule mislabels both and
+    shifts every season-scoped feature for the veterans who played them
+    (verified against the store: 56 distinct game dates)."""
+    assert mod.season_label("2026-10-24") == "20262027"
+    assert mod.season_label("2026-06-13") == "20252026"
+    assert mod.season_label("2020-08-01") == "20192020"  # the bubble
+    assert mod.season_label("2021-07-07") == "20202021"  # the delayed 2020-21 final
+    assert mod.season_label("2022-06-26") == "20212022"  # a normal June final
+
+
+def test_history_rows_fail_closed_without_raw_columns(env_vars, monkeypatch):
+    """The stage-2 gate: a picks run reaching the read BEFORE the raw-column
+    migration has landed fails LOUDLY, naming the migration file - not a
+    silent stage-1-style feature approximation. (The fake client rejects the
+    `game_shots` probe the way a real PostgREST 400s an unknown column.)"""
+    fake_client = MagicMock(name="supabase_admin")
+    probe = MagicMock(name="client_table")
+    probe.select.side_effect = Exception("PGRST204: column game_shots does not exist")
+    fake_client.table.return_value = probe
+    monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
+    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {})
+    with pytest.raises(RuntimeError, match="20261027_add_per_game_raw_columns_player_snapshots_backtrack"):
+        mod.history_rows("prod", ON_DATE)
 
 
 # ----------------------------------------------------------- refresh store
@@ -1013,6 +994,93 @@ def test_handler_dry_skips_write(env_vars, prediction_tables, monkeypatch):
     assert result["dry"] and calls == []
 
 
+def test_handler_first_step_backfill_invoked_once_when_not_dry(env_vars, prediction_tables, monkeypatch):
+    """STAGE B wiring: a NOT-dry run's FIRST data step is the daily gap-fill,
+    invoked once with --env ENV --through-date (the pick date's yesterday)."""
+    invocations = []
+
+    def _record(env, through_date=None, **_k):
+        invocations.append((env, through_date))
+        return {
+            "status": "ok",
+            "games": 1,
+            "rows": 4,
+            "created": 1,
+            "backfilled": ["2026-06-13"],
+            "skipped": [],
+            "failed_days": [],
+            "pending": [],
+        }
+
+    monkeypatch.setattr("run_daily_picks.backfill_missing_days.backfill", _record)
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls = []
+    fake_save(monkeypatch, calls)
+    result = mod.handler({"date": ON_DATE}, None)
+    assert result["statusCode"] == 200
+    assert invocations == [("prod", "2026-06-13")]  # exactly once, yesterday ET of the pick date
+
+
+def test_handler_dry_skips_the_backfill_entirely(env_vars, prediction_tables, monkeypatch, capsys):
+    """A dry pass is read-only end to end: the gap-fill NEVER runs (no
+    writes, no crawl); the run only LISTS the missing game days."""
+    invocations = []
+
+    def _record(*_a, **_k):
+        invocations.append(1)
+        return {"status": "ok", "failed_days": []}
+
+    monkeypatch.setattr("run_daily_picks.backfill_missing_days.backfill", _record)
+    # the read-only witness: latest published date well behind the pick date
+    monkeypatch.setattr("run_daily_picks.backfill_missing_days.latest_published_date", lambda env: "2026-06-01")
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls = []
+    fake_save(monkeypatch, calls)
+    result = mod.handler({"date": ON_DATE, "dry": True}, None)
+    assert result["dry"] and calls == [] and invocations == []
+    out = capsys.readouterr().out
+    assert "WARNING (dry)" in out and "not backfilled" in out
+
+
+def test_handler_backfill_failure_still_picks(env_vars, prediction_tables, monkeypatch, capsys):
+    """A partial/failed gap-fill is LOUD but never fatal: the exact recompute
+    proceeds over the history that is published and the picks still land."""
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("supabase down")
+
+    monkeypatch.setattr("run_daily_picks.backfill_missing_days.backfill", _boom)
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls = []
+    fake_save(monkeypatch, calls)
+    result = mod.handler({"date": ON_DATE}, None)
+    assert result["statusCode"] == 200 and len(calls) == 3
+    assert "gap-fill backfill failed outright" in capsys.readouterr().out
+
+
+def test_handler_carry_forward_fallback_only_when_exact_fails(env_vars, prediction_tables, monkeypatch, capsys):
+    """The stage-1 carry-forward attach survives ONLY as the clearly-marked
+    last-resort fallback: when the exact recompute raises, the run attaches
+    the last published row's precomputed rolling columns and STILL picks -
+    with a LOUD warning naming the fallback."""
+    monkeypatch.setattr(
+        "run_daily_picks.shot_block_from_history",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("core exploded")),
+    )
+    # the fallback's lazy read: the players' latest published rolling row
+    latest = fake_history_players().sort_values("date").groupby("player_id").tail(1)
+    for col in model.SHOT_FEATURES:
+        latest[col] = 0.5
+    monkeypatch.setattr(mod, "_latest_shot_columns", lambda env, ids: latest)
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls = []
+    fake_save(monkeypatch, calls)
+    result = mod.handler({"date": ON_DATE}, None)
+    assert result["statusCode"] == 200 and len(calls) == 3
+    out = capsys.readouterr().out
+    assert "STAGE-1 carry-forward attach" in out
+
+
 def test_handler_missing_columns_fails_instead_of_publishing(env_vars, prediction_tables, monkeypatch):
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     today = fake_live_rows().drop(columns=["opp_goalie_team", "hgpg"])
@@ -1120,457 +1188,3 @@ def test_artifact_v1_fallback_warns_loud_and_still_picks(capsys):
     # and the shape the daily pass needs: one pick per (date, tims) group
     picks = model.daily_picks(sim, "ensemble")
     assert len(picks) == 1
-
-
-# =================================================== same-day raw backfill
-# (STAGE B/C of the exact-design: migration 20261027's per-game raw columns
-# on Player-Snapshots-backtrack-{ENV}, one boxscore-sourced (date, player_id)
-# upsert per player-game, one marker row per fully-handled date, and the
-# exact recompute of today's 14 features over store + backfill.)
-
-import nhl_client  # noqa: E402  (bootstrap precedes; the backfill imports it lazily)
-
-BACKFILL_ENV = "dev"  # mod.ENV resolves to dev under the unit-test env
-
-
-def call_backfill(registry, now):
-    """The backfill call under test, with the fakes' clock pinned."""
-    return mod.backfill_raw_game_days(
-        BACKFILL_ENV,
-        BACKFILL_ON_DATE,
-        STORE_MAX,
-        client=registry["client"],
-        now=now,
-    )
-
-
-STORE_MAX = "2026-06-10"
-BACKFILL_DAY = "2026-06-11"
-GAP_DAY = "2026-06-12"
-BACKFILL_ON_DATE = "2026-06-14"
-
-
-def box_record(pid, name, team, home, goals, shots, points, toi, **kw):
-    game_id = kw.get("game_id", 2026090001)
-    game_date = kw.get("game_date", BACKFILL_DAY)
-    return {
-        "game_id": game_id,
-        "game_date": game_date,
-        "player_id": pid,
-        "name": name,
-        "team_abbrev": team,
-        "position": "C",
-        "sweater_number": 9,
-        "home": home,
-        "goals": goals,
-        "assists": max(points - goals, 0),
-        "points": points,
-        "shots": shots,
-        "pim": 0,
-        "toi": toi,
-        "plus_minus": 0,
-        "shifts": 12,
-        "power_play_goals": 0,
-    }
-
-
-def schedule_game(game_id, state, start, home="TOR", away="MTL"):
-    return {
-        "id": game_id,
-        "date": BACKFILL_DAY,
-        "gameType": nhl_client.REGULAR_SEASON,
-        "gameState": state,
-        "startTimeUTC": start,
-        "homeTeam": {"abbrev": home},
-        "awayTeam": {"abbrev": away},
-    }
-
-
-def wire_nhl(monkeypatch, schedules, boxscores, throttle_witness=None):
-    """Point nhl_client at in-memory fakes (schedule per date, boxscore per
-    game id). ``boxscores`` may be a RaisesStub-like object; ``calls`` come
-    back via the returned list."""
-    calls = []
-
-    def fake_schedule(date, delay_seconds=None):
-        calls.append(("schedule", date))
-        payload = {"gameWeek": []}
-        games = schedules.get(date) or []
-        if games:
-            payload["gameWeek"] = [{"date": date, "games": games}]
-        return payload
-
-    def fake_boxscore(game_id, delay_seconds=None):
-        calls.append(("boxscore", game_id))
-        return boxscores[game_id]
-
-    monkeypatch.setattr(nhl_client, "fetch_schedule", fake_schedule)
-    monkeypatch.setattr(nhl_client, "fetch_boxscore", fake_boxscore)
-    monkeypatch.setattr(nhl_client, "_throttle", (lambda *a: None) if throttle_witness is None else throttle_witness)
-    return calls
-
-
-def sentinelled_players():
-    """Player-Snapshots-backtrack rows the publish already owns, with the 16
-    precomputed aggregates at SENTINEL values (asserted untouched by the raw
-    upserts) and the per-game raw columns empty (never backfilled). Two
-    dates: STORE_MAX (the store-covered history) and BACKFILL_DAY (a
-    published-but-raw-empty row the backfill must only top up)."""
-    by_day = {}
-    for day in (STORE_MAX, BACKFILL_DAY):
-        by_day[day] = pd.DataFrame(
-            {
-                "date": [day] * 2,
-                "player_id": [1, 2],
-                "name": ["a", "b"],
-                "team_name": ["Toronto", "Montréal"],
-                "team_abbrev": ["TOR", "MTL"],
-                "opponent_abbrev": ["MTL", "TOR"],
-                "home": [1, 0],
-                "tims": [0, 0],
-                "scored": [1, 0],
-                "gpg": [0.31, 0.27],
-                "hgpg": [0.11, 0.19],
-                "five_gpg": [0.40, 0.15],
-                "hppg": [0.0, 0.0],
-                "ppg": [0.22, 0.17],
-                "sd_shots_pg": [9.99, 8.88],
-                "sd_goals_pg": [7.77, 6.66],
-                "sd_toi_pg": [5.55, 4.44],
-                "r10_shots_pg": [3.33, 2.22],
-                "ewm_goals": [1.11, 0.22],
-                "career_games": [77, 88],
-                "career_goals_pg": [0.0999, 0.0888],
-                "career_shots_pg": [0.7777, 0.6666],
-                "game_shots": [None, None],
-                "game_goals": [None, None],
-                "game_points": [None, None],
-                "game_toi_min": [None, None],
-            }
-        )
-    return pd.concat(by_day.values(), ignore_index=True)
-
-
-@pytest.fixture
-def backfill_tables(monkeypatch):
-    """Fake supabase for the backfill slice: the sentinelled player rows +
-    an empty marker table; registry of every FakeTable created (the write
-    witness) keyed by its frame's identity."""
-    players = sentinelled_players()
-    markers = empty_markers()
-    registry = {"_tables": {}}
-
-    fake_client = MagicMock(name="supabase_backfill")
-
-    def _table(name):
-        for known in ("Player-Snapshots-backtrack", "Player-Game-Raw-Markers"):
-            if name.startswith(known):
-                key = known
-                break
-        else:
-            key = "Default"
-        if key not in registry:
-            registry[key] = {"Player-Game-Raw-Markers": markers, "Player-Snapshots-backtrack": players}.get(
-                key, players
-            )
-            registry["_tables"][key] = FakeTable(registry[key])
-        return registry["_tables"][key]
-
-    fake_client.table.side_effect = _table
-    registry["client"] = fake_client
-    registry["tables"] = lambda: registry["_tables"]
-    monkeypatch.setattr("run_daily_picks._RAW_SCHEMA_PROBE", {})
-    # the module-level client (the `_backfilled_game_rows` read-back) must
-    # see the same fakes: ONE fake supabase for the test's whole surface.
-    monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
-    # no sqlite in unit tests: the store frame is provided by the fakes
-    monkeypatch.setattr("run_daily_picks.ensure_raw_store", lambda: None)
-    monkeypatch.setattr("run_daily_picks._player_games_frame", fake_player_games().copy)
-    return registry
-
-
-def backfill_boxscores():
-    """The BUSY slate's boxscores: game on BACKFILL_DAY, TOR home vs MTL.
-    Player 1 (TOR) has the store's homestand facts; player 2 (MTL) zero
-    shots; player 3 is ABSENT from the snapshot table (nameable -> created);
-    player 4 is absent AND nameless (never creatable -> counted, skipped)."""
-    return {
-        2026090001: [
-            box_record(1, "a", "TOR", home=True, goals=2, shots=5, points=2, toi="19:45"),
-            box_record(2, "b", "MTL", home=False, goals=0, shots=0, points=0, toi="12:30"),
-            box_record(3, "c", "TOR", home=True, goals=1, shots=3, points=2, toi="16:15"),
-            box_record(4, None, "TOR", home=True, goals=0, shots=1, points=0, toi="08:00"),
-        ]
-    }
-
-
-def test_backfill_first_run_backfills_yesterday_creates_and_tops_up(backfill_tables, monkeypatch, capsys):
-    """The happy path: one crawl per game, raw upserts split update/create,
-    the marker written AFTER the writes."""
-    schedules = {
-        BACKFILL_DAY: [schedule_game(2026090001, "OFF", f"{BACKFILL_DAY}T23:00:00Z")],
-        GAP_DAY: [schedule_game(2026090002, "FUT", f"{GAP_DAY}T23:00:00Z")],
-    }
-    calls = wire_nhl(monkeypatch, schedules, backfill_boxscores())
-    registry = backfill_tables
-    tables = registry["tables"]()
-
-    summary = call_backfill(registry, datetime.datetime(2026, 6, 12, 12, 0, tzinfo=datetime.timezone.utc))
-
-    assert summary["backfilled"] == [BACKFILL_DAY, "2026-06-13"]  # real day + off-night (games=0, marked too)
-    assert summary["pending"] == [GAP_DAY]  # FUT there: unmarked, retried later
-    players = tables["Player-Snapshots-backtrack"]
-    frame = players._frame.astype(object)
-    # (b) TOP-UP lane: only raw columns were written onto the published
-    # BACKFILL_DAY rows, and the 16 precomputed values survive BIT-FOR-BIT
-    row1 = frame[(frame["player_id"].astype(float) == 1) & (frame["date"] == BACKFILL_DAY)].iloc[0]
-    assert row1["game_shots"] == 5 and row1["game_goals"] == 2 and row1["game_points"] == 2
-    assert row1["game_toi_min"] == pytest.approx(19 + 45 / 60)
-    assert row1["sd_shots_pg"] == 9.99
-    assert row1["career_games"] == 77
-    assert row1["career_shots_pg"] == 0.7777
-    # the update-lane payload never even carried the precomputed keys
-    payload = next(
-        r for call in players.upserts for r in call["rows"] if int(r["player_id"]) == 1 and r.get("name") is None
-    )
-    assert "sd_shots_pg" not in payload and "career_games" not in payload
-    assert set(payload) <= {"date", "player_id", "game_shots", "game_goals", "game_points", "game_toi_min"}
-    # (also) the absent nameable row was CREATED minimal
-    row3 = frame[(frame["player_id"].astype(float) == 3)]
-    assert len(row3) == 1
-    row3 = row3.iloc[0]
-    assert row3["name"] == "c" and row3["team_abbrev"] == "TOR" and row3["opponent_abbrev"] == "MTL"
-    assert row3["scored"] == 1
-    assert row3["game_toi_min"] == pytest.approx(16 + 15 / 60)
-    # the unnameable row was left for the publish (a NOT NULL name row)
-    assert frame[frame["player_id"].astype(float) == 4].empty
-    # one marker row, written after the writes (games/player_games counts)
-    marker = tables["Player-Game-Raw-Markers"]._frame
-    assert {str(d) for d in marker["date"]} == {BACKFILL_DAY, "2026-06-13"}  # GAP_DAY stays unmarked
-    marked = marker.set_index("date")
-    assert int(marked.loc[BACKFILL_DAY, "games"]) == 1
-    assert int(marked.loc[BACKFILL_DAY, "player_games"]) == 3  # 2 topped up + 1 created; the nameless row never
-    assert int(marked.loc["2026-06-13", "games"]) == 0  # the off-night is marked done too
-    markers_written = [call for call in tables["Player-Game-Raw-Markers"].upserts]
-    assert len(markers_written) == 2
-    # the protocol for this slate: one schedule read per date in the gap and
-    # one boxscore read per completed game - never two of the same
-    assert calls.count(("schedule", BACKFILL_DAY)) == 1
-    assert calls.count(("boxscore", 2026090001)) == 1
-
-
-def test_backfill_idempotent_second_run_is_pure_noop(backfill_tables, monkeypatch, capsys):
-    """(a) re-run = no writes, no crawling: the marker gates everything.
-
-    First pass: ONE completed day + ONE pending (FUT) date + ONE off-night.
-    Second pass (the same-day kick): the markers make everything DEAD CODE -
-    no boxscore, no write; only the never-marked pending date's schedule is
-    re-checked (it must re-check, not assume)."""
-    schedules = {
-        BACKFILL_DAY: [schedule_game(2026090001, "OFF", f"{BACKFILL_DAY}T23:00:00Z")],
-        GAP_DAY: [schedule_game(2026090002, "FUT", f"{GAP_DAY}T23:00:00Z")],
-    }
-    calls = wire_nhl(monkeypatch, schedules, backfill_boxscores())
-    registry = backfill_tables
-    tables = registry["tables"]()
-    # first run (the normal happy path)
-    summary = call_backfill(registry, datetime.datetime(2026, 6, 12, 12, 0, tzinfo=datetime.timezone.utc))
-    assert summary["backfilled"] == [BACKFILL_DAY, "2026-06-13"]
-    assert summary["pending"] == [GAP_DAY]
-    n_upserts = sum(len(call["rows"]) for t in tables.values() for call in t.upserts)
-
-    # second run (same-day kick): the markers make the crawl DEAD CODE -
-    # no boxscore, no writes; only the never-marked pending date's schedule
-    # is re-checked
-    summary2 = call_backfill(registry, datetime.datetime(2026, 6, 12, 12, 0, tzinfo=datetime.timezone.utc))
-    assert summary2["backfilled"] == []
-    assert summary2["skipped"] == [BACKFILL_DAY, "2026-06-13"]
-    assert summary2["pending"] == [GAP_DAY]  # never marked: re-checked, still FUT in the fake
-    assert [call for call in calls if call[0] == "boxscore"] == [("boxscore", 2026090001)]  # no NEW nhl boxscore calls
-    assert sum(len(call["rows"]) for t in tables.values() for call in t.upserts) == n_upserts
-
-
-def test_backfill_multi_day_gap_and_unfinished_slate(backfill_tables, monkeypatch, capsys):
-    """(e) a several-day gap: backfill oldest->newest, and a date whose
-    games are still FUT stays UNMARKED (no writes) so a later run picks it
-    up; a later completed date still goes (the state deadline)."""
-    schedules = {
-        BACKFILL_DAY: [schedule_game(2026090001, "OFF", f"{BACKFILL_DAY}T19:00:00Z")],
-        GAP_DAY: [schedule_game(2026090002, "FUT", f"{GAP_DAY}T23:00:00Z")],
-        "2026-06-13": [schedule_game(2026090003, "OFF", "2026-06-13T19:00:00Z")],
-    }
-    boxscores = {
-        **backfill_boxscores(),
-        2026090003: [
-            box_record(
-                1,
-                "a",
-                "TOR",
-                home=False,
-                goals=1,
-                shots=2,
-                points=2,
-                toi="18:00",
-                game_id=2026090003,
-                game_date="2026-06-13",
-            ),
-            box_record(2, "b", "MTL", home=True, goals=0, shots=1, points=0, toi="14:00", game_id=2026090003),
-        ],
-    }
-    wire_nhl(monkeypatch, schedules, boxscores)
-    registry = backfill_tables
-    summary = call_backfill(registry, datetime.datetime(2026, 6, 14, 12, 0, tzinfo=datetime.timezone.utc))
-    assert summary["backfilled"] == [BACKFILL_DAY, "2026-06-13"]  # oldest first
-    assert summary["pending"] == [GAP_DAY]
-    markers = registry["tables"]()["Player-Game-Raw-Markers"]._frame
-    assert GAP_DAY not in {str(d) for d in markers["date"]}
-    assert {str(d) for d in markers["date"]} == {BACKFILL_DAY, "2026-06-13"}
-
-
-def test_backfill_pends_young_completed_game(backfill_tables, monkeypatch, capsys):
-    """A game the API calls OFF but younger than ML_RAW_BACKFILL_HOURS stays
-    unmarked for a later run the same day (no writes, no marker)."""
-    schedules = {BACKFILL_DAY: [schedule_game(2026090001, "OFF", f"{BACKFILL_DAY}T23:00:00Z")]}
-    wire_nhl(monkeypatch, schedules, backfill_boxscores())
-    registry = backfill_tables
-    summary = call_backfill(registry, datetime.datetime(2026, 6, 12, 0, 45, tzinfo=datetime.timezone.utc))
-    assert summary["backfilled"] == [GAP_DAY, "2026-06-13"]  # the off-nights are marked done (games=0)
-    assert summary["pending"] == [BACKFILL_DAY]  # the only real date stays UNMARKED
-    markers_frame = registry["tables"]()["Player-Game-Raw-Markers"]._frame
-    assert {str(d) for d in markers_frame["date"]} == {GAP_DAY, "2026-06-13"}  # real date stays unmarked
-    assert registry["tables"]()["Player-Snapshots-backtrack"].upserts == []
-
-
-def test_backfill_skips_gracefully_pre_migration(monkeypatch, capsys):
-    """Before the migration lands, ONE loud warning and the run continues
-    (the shot block simply covers the store; missing-day warning handles the
-    rest). NO marker/crawl calls at all."""
-    client = MagicMock()
-
-    def _table(name):
-        raise RuntimeError("PostgREST 400: column game_shots does not exist")
-
-    client.table.side_effect = _table
-    monkeypatch.setattr("run_daily_picks._RAW_SCHEMA_PROBE", {})
-    summary = mod.backfill_raw_game_days(BACKFILL_ENV, BACKFILL_ON_DATE, STORE_MAX, client=client)
-    assert summary["status"] == "skipped-columns"
-    assert summary["backfilled"] == []
-    out = capsys.readouterr().out
-    assert "not landed" in out and "skipping the same-day backfill" in out
-
-
-def test_backfilled_rows_feed_the_exact_ledger_readback(backfill_tables, monkeypatch):
-    """_backfilled_game_rows' read-back: raw columns -> the games-frame shape
-    the shared core consumes (toi decimal minutes; season-labelled date);
-    rows NEVER backfilled (null raws) are not games and drop out."""
-    schedules = {BACKFILL_DAY: [schedule_game(2026090001, "OFF", f"{BACKFILL_DAY}T23:00:00Z")]}
-    wire_nhl(monkeypatch, schedules, backfill_boxscores())
-    registry = backfill_tables
-    call_backfill(registry, datetime.datetime(2026, 6, 12, 12, 0, tzinfo=datetime.timezone.utc))
-    games = mod._backfilled_game_rows(BACKFILL_ENV, STORE_MAX, BACKFILL_ON_DATE)
-    assert sorted(games["player_id"]) == [1, 2, 3]  # the nameless row never landed
-    assert (games["season"] == mod.season_label(BACKFILL_DAY)).all()
-    p1 = games[games["player_id"] == 1].iloc[0]
-    assert p1["shots"] == 5 and p1["goals"] == 2
-    assert p1["toi"] == pytest.approx(19 + 45 / 60)  # '19:45' -> decimal minutes
-
-
-def _seed_backfilled_day(monkeypatch, registry):
-    """Backfill BACKFILL_DAY via the fakes, so the player table holds real
-    raw per-game rows (the same numbers the store's hypothetical dump update
-    would hold), then return them."""
-    schedules = {BACKFILL_DAY: [schedule_game(2026090001, "OFF", f"{BACKFILL_DAY}T23:00:00Z")]}
-    wire_nhl(monkeypatch, schedules, backfill_boxscores())
-    call_backfill(registry, datetime.datetime(2026, 6, 12, 12, 0, tzinfo=datetime.timezone.utc))
-
-
-def test_next_day_features_include_yesterdays_backfilled_stats(backfill_tables, monkeypatch):
-    """(d) after the backfill, TODAY's rolling/career block sees yesterday's
-    game: the merged ledger (store + the backfill's raw rows) is one game-day
-    longer than the store, and every r5/r10/ewm/sd/career feature moves
-    exactly as the training math says it should with yesterday's line
-    appended (player 1: 2 goals on 5 shots at 19:45)."""
-    registry = backfill_tables
-    _seed_backfilled_day(monkeypatch, registry)
-
-    store_games = fake_player_games()  # the ledger through STORE_MAX only
-    merged = mod._merge_backfilled_games(store_games.copy(), BACKFILL_ENV, BACKFILL_ON_DATE)
-    assert (merged["date"] == BACKFILL_DAY).sum() == 3  # the 3 landed player-games
-    assert store_games["date"].max() == STORE_MAX
-
-    block = mod.derive_shot_block(BACKFILL_ON_DATE, [1, 2, 9, 10], games=merged)
-    p1 = block[block["player_id"] == 1].iloc[0]
-
-    series = store_games[store_games["player_id"] == 1]
-    goals_before = list(series["goals"])
-    shots_before = list(series["shots"])
-    # yesterday's line enters the LAST window: r5 is the mean of the final 5
-    assert p1["r5_goals_pg"] == pytest.approx(sum((goals_before + [2])[-5:]) / 5)
-    assert p1["r5_shots_pg"] == pytest.approx(sum((shots_before + [5])[-5:]) / 5)
-    # r5 WITHOUT the backfill is the shorter window - the block moved
-    empty_block = mod.derive_shot_block(BACKFILL_ON_DATE, [1, 2, 9, 10], games=store_games)
-    assert empty_block[empty_block["player_id"] == 1].iloc[0]["r5_goals_pg"] != p1["r5_goals_pg"]
-
-
-def test_exact_recompute_parity_vs_training_math(backfill_tables, monkeypatch):
-    """(c) THE stage-2 parity anchor: today's 14 features via the exact path
-    (store + backfilled raw rows read back from the backtrack table) vs the
-    training path (shot_features_from_games over the store WITH yesterday's
-    real game appended - the store the next dump refresh would hold) - the
-    worst-case delta across all 14 features must be 0 (strictly < 1e-9)."""
-    registry = backfill_tables
-    _seed_backfilled_day(monkeypatch, registry)
-
-    store_games = fake_player_games()
-    merged = mod._merge_backfilled_games(store_games.copy(), BACKFILL_ENV, BACKFILL_ON_DATE)
-    block = mod.derive_shot_block(BACKFILL_ON_DATE, [1, 2, 9, 10], games=merged)
-
-    # the TRAINING hypothetical: yesterday's game lands in the store as it
-    # will when the next dump refresh commits it - same numbers by
-    # construction (both lanes read the same gamecenter boxscore).
-    yesterday = merged[merged["date"] == BACKFILL_DAY][["player_id", "date", "season", "goals", "shots", "toi"]].copy()
-    training = model.shot_features_from_games(
-        pd.concat([store_games, yesterday, _synthetic_today_rows(BACKFILL_ON_DATE)], ignore_index=True)
-    )
-    expected = training[training["date"] == BACKFILL_ON_DATE].sort_values("player_id").reset_index(drop=True)
-    live = block.sort_values("player_id").reset_index(drop=True)
-    assert list(live["player_id"]) == list(expected["player_id"])
-    diffs = (expected[model.SHOT_FEATURES] - live[model.SHOT_FEATURES]).abs()
-    worst = float(diffs.to_numpy().max())
-    assert worst < 1e-9
-    print(f"parity anchor ({BACKFILL_ON_DATE}): max abs diff across 14 features x 3 backfilled players = {worst}")
-
-
-def _synthetic_today_rows(on_date):
-    """One zero line per today's player - derive_shot_block's own synthetic
-    rows, replicated here so the training hypothetical matches the live path."""
-    return pd.DataFrame(
-        {
-            "player_id": [1, 2, 9, 10],
-            "date": on_date,
-            "season": mod.season_label(on_date),
-            "goals": 0,
-            "shots": 0,
-            "toi": 0,
-        }
-    )
-
-
-def test_backfilled_readback_strips_null_raw_rows_and_replays_history_exactly(backfill_tables, monkeypatch):
-    """Rows the backfill never touched (the pre-migration published rows'
-    null Block C columns) are NOT games: the read-back must drop them, so
-    the store rows stay the history's source and the parity of the covered
-    history is unchanged (derive twice: once store-only, once through the
-    fake table - identical)."""
-    store_games = fake_player_games()
-    merged = mod._merge_backfilled_games(store_games.copy(), BACKFILL_ENV, BACKFILL_ON_DATE)
-    lore = mod._backfilled_game_rows(BACKFILL_ENV, STORE_MAX, BACKFILL_ON_DATE)
-    assert lore.empty  # nothing backfilled (no crawl): the store frame is untouched
-    assert merged is not None
-
-    block = mod.derive_shot_block(CORE_GAME_DAYS[-1], [1, 2, 9, 10])
-    training = model.shot_features_from_games(store_games)
-    training_rows = training[training["date"] == CORE_GAME_DAYS[-1]].sort_values("player_id")
-    live_rows = block.sort_values("player_id")
-    diffs = training_rows[model.SHOT_FEATURES].to_numpy() - live_rows[model.SHOT_FEATURES].to_numpy()
-    assert abs(diffs.max()) < 1e-9

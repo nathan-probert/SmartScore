@@ -121,6 +121,33 @@ def load_frame(args):
     """The through-date frame via model.py's own builders - no fork."""
     print(f"loading frames (env={args.env}, source={args.source}) ...", flush=True)
     players, teams, goalies = model.load_frames(args.env, refresh=args.refresh)
+    # The live API can return empty strings for the rate columns on rows the
+    # publish wrote before a rate existed (pandas infers object dtype, and
+    # lightgbm refuses object columns outright - the CSV round-trip used to
+    # mask this by writing "" and re-reading it as NaN). Coerce every
+    # numeric-expected column back to numbers: "" -> NaN, the same value the
+    # CSV path always trained on.
+    numeric = set(model.SHOT_FEATURES) | {
+        "gpg",
+        "hgpg",
+        "five_gpg",
+        "hppg",
+        "ppg",
+        "tgpg",
+        "otga",
+        "otshga",
+        "home",
+        "tims",
+        "scored",
+        "gaa",
+        "save_pct",
+        "shutouts",
+        "games_played",
+    }
+    for frame in (players, teams, goalies):
+        for column in frame.columns:
+            if column in numeric and frame[column].dtype == object:
+                frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame = model.build_frame(players, teams, goalies, source=args.source)
     frame = model.add_derived(frame, teams, source=args.source)
     frame = frame[frame["scored"].notna()].reset_index(drop=True)

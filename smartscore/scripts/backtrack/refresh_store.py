@@ -1,30 +1,24 @@
 #!/usr/bin/env python
-"""Rebuild + catch up the raw per-game store, the runner-side refresh chain.
+"""Rebuild + catch up the raw per-game store - now an OWNER-SIDE OFFLINE
+UTILITY only (make backtrack-refresh).
 
-WHY
+WHY (kept, narrowed)
 ---
-The picks pass' 14 shot/TOI features are computed EXACTLY from
-data/raw_nhl.sqlite (model.shot_features_from_games over player_games, see
-run_daily_picks.derive_shot_block). A CI runner checks out the repo with NO
-store and NO HTTP cache, so the store has to be rebuilt there before
-inference:
+Since the stage-2 per-game raw columns landed (20261027 migration), the
+picks pass reads Supabase alone: the daily gap-fill is
+backfill_missing_days.py (bounded, FINAL-only, no local store) and
+run_daily_picks recomputes the rolling/career block exactly from the
+published record. This chain is retired from .github/workflows/ml-picks.yml
+and survives only for local store maintenance on the owner box:
 
   1. ``dump_store.load`` rebuilds the store from the committed season dumps
      (data/dumps/<season>.sql.gz, tracked in git - the raw layer's audit
      trail). No credentials, no Supabase, no crawl.
   2. ``local_store.build`` fills the CURRENT season on cache-miss through
      nhl_client (public NHL endpoints + its retry envelope; the only writes
-     are local: the raw store and the data/cache HTTP cache). A fresh runner
-     has a cold cache, so this re-fetches the current season's played games
-     - bounded (~165 games around season start, a handful a day later).
-     local_store.build reads games the schedule reports as played, so it is
-     "through yesterday / today-so-far" by construction.
-
-Idempotent: step 1 truncates and re-loads; step 2 upserts
-(COALESCE-merge on (player_id, game_id)) - a second run the same day rewrites,
-never duplicates. The store stays at the dumps' historical vintage plus the
-current season's crawled games; that is exactly the history the shot block
-and its warn-not-exit stale-store warning (derive_shot_block) expect.
+     are local: the raw store and the data/cache HTTP cache). Idempotent:
+     step 1 truncates and re-loads; step 2 upserts (COALESCE-merge on
+     (player_id, game_id)).
 
 Usage::
 

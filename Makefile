@@ -106,6 +106,15 @@ backtrack-publish:
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-team $(SEASON)
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-goalies $(SEASON)
 
+# Owner-side OFFLINE store utility (no ML-picks role anymore): since the
+# stage-2 raw-column change the picks path reads Supabase alone (the daily
+# gap-fill is backfill_missing_days.py), but the local store still feeds
+# train_export/publish_shot_cols. This target is the old refresh chain, kept
+# for local store maintenance only: dump load + current-season crawl.
+backtrack-refresh:
+	@echo "Refreshing the local raw store (dumps + current season crawl) - owner-side only"
+	@uv run python $(BACKTRACK)/refresh_store.py $(if $(THROUGH),--through $(THROUGH),)
+
 # ---------------- On-demand ML artifact refresh --------------------------
 # Owner-run, on-demand only: training NEVER happens on AWS or in CI, and no
 # target here is scheduled. The workflow (.github/workflows/ml-picks.yml) is
@@ -121,4 +130,4 @@ train-ml-export:
 	ENV=$(ENV) uv run --with lightgbm==4.7.0 python $(BACKTRACK)/train_export.py \
 	  --env $(ENV) $(if $(SEASON),--season $(SEASON),) $(if $(THROUGH),--through-date $(THROUGH),) \
 	  --seed $(if $(SEED),$(SEED),0) --upload --s3-bucket $(MLS3_BUCKET)
-.PHONY: train-ml-export
+.PHONY: train-ml-export backtrack-refresh
