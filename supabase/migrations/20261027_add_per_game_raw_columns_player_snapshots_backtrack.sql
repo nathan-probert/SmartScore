@@ -34,6 +34,15 @@
 -- `played` needs NO flag: for a completed game, a row carrying non-null
 -- game_shots IS the played mark (a boxscore lists exactly the players who
 -- appeared); (date, player_id) is the PK.
+--
+-- APPLIED BY: deploy.yml's standing `migrate` job (lint + test, then psql
+-- --single-transaction over supabase/migrations/ with __ENV__ substituted):
+-- ENV=prod on a push to main, ENV=dev on a PR carrying the `deploy` label.
+-- Nothing else auto-applies migrations; idempotency (ADD COLUMN IF NOT
+-- EXISTS) is what makes the every-run re-apply safe. The stage-2 exactness
+-- contract: the precomputed r5/r10/ewm/career publish-cols (20261024) stay
+-- untouched - these per-game columns are the raw layer a later stage
+-- recomputes them from.
 
 ALTER TABLE "Player-Snapshots-backtrack-__ENV__"
     ADD COLUMN IF NOT EXISTS "game_shots"   INTEGER,

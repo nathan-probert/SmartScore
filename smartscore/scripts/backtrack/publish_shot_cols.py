@@ -54,6 +54,7 @@ from model import (  # noqa: E402
     SHOT_FEATURES,
     SUPABASE_ADMIN_CLIENT,
     _month_windows,
+    _toi_minutes,
     player_table,
     shot_features,
 )
@@ -64,6 +65,21 @@ CLUB_TABLE_COLS = (
 )  # Block B semantics; the payload ships both key columns first.
 
 SHOT_TABLE_COLS = tuple(SHOT_FEATURES)  # Block A, in SHOT_FEATURES order.
+
+# The per-game RAW columns of migration 20261027 (stage-2 exactness: they let
+# the daily run recompute the rolling/career publish-cols exactly from the
+# published data alone). One row per player per game, straight from
+# player_games - NOT aggregates; the precomputed r5/r10/ewm/career columns
+# above stay untouched. A row with game_shots NULL means the player did not
+# appear in that date's game (a boxscore lists exactly the players who
+# appeared), so no separate boolean is shipped - the non-null value IS the
+# played mark, exactly what shot_features_from_games reads past rows by.
+RAW_GAME_COLUMNS = (
+    "game_shots",
+    "game_goals",
+    "game_points",
+    "game_toi_min",
+)
 
 PAYLOAD_COLUMNS = (
     "date",
@@ -90,6 +106,39 @@ def club_map_cols(db_path=RAW_DB):
     dup = frame.duplicated(["date", "player_id"]).any()
     if dup:
         raise RuntimeError("player_games has duplicate (game_date, player_id) club rows")
+    return frame
+
+
+def raw_game_map(db_path=RAW_DB, min_date=None, max_date=None):
+    """(date, player_id) -> the four per-game RAW values, from the raw store.
+
+    One row per player per game from ``player_games`` - the SAME facts
+    shot_features()'s source rows carry (shots/goals/points are already the
+    boxscore integers in the store; toi is 'MM:SS', parsed by the shared
+    parser ``model._toi_minutes`` into decimal minutes, mm + ss/60 - the exact
+    cast the 16-column backfill and the daily backfill both use). Attach
+    sends a key ONLY when the store has the game: a store miss (the player
+    did not appear, or the raw-store game is not in the crawl yet / the row
+    predates the store) leaves the table's column NULL, never a fabricated 0.
+
+    The payload's own keys pull from here (keyed exactly ON the snapshot
+    table's PK pair); rows the two sources disagree on are an error.
+    """
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    query = "SELECT game_date AS date, player_id, shots, goals, points, toi FROM player_games"
+    clauses = []
+    if min_date:
+        clauses.append(f"game_date >= '{min_date}'")
+    if max_date:
+        clauses.append(f"game_date <= '{max_date}'")
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    frame = pd.read_sql_query(query, con)
+    con.close()
+    frame["date"] = frame["date"].astype(str)
+    dup = frame.duplicated(["date", "player_id"]).any()
+    if dup:
+        raise RuntimeError("player_games has duplicate (game_date, player_id) raw rows")
     return frame
 
 
@@ -297,8 +346,27 @@ def columns_landed(table):
 
 _PROBE = {}
 
+_RAW_PROBE = {}
 
-def attach_shot_columns(payload, table, block=None):
+RAW_PROBE_COLUMN = "game_shots"
+
+
+def raw_game_columns_landed(table):
+    """True once migration 20261027 has added the per-game RAW columns.
+
+    Same owner-independent probe trick as ``columns_landed`` (spec gotcha 5:
+    until the DDL lands, PostgREST 400s any request naming the column), so
+    the attach knows whether it may carry the four game_* keys at all.
+    Cached per table like the 16-column probe.
+    """
+    try:
+        SUPABASE_ADMIN_CLIENT.table(table).select(RAW_PROBE_COLUMN).limit(1).execute()
+        return True
+    except Exception:  # noqa: BLE001 - any failure means "not landed yet"
+        return False
+
+
+def attach_shot_columns(payload, table, block=None, raw_block=None):
     """Add the 16 published columns onto a daily upsert payload in place.
 
     ``payload`` is local_store.publish()'s row-dict list for one season. The
@@ -308,14 +376,35 @@ def attach_shot_columns(payload, table, block=None):
     aggregates, exact int for career_games, None for NaN (season-first rows,
     and the 32 rows whose source game-log lacked opponentAbbrev).
 
-    After the first successful attach for a table the probe result is cached;
-    until the migration has landed the payload returns unchanged.
+    When the RAW columns of migration 20261027 have also landed, the four
+    per-game keys (game_shots/game_goals/game_points/game_toi_min) ride onto
+    every payload row whose (date, player_id) the raw store can supply a
+    player_games row for - ``raw_block`` overrides that source (tests). A
+    row the store lacks gets NO raw keys; NULL stays "did not play", which
+    is exactly the convention shot_features_from_games reads and probe -
+    never a fabricated zero. The rolling/career columns above are untouched
+    either way.
+
+    After the first successful attach for a table the probe results are
+    cached; until the migrations have landed the payload returns unchanged
+    (the RAW keys degrade independently of the 16 aggregated keys).
     """
     placed = _PROBE.get(table)
     if placed is None:
         placed = _PROBE[table] = columns_landed(table)
         if not placed:
             print(f"shot-columns migration not landed on {table}; skipping the 16 keys")
+    placed_raw = False
+    if placed:
+        # Independent of the 16-column probe: a table can carry the shot
+        # aggregates while the RAW migration is still pending (they landed
+        # a month apart upstream), and the split means neither key set
+        # gates the other.
+        placed_raw = _RAW_PROBE.get(table)
+        if placed_raw is None:
+            placed_raw = _RAW_PROBE[table] = raw_game_columns_landed(table)
+            if not placed_raw:
+                print(f"per-game raw columns not landed on {table}; skipping the 4 game_* keys")
     if not placed or not payload:
         return payload
 
@@ -339,13 +428,56 @@ def attach_shot_columns(payload, table, block=None):
             for col in PAYLOAD_COLUMNS
             if col not in ("date", "player_id", "name")
         }
+
+    raw_by_key = {}
+    if placed_raw:
+        if raw_block is None:
+            if not payload:
+                dates = []
+            else:
+                dates = [row["date"] for row in payload]
+            raw_frame = raw_game_map(min_date=min(dates), max_date=max(dates))
+            raw_frame = raw_frame.dropna(subset=["shots", "goals"])  # missing stats = not a played game
+            raw_frame[["shots", "goals", "points"]] = raw_frame[["shots", "goals", "points"]].astype("Int64")
+            raw_frame["toi_min"] = raw_frame["toi"]  # 'MM:SS' strings; parsed by the shared line below
+        else:
+            raw_frame = raw_block
+            if raw_frame.empty:
+                raw_frame = raw_frame.reindex(columns=["date", "player_id", "shots", "goals", "points", "toi_min"])
+        # The shared parser on every source: raw_game_map() computed it from
+        # 'MM:SS' strings, and _toi_minutes' numeric passthrough makes a
+        # second application a no-op on minutes-typed blocks.
+        raw_frame["toi_min"] = _toi_minutes(raw_frame["toi_min"])
+        raw_frame = raw_frame.astype(object).where(pd.notna(raw_frame), None)
+        for row in raw_frame.to_dict("records"):
+            if row["date"] is None or row["player_id"] is None:
+                continue
+            values = {}
+            for src, dst in (
+                ("shots", "game_shots"),
+                ("goals", "game_goals"),
+                ("points", "game_points"),
+                ("toi_min", "game_toi_min"),
+            ):
+                value = row.get(src)
+                values[dst] = value.item() if isinstance(value, np.generic) else value
+            raw_by_key[(row["date"], int(row["player_id"]))] = values
+
     hits = 0
+    raw_hits = 0
     for row in payload:
         key = (row["date"], int(row["player_id"]))
         values = by_key.get(key)
         if values is None:
             continue
+        if key in raw_by_key:
+            values = {**raw_by_key[key], **values}  # the 16 aggregate keys win on any same-key collision
+            raw_hits += 1
         row.update(values)
         hits += 1
-    print(f"shot/TOI + club columns attached to {hits}/{len(payload)} payload row(s)")
+    print(
+        f"shot/TOI + club columns attached to {hits}/{len(payload)} payload row(s)"
+        + (f" (per-game raw keys on {raw_hits})" if placed_raw else ""),
+        flush=True,
+    )
     return payload
