@@ -106,6 +106,11 @@ def make_bundle(today="2026-06-14"):
 @pytest.fixture
 def env_vars(monkeypatch):
     monkeypatch.setenv("ENV", "prod")
+    # run_daily_picks captures `from config import ENV` at import time, so the
+    # setenv above cannot rebind the module global: on CI (no local .env) it
+    # stays at config's default 'dev' and the STAGE B gap-fill is invoked with
+    # the wrong env. Bind the module global to the same env the fixture declares.
+    monkeypatch.setattr(mod, "ENV", "prod")
     monkeypatch.setenv("ML_S3_BUCKET", "test-artifacts")
     monkeypatch.delenv("ML_ARTIFACT_PREFIX", raising=False)
     monkeypatch.delenv("ML_HISTORY_WINDOW_DAYS", raising=False)
