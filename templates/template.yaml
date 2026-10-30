@@ -114,6 +114,7 @@ Resources:
                   - !GetAtt SendEmailsFunction.Arn
                   - !GetAtt SavePlayersFunction.Arn
                   - !GetAtt LoadWorkingSetFunction.Arn
+                  - !GetAtt MLPicksKickFunction.Arn
               - Effect: Allow
                 Action:
                   - states:StartExecution
@@ -506,11 +507,12 @@ Resources:
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
 
-  # Architecture A relay (additive; no Supabase access, stdlib urllib only):
-  # second target on every per-game TriggerStateMachineAt_* rule created by
-  # utility.schedule_run - turns the game-start+5min trigger into a GitHub
-  # repository_dispatch for .github/workflows/ml-picks.yml. Real code is
-  # pushed by deploy.sh's LAMBDA_FUNCTIONS loop (MLPicksKick-$ENV entry).
+  # Per-game ML picks kick relay: the PlayerProcessingPipeline state
+  # machine's KickMLPicks Task state invokes this Lambda at the END of the
+  # run (after SaveToDb/UpdateHistory/PublishToDb) so the GitHub Actions
+  # ML pass only starts once today's snapshot rows are published (PR #146
+  # follow-up race fix). No Supabase access, stdlib urllib only. Real code
+  # is pushed by deploy.sh's LAMBDA_FUNCTIONS loop (MLPicksKick-$ENV entry).
   MLPicksKickFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -531,18 +533,19 @@ Resources:
         Variables:
           GITHUB_DISPATCH_TOKEN: !Ref GithubDispatchToken
 
-  # EventBridge -> Lambda invoke grant. Pattern carried over from the
-  # removed MLPicksFunctionPermission (git history, commit b506e35:
-  # SourceArn: !GetAtt MLPicksDailyTrigger.Arn), retargeted to the per-game
-  # rule family because the kick rides as the second target on the same
-  # TriggerStateMachineAt_* rule that utility.schedule_run creates.
-  MLPicksKickFunctionPermission:
+  # State machine -> Lambda invoke grant. The OLD MLPicksKickFunctionPermission
+  # (Principal: events.amazonaws.com, SourceArn scoped to the per-game
+  # TriggerStateMachineAt_* rules) is REMOVED - EventBridge no longer targets
+  # this Lambda; the state machine is the invoke principal (defensive
+  # function-level policy here, primary grant is the StateMachineExecutionRole
+  # Resource list above).
+  MLPicksKickStatePermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !GetAtt MLPicksKickFunction.Arn  # accepted as the ARN for the event-source grant
+      FunctionName: !GetAtt MLPicksKickFunction.Arn
       Action: lambda:InvokeFunction
-      Principal: events.amazonaws.com
-      SourceArn: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/TriggerStateMachineAt_*-${ENV}"
+      Principal: states.amazonaws.com
+      SourceArn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
 
   # IAM Role for EventBridge to invoke Step Function
   EventBridgeInvokeRole:

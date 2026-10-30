@@ -158,6 +158,40 @@ def test_normal_run_archives_before_publishing():
     assert history["first_run"] == "UpdateHistory"
     assert pipeline["CheckSaveHistory"]["Default"] == "PublishToDb"
 
+    # The ML kick is no longer a parallel EventBridge target: it fires after
+    # the write path completes (PublishToDb -> KickMLPicks -> End).
+    assert pipeline["PublishToDb"]["Next"] == "KickMLPicks"
+
+
+def test_kick_ml_picks_is_the_terminal_write_path_consumer():
+    """Race fix (PR #146 follow-up): KickMLPicks runs at the END of the run.
+
+    The kick must be the terminal Task of BOTH first_run and
+    normal_run/last_run rounds, pass ONLY the pipeline's own pick date
+    ($.date), and keep the state lean via ResultPath NONE. No Retry: a
+    failed dispatch fails the run loudly, and re-triggering is an idempotent
+    re-kick.
+    """
+    pipeline = _asl("player_processing_pipeline.asl.json")
+
+    kick = pipeline["States"]["KickMLPicks"]
+    assert kick["Type"] == "Task"
+    assert kick["Resource"].endswith(":function:MLPicksKick-prod")
+    assert kick["Parameters"] == {"date.$": "$.date"}
+    assert kick["ResultPath"] is None
+    assert kick["End"] is True
+    assert "Retry" not in kick
+
+
+def test_publish_to_db_is_no_longer_the_terminal_state():
+    pipeline = _asl("player_processing_pipeline.asl.json")["States"]
+
+    # Serialization point: PublishToDb hands off to KickMLPicks instead of
+    # ending the run, so the Actions pass starts only after the LIVE
+    # snapshot rows (incl. fresh tims) are published.
+    assert pipeline["PublishToDb"]["Next"] == "KickMLPicks"
+    assert "End" not in pipeline["PublishToDb"]
+
 
 _PLAYERS = [
     {
@@ -353,13 +387,18 @@ def test_asl_routing_per_run_status():
     assert normal[0] == "LoadWorkingSet"
     assert "SaveToDb" in normal
     assert "UpdateHistory" not in normal
-    assert normal[-1] == "PublishToDb"
+    assert normal[-1] == "KickMLPicks"
 
     last = _trace_asl(pipeline, "last_run")
     assert last[0] == "LoadWorkingSet"
     assert "SaveToDb" not in last
     assert "UpdateHistory" not in last
-    assert last[-1] == "PublishToDb"
+    assert last[-1] == "KickMLPicks"
+
+    # Every exec-round kicks AFTER the publish writes complete.
+    for trace in (first, normal, last):
+        assert "KickMLPicks" in trace
+        assert trace.index("PublishToDb") < trace.index("KickMLPicks")
 
 
 @patch("event_handler.backfill_dates")

@@ -145,7 +145,18 @@
         },
         "PublishToDb": {
             "Type": "Task",
+            "Comment": "Publishes the LIVE snapshot rows. No longer End:true: the KickMLPicks state follows, so the ML picks dispatch can only fire once this write (incl. the refetched tims) has completed - that ASL ordering is the serialize point for the Actions pass (PR #146 follow-up race fix). KickMLPicks expects this state to carry 'date', which handle_publish_db returns (the event's carried date, else get_date()).",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:PublishDb-${ENV}",
+            "Next": "KickMLPicks"
+        },
+        "KickMLPicks": {
+            "Type": "Task",
+            "Comment": "Race fix (PR #146 follow-up): the ML picks dispatch used to be a parallel EventBridge target firing at game_start+5min, racing this run's SaveToDb/UpdateHistory/PublishToDb writes (Actions computed picks from stale groups). The kick now fires here, at the END of the write path on BOTH first_run and normal/last_run exec-rounds, invoking the MLPicksKick relay Lambda with the explicit contract {'date': <pick-date>} from the pipeline's own state ($.date) - no more schedule_time date stamping. ResultPath NONE keeps the state lean; no Retry (a relay 4xx fails the run loudly - re-triggering the game-start rule is an idempotent re-kick), and a successful dispatch is the expected empty 204.",
+            "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:MLPicksKick-${ENV}",
+            "Parameters": {
+                "date.$": "$.date"
+            },
+            "ResultPath": null,
             "End": true
         }
     }

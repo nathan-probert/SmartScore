@@ -23,6 +23,19 @@ class CfnLoader(yaml.SafeLoader):
 CfnLoader.add_multi_constructor("!", lambda loader, suffix, node: {"__cfn_tag__": suffix})
 
 
+class CfnValueLoader(yaml.SafeLoader):
+    """SafeLoader that KEEPS intrinsic-tag values so Resource lists/Grant shapes stay inspectable."""
+
+
+def _keep_intrinsic(loader, suffix, node):
+    if isinstance(node, yaml.SequenceNode):
+        return [getattr(child, "value", _keep_intrinsic(loader, suffix, child)) for child in node.value]
+    return loader.construct_scalar(node)
+
+
+CfnValueLoader.add_multi_constructor("!", _keep_intrinsic)
+
+
 def _find_template() -> Path:
     for parent in Path(__file__).resolve().parents:
         candidate = parent / "templates" / "template.yaml"
@@ -34,6 +47,7 @@ def _find_template() -> Path:
 TEMPLATE_PATH = _find_template()
 TEMPLATE_TEXT = TEMPLATE_PATH.read_text(encoding="utf-8")
 TEMPLATE = yaml.load(TEMPLATE_TEXT, Loader=CfnLoader)
+VALUE_TEMPLATE = yaml.load(TEMPLATE_TEXT, Loader=CfnValueLoader)
 
 # Credentials shared by every handler: the Supabase/PostHog clients, which
 # player_archive also needs because Player-Snapshots has RLS on and no policies
@@ -132,6 +146,49 @@ def test_every_ref_points_at_a_declared_parameter_or_resource():
 
     undeclared = sorted(referenced - declared)
     assert not undeclared, f"!Ref to undeclared parameter(s)/resource(s): {undeclared}"
+
+
+def test_kick_ml_picks_role_and_permission_wiring():
+    """KickMLPicks wiring (PR #146 follow-up race fix).
+
+    The state machine's KickMLPicks Task invokes MLPicksKick at the END of
+    the run, so (a) the StateMachineExecutionRole must grant
+    lambda:InvokeFunction on the relay, and (b) the invoke permission must
+    name states.amazonaws.com - the state machine is the principal, EventBridge
+    is no longer an MLPicksKick invoker.
+    """
+    role = VALUE_TEMPLATE["Resources"]["StateMachineExecutionRole"]["Properties"]
+    policy_document = role["Policies"][0]["PolicyDocument"]
+    invoke_statement = next(
+        statement for statement in policy_document["Statement"] if "lambda:InvokeFunction" in statement["Action"]
+    )
+    assert any(resource == "MLPicksKickFunction.Arn" for resource in invoke_statement["Resource"]), (
+        "StateMachineExecutionRole missing lambda:InvokeFunction on MLPicksKickFunction - "
+        "the KickMLPicks state would fail with AccessDenied"
+    )
+
+    permission = VALUE_TEMPLATE["Resources"]["MLPicksKickStatePermission"]["Properties"]
+    assert permission["Principal"] == "states.amazonaws.com"
+    assert "stateMachine:PlayerProcessingPipeline-${ENV}" in permission["SourceArn"]
+
+    # The old EventBridge-per-rule grant is retired: no events.amazonaws.com
+    # principal invokes the relay.
+    assert "MLPicksKickFunctionPermission" not in VALUE_TEMPLATE["Resources"]
+    for name, resource in VALUE_TEMPLATE["Resources"].items():
+        if resource.get("Type") != "AWS::Lambda::Permission":
+            continue
+        properties = resource.get("Properties", {})
+        if "MLPicksKickFunction" in str(properties.get("FunctionName", "")):
+            assert properties["Principal"] == "states.amazonaws.com", (
+                f"{name} must not re-introduce an EventBridge principal"
+            )
+
+
+def test_kick_ml_picks_asl_state_points_at_the_relay_function():
+    """The pipeline ASL's final state invokes the relay by its function name."""
+    asl_text = (TEMPLATE_PATH.parent / "player_processing_pipeline.asl.json").read_text(encoding="utf-8")
+    assert "function:MLPicksKick-${ENV}" in asl_text, "KickMLPicks state must invoke MLPicksKick-${ENV}"
+    assert "MLPicksKickStatePermission" in VALUE_TEMPLATE["Resources"]
 
 
 def _deploy_script() -> Path:

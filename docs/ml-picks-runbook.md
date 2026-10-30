@@ -367,71 +367,107 @@ untouched.
   1.1) every day until the build recovers; the daily green-but-empty
   summaries are the signal to check the pipeline.
 
-## 9. Per-game kick (A-architecture)
+## 9. Per-game kick (race-fixed: the kick fires from the state machine)
 
 ADDITIVE to the nightly cron above: AWS EventBridge remains the SOURCE OF
-TRUTH for "run ML picks ~5 minutes after every distinct game start"; the
-compute runs on the GitHub Actions runner via a tiny relay Lambda.
+TRUTH for "restart the pipeline ~5 minutes after every distinct game start";
+the ML picks pass runs on the GitHub Actions runner, kicked from the END of
+the pipeline run itself.
+
+### 9.1 The new chain (Per-game kick)
 
 * **Chain:** per-game `TriggerStateMachineAt_*-{ENV}` rule (created by
-  `smartscore/utility.py::schedule_run`) -> second target
-  `MLPicksKick-{ENV}` (target Id `mlPicksKickTarget`, fired at
-  game_start + `ML_KICK_OFFSET_MIN` = 5 minutes, the knob at the top of
-  `schedule_run` — change it in exactly one place) -> one
-  `repository_dispatch` (`event_type: ml-picks-game`, `client_payload:
-  {date, dry, context: 'post-game-start'}`) into `ml-picks.yml`. One EventBridge
-  rule carries both targets (state machine + kick), consistent with
-  EventBridge's multiple-targets-per-rule support and keeps the rule
-  inside `delete_expired_rules()`' existing cleanup family.
+  `smartscore/utility.py::schedule_run`, game_start +
+  `PIPELINE_RESTART_OFFSET_MIN` = 5 minutes) -> PlayerProcessingPipeline
+  state machine RE-EXECUTION (a full refetch: GetTims re-reads the Tim's
+  pick pool — started games leave it — and SaveToDb/PublishToDb rewrite the
+  LIVE snapshot rows) -> new final `KickMLPicks` Task state invokes the
+  `MLPicksKick-{ENV}` relay Lambda -> one `repository_dispatch`
+  (`event_type: ml-picks-game`, `client_payload: {date, dry, context:
+  'post-game-start'}`) into `ml-picks.yml`. ONE state-machine target per
+  rule (the pre-#146 shape); the old parallel event relay target is gone.
+
+  ```
+  EventBridge @ game_start + 5m  ->  state machine restart (refetch full:
+  GetTims -> SaveToDb -> [UpdateHistory] -> PublishToDb)  ->  KickMLPicks
+  ->  repository_dispatch  ->  Actions ML pick pass (fresh groups)
+  ```
+
+* **Explicit-date relay semantics:** the relay no longer derives the slate
+  date itself, and `schedule_run` no longer stamps a date into any target
+  Input. The state machine passes the pick date its own writes used:
+  `handle_publish_db` returns `{"date": event.date or get_date()}`, and the
+  `KickMLPicks` state relays it as the explicit `{'date': <str>}` contract.
+  The Toronto-today fallback inside `ml_picks_kick.py` remains ONLY for an
+  owner manual invoke with no date at all (e.g. an ad-hoc console test of
+  the dispatch plumbing).
+* **GAME-START RACE GUARD (why this ordering):** the previous design fired
+  the relay as a SECOND EventBridge target at game_start+5min — in parallel
+  with the state machine restart. The Actions job could therefore run
+  BEFORE the refetch completed and compute picks from stale groups (and
+  stale tims: started games leave the pick pool). Now the kick is a state
+  inside the same run, placed after PublishToDb: the ML pass starts the
+  SECOND the write path completes, so its snapshot read is time-consistent
+  with the rows just published. No wait/delay knob is needed anywhere —
+  the ASL ordering itself is the serialize point (nothing serializes the
+  ML-read after the writes anymore; now it is downstream of them).
 * **The relay is bounded by design:** `smartscore/ml_picks_kick.py` uses
   stdlib urllib only, no ML dependencies, and never touches Supabase or
-  Picks — it forwards `{date, dry}` and nothing more. The slate `date` is
-  stamped into the target's Input at schedule time (America/Toronto — the
-  pipeline's pick-date notion, cf. `service.get_date`), so a warm-lambda
-  delay cannot shift the slate; the fallback is Toronto-today.
+  Picks — it forwards `{date, dry}` and nothing more.
+* **IAM:** `StateMachineExecutionRole` carries `lambda:InvokeFunction` on
+  `MLPicksKickFunction` plus a `states.amazonaws.com` function-level
+  permission (`MLPicksKickStatePermission`, SourceArn pinned to the
+  pipeline state machine; **defensive** — the role grant is the primary
+  source). The old `MLPicksKickFunctionPermission` (events.amazonaws.com,
+  per-rule SourceArn) was removed with the parallel target.
 * **PAT setup (one time):** create a **fine-grained PAT** scoped to this
   repository with **Actions: write** permission only, short expiry
-  (30–90 days; note rotation below). First store it as the GitHub repo
-  secret `MLPICKS_DISPATCH_TOKEN` (Actions forbids secret names starting
-  with `GITHUB_`; the Lambda env key stays `GITHUB_DISPATCH_TOKEN` —
-  `deploy.yml` maps one to the other). deploy.sh then sets it as the
-  CloudFormation `GITHUB_DISPATCH_TOKEN` parameter with `NoEcho: true`:
-  either deploy
-  with `GITHUB_DISPATCH_TOKEN=<pat> ./build_scripts/deploy.sh` (the
-  script forwards it as a parameter via `CFN_PARAM_OVERRIDES`), or set it
-  once through the console/CLI on the `SmartScore-{ENV}` stack — an
+  (30–90 days; note rotation below). Unchanged: store it as the GitHub
+  repo secret `MLPICKS_DISPATCH_TOKEN` (Actions forbids secret names
+  starting with `GITHUB_`; the Lambda env key stays
+  `GITHUB_DISPATCH_TOKEN` — `deploy.yml` maps one to the other). deploy.sh
+  then sets it as the CloudFormation `GITHUB_DISPATCH_TOKEN` parameter
+  with `NoEcho: true`: either deploy with
+  `GITHUB_DISPATCH_TOKEN=<pat> ./build_scripts/deploy.sh` (the script
+  forwards it as a parameter via `CFN_PARAM_OVERRIDES`), or set it once
+  through the console/CLI on the `SmartScore-{ENV}` stack — an
   `update-stack` without the parameter keeps the previously stored value.
   (Owner alternative if a CloudFormation-held PAT is not wanted: a
   classic repo-scoped token with `repo` scope + Actions write, stored the
   same way. NEVER commit the token; `deploy.sh` never prints it.)
-* **Idempotent kick semantics:** multiple kicks per date are fine and
-  EXPECTED (one per game start). Every kick re-runs the same daily pass;
-  the Picks write is a full wipe-then-reinsert of the run's 3 picks via
-  `save_picks_db` (probe-before-delete + restore-on-insert-failure), so a
-  repeat pass for the same date rewrites the same rows rather than
-  duplicating them. The workflow serializes reruns via
-  its `concurrency` group, so two kicks overlapping queue, not race.
-  its `concurrency` group, so two kicks overlapping queue, not race.
+* **Idempotency (multiple runs per day):** multiple state-machine runs per
+  date are fine and EXPECTED (the morning/projections/lineup refresh rules
+  all re-execute it, each firing exactly ONE kick at the end; the retained
+  nightly cron pass remains the guaranteed full-day snapshot fallback).
+  Every kick re-runs the same daily pass; the Picks write is a full
+  wipe-then-reinsert of the run's 3 picks via `save_picks_db`
+  (probe-before-delete + restore-on-insert-failure), so a repeat pass for
+  the same date rewrites the same rows rather than duplicating them. The
+  workflow serializes reruns via its `concurrency` group, so two kicks
+  overlapping queue, not race.
 * **Cost/rates for an NHL day:** ~15 games/day after the first game
   starts → ~15 kicks/day on the AWS side (each is one Lambda invocation
-  ~free) and ~15 one-dispatch GitHub API calls (far below the repo's 60+
-  authenticated requests/hour headroom; no self-limiting needed). With the
+  inside the existing state machine run — no extra Lambda trigger) and ~15
+  one-dispatch GitHub API calls (far below the repo's 60+ authenticated
+  requests/hour headroom; no self-limiting needed). With the
   runner-side store refresh (section 1.2) each Actions pass costs ~10-20
   min (refresh) + ~3-6 min (the pass itself), so ~30 passes worst case per
   NHL day; on a public repo the hosted-runner minutes stay free, and the
   HTTP-cache step makes a same-day second pass cheap (newly FINAL games
   only).
-* **Nightly-cron interplay:** if both the 09:30 UTC cron and per-game
-  kicks fire, the result is harmlessly ONE EXTRA pass — same upserts,
-  logged in job history as two runs for that date. Leave both on; the
-  cron remains the guaranteed full-day fallback.
+* **Failed-kick semantics:** no `Retry` on `KickMLPicks` — a dispatch
+  failure (e.g. expired PAT) fails the state machine run loudly and shows
+  in CloudWatch, instead of silently dropping the pick pass. Re-triggering
+  (a later game-start rule or a manual replay via the
+  `workflow_dispatch` knob) is an idempotent re-kick.
 * **Open risks:** PAT expiry silently breaks kicks before the nightly
   cron saves the day — the relay fails loudly (missing/invalid token →
   CloudWatch error per kick) and the workflow replay knob is
-  `workflow_dispatch` with `date`; EventBridge rule fan-out is bounded
-  (2 targets/rule, ~15 rules/day, delete_expired_rules recycles them
+  `workflow_dispatch` with `date`; EventBridge fan-out is bounded (1
+  target/rule, ~15 rules/day, delete_expired_rules recycles them
   nightly); duplicate kicks for the same game-start minute collapse into
-  one rule (rule names are time-keyed).
+  one rule (rule names are time-keyed); an owner manual Lambda invoke
+  without a payload date falls back to Toronto-today.
 * Actions minute limits: irrelevant for a public repo today, but if this
   repo goes private, free minutes are 2000/month — the job uses ~3-6
   minutes/day, introducing order-of-magnitude headroom before it matters.

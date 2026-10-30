@@ -2,7 +2,6 @@ import json
 import time
 from datetime import date as _date
 from datetime import timedelta
-from zoneinfo import ZoneInfo
 
 import boto3
 from aws_lambda_powertools import Logger
@@ -207,30 +206,18 @@ def create_cron_schedule(date_string):
     return cron_expression
 
 
-# --- Architecture A: per-game ML picks kick --------------------------------
-# The infra decision (PR #146 follow-up): EventBridge stays the SOURCE OF
-# TRUTH for "run ML picks ~5 minutes after every distinct game start"; the
-# compute is the ml-picks.yml GitHub Actions workflow. The per-game
-# TriggerStateMachineAt_* rule therefore carries a SECOND target, the
-# MLPicksKick-{ENV} relay Lambda (templates/template.yaml), which turns the
-# trigger into a GitHub repository_dispatch.
-#
-# Multi-target ruling: EventBridge rules support up to 5 targets, so one
-# rule serves both consumers (state machine + kick) instead of a sibling
-# TriggerMLPicksKickAt_* rule. The kick therefore cleans up for free in
-# delete_expired_rules() (same rule-name family) and the Lambda invoke
-# permission in the template is scoped to the same
-# rule/TriggerStateMachineAt_*-{ENV} SourceArn pattern; the removed
-# MLPicksFunctionPermission (git history, commit b506e35: SourceArn ->
-# !GetAtt MLPicksDailyTrigger.Arn) is the pattern being followed.
-ML_KICK_OFFSET_MIN = 5
-"""Minutes after each distinct game start the MLPicksKick relay fires.
+# --- Per-game pipeline restart ----------------------------------------------
+# EventBridge stays the SOURCE OF TRUTH for "restart the pipeline ~5 minutes
+# after every distinct game start". No ML kick lives here anymore: the kick
+# moved downstream INTO the PlayerProcessingPipeline ASL (KickMLPicks Task
+# state, after PublishToDb). That ordering is the serialize point - the
+# Actions ML pass runs the second the write path (SaveToDb/UpdateHistory/
+# PublishToDb) completes, so its snapshot read can no longer race fresh
+# Tims/snapshot writes with stale groups.
+PIPELINE_RESTART_OFFSET_MIN = 5
+"""Minutes after each distinct game start the state machine restarts.
 
-Knob: change here only - both the state-machine rule and the kick read it
-(the existing rule's '+5 minutes' timedelta was folded into it)."""
-
-ML_KICK_FUNCTION_NAME = "MLPicksKick-{env}"
-ML_KICK_TARGET_ID = "mlPicksKickTarget"
+Knob: change here only - the '+5 minutes' timedelta the rules always used."""
 
 
 def delete_expired_rules():
@@ -248,18 +235,17 @@ def delete_expired_rules():
 
 
 def schedule_run(times):
-    """Create one per-game rule; two targets: state machine + MLPicksKick.
+    """Create one per-game rule with the SINGLE state-machine target.
 
-    Architecture A (see the doc comment above ML_KICK_OFFSET_MIN): each
-    TriggerStateMachineAt_*-{ENV} rule put by this function targets BOTH
-    the PlayerProcessingPipeline state machine (consumer of last_game) and
-    the MLPicksKick-{ENV} relay Lambda (target Id mlPicksKickTarget), which
-    repository_dispatches 'ml-picks-game' into .github/workflows/ml-picks.yml
-    at game_start + ML_KICK_OFFSET_MIN minutes. The kick target's Input is
-    stamped with the slate ``date`` (America/Toronto - the pipeline's
-    pick-date notion, service.get_date) so a delayed Lambda invocation
-    still relays the right slate; the Lambda falls back to Toronto-today
-    when the date key is absent.
+    Each TriggerStateMachineAt_*-{ENV} rule put by this function targets
+    ONLY the PlayerProcessingPipeline state machine (the pre-#146 shape).
+    The old parallel MLPicksKick Lambda target is gone: the ML picks
+    dispatch now fires from the KickMLPicks state at the END of the state
+    machine run (after SaveToDb/UpdateHistory/PublishToDb), so nothing can
+    execute the ML pass before the refetched Tims/LIVE snapshot rows are
+    written. delete_expired_rules() swaps stale multi-target rules for
+    single-target ones on the next pipeline event (rules are recreated per
+    day, same rule-name family).
     """
     logger.info(f"Scheduling rule for given times: [{times}]")
     delete_expired_rules()
@@ -267,10 +253,9 @@ def schedule_run(times):
     times = sorted(times)
     for idx, time_str in enumerate(times):
         event_time = parser.parse(time_str)
-        # ML_KICK_OFFSET_MIN is the single knob for the game-start offset:
-        # the state-machine trigger and the MLPicksKick relay fire together
-        # at game_start + ML_KICK_OFFSET_MIN.
-        trigger_time = event_time + timedelta(minutes=ML_KICK_OFFSET_MIN)
+        # PIPELINE_RESTART_OFFSET_MIN is the single knob for the game-start
+        # offset: the state machine restarts just after each game starts.
+        trigger_time = event_time + timedelta(minutes=PIPELINE_RESTART_OFFSET_MIN)
         cron_schedule = create_cron_schedule(trigger_time)
 
         rule_name = f"TriggerStateMachineAt_{trigger_time.strftime('%Y%m%d%H%M')}-{ENV}"
@@ -288,19 +273,6 @@ def schedule_run(times):
         sm_name = f"PlayerProcessingPipeline-{ENV}"
         state_machine_arn = f"arn:aws:states:{region}:{account_id}:stateMachine:{sm_name}"
 
-        # Kick target: same-namespace Lambda, no RoleArn needed. EventBridge
-        # invokes it via the template's MLPicksKickFunctionPermission grant.
-        ml_kick_arn = f"arn:aws:lambda:{region}:{account_id}:function:{ML_KICK_FUNCTION_NAME.format(env=ENV)}"
-
-        # Stamp the slate date: EventBridge cron expressions are UTC, so
-        # convert the trigger instant to America/Toronto (Naive times are
-        # already treated as UTC by the cron expression, so assume UTC).
-        if trigger_time.tzinfo is None:
-            trigger_time_utc = trigger_time.replace(tzinfo=ZoneInfo("UTC"))
-        else:
-            trigger_time_utc = trigger_time
-        pick_date = trigger_time_utc.astimezone(ZoneInfo("America/Toronto")).date().isoformat()
-
         parameter = get_ssm_client().get_parameter(Name=f"/event_bridge_role/arn/{ENV}")
         role_arn = parameter["Parameter"]["Value"]
 
@@ -308,15 +280,6 @@ def schedule_run(times):
         input_payload = {
             "source": "eventBridge",
             "last_game": True if idx == len(times) - 1 else False,
-        }
-
-        # Kick relay's Input: minimal and dry-off by default; the Lambda
-        # merges ML_KICK_DRY from its environment when smoke-testing prod.
-        ml_kick_payload = {
-            "source": "eventBridge",
-            "kind": "mlPicksKick",
-            "date": pick_date,
-            "dry": False,
         }
 
         get_events_client().put_targets(
@@ -327,11 +290,6 @@ def schedule_run(times):
                     "Arn": state_machine_arn,
                     "RoleArn": role_arn,
                     "Input": json.dumps(input_payload),
-                },
-                {
-                    "Id": ML_KICK_TARGET_ID,
-                    "Arn": ml_kick_arn,
-                    "Input": json.dumps(ml_kick_payload),
                 },
             ],
         )

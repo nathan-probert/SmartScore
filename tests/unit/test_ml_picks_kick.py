@@ -1,11 +1,13 @@
 """Unit tests for the MLPicksKick relay (smartscore/ml_picks_kick.py).
 
-The relay performs exactly ONE GitHub repository_dispatch per per-game
-EventBridge trigger. These tests mock urllib entirely - no network, no
-Supabase, no real AWS - and pin down: the exact POST body/URL (owner/repo,
-event_type, client_payload), year-free ordering of the payload keys, the
-single immediate retry on transient 5xx/429, and the fail-loud missing-
-token path. docs/ml-picks-runbook.md ("Per-game kick (A-architecture)").
+The relay performs exactly ONE GitHub repository_dispatch per pipeline kick
+(the KickMLPicks state at the end of the PlayerProcessingPipeline run).
+These tests mock urllib entirely - no network, no Supabase, no real AWS -
+and pin down: the exact POST body/URL (owner/repo, event_type,
+client_payload), year-free ordering of the payload keys, the single
+immediate retry on transient 5xx/429, the fail-loud missing-token path, and
+that an explicit event date is used verbatim (no ET-today derivation when
+the pipeline passes one). docs/ml-picks-runbook.md ("Per-game kick").
 """
 
 import re
@@ -72,10 +74,27 @@ def test_exact_post_body_and_target(mock_dispatch, token_env):
     assert request.headers["Authorization"] == "Bearer gh_pat_test_token"
     assert body["event_type"] == DISPATCH_EVENT_TYPE
     assert body["client_payload"] == {
-        "date": "2026-03-14",  # from the kicked event's stamped slate date
+        "date": "2026-03-14",  # the explicit date the KickMLPicks state passed
         "dry": False,
         "context": KICK_CONTEXT,
     }
+
+
+def test_explicit_date_is_used_verbatim_without_any_date_derivation(mock_dispatch, token_env):
+    """An explicit event.date must fully replace the ET slate derivation.
+
+    The date used to be stamped by schedule_run into the EventBridge target
+    Input and re-derived from Toronto-today as a fallback; now the pipeline
+    passes its own published date, so when it is present the wall clock is
+    never consulted at all.
+    """
+    with patch("ml_picks_kick.datetime.datetime") as mock_now:
+        relay_game_kick({"date": "2026-01-14"})
+        mock_now.now.assert_not_called()
+
+    request, _ = _sent_request(mock_dispatch)
+    body = ml_picks_kick.json.loads(request.data.decode("utf-8"))
+    assert body["client_payload"]["date"] == "2026-01-14"
 
 
 def test_payload_ordering_is_year_free(mock_dispatch, token_env):
@@ -155,7 +174,9 @@ def test_ml_kick_dry_env_forces_dry(token_env, monkeypatch):
 
 
 def test_resolve_pick_date_falls_back_to_toronto_today():
-    # No event date: mirror the pipeline's ET-today notion (service.get_date).
+    # Manual owner invoke without a date: mirror the pipeline's ET-today
+    # notion (service.get_date). This fallback exists ONLY for manual mode -
+    # the state machine always passes an explicit date.
     with patch("ml_picks_kick.datetime.datetime") as mock_now:
         mock_now.now.return_value.date.return_value.isoformat.return_value = "2026-07-04"
         assert resolve_pick_date({}) == "2026-07-04"

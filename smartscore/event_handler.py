@@ -320,6 +320,9 @@ def handle_publish_db(event, context):
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
+            - "date" (str): The pick date this run published (the event's
+              carried ``date``, else the pipeline's Toronto get_date()),
+              consumed downstream by the KickMLPicks state.
             - "players" (list): Player data, now including stat (and beta stat).
     """
 
@@ -336,7 +339,14 @@ def handle_publish_db(event, context):
 
     publish_public_db(entries)
 
-    return {"statusCode": 200}
+    # The date travels back up so the KickMLPicks state can relay an EXPLICIT
+    # pick date to the MLPicksKick relay (PR #146 follow-up race fix). The
+    # kick used to be a parallel EventBridge target that could run the
+    # Actions pass BEFORE this write path completed; now it fires from the
+    # END of the run, and 'event.date or get_date()' is the same pick date
+    # every handler in this run already used (first_run/normal_run paths
+    # re-enter without a state-carried date, so the fallback is canonical).
+    return {"statusCode": 200, "date": event.get("date") or get_date()}
 
 
 @lambda_handler_error_responder
@@ -634,18 +644,22 @@ def handle_emails(event, context):
 @lambda_handler_error_responder
 def handle_ml_picks_kick(event, context):
     """
-    Architecture A relay: per-game EventBridge trigger -> GitHub Actions.
+    Per-game ML picks kick relay -> GitHub Actions.
 
-    Invoked by the MLPicksKick target on each per-game
-    ``TriggerStateMachineAt_*`` rule (utility.schedule_run). Understands
-    only {date, dry} and performs exactly one GitHub ``repository_dispatch``
-    (event_type ml-picks-game) per invocation - no Supabase access and no
-    picks logic; the ml-picks.yml workflow holds those.
-    docs/ml-picks-runbook.md ("Per-game kick (A-architecture)").
+    Invoked by the KickMLPicks Task state at the END of the
+    PlayerProcessingPipeline run (after SaveToDb/UpdateHistory/PublishToDb),
+    so the Actions pass only ever starts once today's snapshot rows (incl.
+    fresh Tims groups) are published. Understands only {date, dry} and
+    performs exactly one GitHub ``repository_dispatch`` (event_type
+    ml-picks-game) per invocation - no Supabase access and no picks logic;
+    the ml-picks.yml workflow holds those.
+    docs/ml-picks-runbook.md ("Per-game kick").
 
     Args:
-        event (dict): EventBridge payload; optionally carries the slate
-            ``date`` (YYYY-MM-DD) and a ``dry`` flag.
+        event (dict): The invoking state's payload; carries the explicit
+            pick ``date`` (YYYY-MM-DD) and optionally a ``dry`` flag. A
+            manual (owner) invoke may omit ``date`` - Toronto-today is
+            used then.
         context (dict): Unused Lambda context.
 
     Returns:

@@ -47,14 +47,15 @@ def test_schedule_run_last_game_true(mock_session, mock_ssm_client, mock_sts_cli
 @patch("utility.get_sts_client")
 @patch("utility.get_ssm_client")
 @patch("utility.boto3.session.Session")
-def test_schedule_run_second_target_is_the_ml_picks_kick(
+def test_schedule_run_single_canonical_state_machine_target(
     mock_session, mock_ssm_client, mock_sts_client, mock_events_client
 ):
-    """Architecture A: one rule, two targets - state machine + MLPicksKick.
+    """One rule, ONE target: the state machine only (pre-#146 shape restored).
 
-    The kick rides on the same per-game TriggerStateMachineAt_* rule
-    (EventBridge multi-target), stamped with the slate date in
-    America/Toronto and dry off; the relay Lambda ARN is namespace-local.
+    The old parallel MLPicksKick Lambda target (Id mlPicksKickTarget) is
+    gone - the ML picks dispatch now fires from the KickMLPicks state at the
+    END of the state machine run (after SaveToDb/UpdateHistory/PublishToDb),
+    so the Actions pass cannot race the refetched tims/LIVE snapshot writes.
     """
     times = ["2026-01-15T00:30:00Z"]  # game start 00:30 UTC -> trigger at 00:35 UTC
 
@@ -72,17 +73,9 @@ def test_schedule_run_second_target_is_the_ml_picks_kick(
     )
 
     targets = mock_events_client.return_value.put_targets.call_args[1]["Targets"]
-    assert [t["Id"] for t in targets] == ["1", "mlPicksKickTarget"]
-    kick = targets[1]
-    assert kick["Arn"] == "arn:aws:lambda:us-east-1:123456789012:function:MLPicksKick-dev"
-    # No RoleArn on the Lambda target - the invoke is granted by the
-    # template's MLPicksKickFunctionPermission (SourceArn scoped to this
-    # rule family, same pattern the removed MLPicksFunctionPermission used).
-    assert "RoleArn" not in kick
-    kick_payload = json.loads(kick["Input"])
-    assert kick_payload == {
-        "source": "eventBridge",
-        "kind": "mlPicksKick",
-        "date": "2026-01-14",  # 00:35 UTC = 19:35 ET on the previous day
-        "dry": False,
-    }
+    assert [t["Id"] for t in targets] == ["1"]
+    assert targets[0]["Arn"] == "arn:aws:states:us-east-1:123456789012:stateMachine:PlayerProcessingPipeline-dev"
+    assert targets[0]["RoleArn"] == "role-arn"
+    payload = json.loads(targets[0]["Input"])
+    # Single rule for one time means idx == 0 == last: last_game is True.
+    assert payload == {"source": "eventBridge", "last_game": True}

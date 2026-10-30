@@ -158,8 +158,9 @@ def test_handle_get_tims_normal_run_stays_strict(mock_get_tims):
     mock_get_tims.assert_called_once_with(players, allow_empty=False)
 
 
+@patch("event_handler.get_date", return_value="2026-04-15")
 @patch("event_handler.publish_public_db")
-def test_handle_publish_db_with_players(mock_publish):
+def test_handle_publish_db_with_players(mock_publish, mock_get_date):
     """Test publishing database with player data."""
     players = [
         {"name": "Player 1", "stat": 0.8},
@@ -169,17 +170,20 @@ def test_handle_publish_db_with_players(mock_publish):
     event = {"players": players}
     result = handle_publish_db(event, {})
 
-    assert result == {"statusCode": 200}
+    # The publish returns the pick date it wrote with: KickMLPicks needs it
+    # to relay an explicit date to the MLPicksKick dispatch (race fix).
+    assert result == {"statusCode": 200, "date": "2026-04-15"}
     mock_publish.assert_called_once_with(players)
 
 
+@patch("event_handler.get_date", return_value="2026-04-15")
 @patch("event_handler.publish_public_db")
-def test_handle_publish_db_empty_players(mock_publish):
+def test_handle_publish_db_empty_players(mock_publish, mock_get_date):
     """Test publishing database with empty player list."""
     event = {"players": []}
     result = handle_publish_db(event, {})
 
-    assert result == {"statusCode": 200}
+    assert result == {"statusCode": 200, "date": "2026-04-15"}
     mock_publish.assert_called_once_with([])
 
 
@@ -221,8 +225,23 @@ def test_handle_publish_db_no_players_key(mock_publish):
     event = {}
     result = handle_publish_db(event, {})
 
-    assert result == {"statusCode": 200}
+    assert result["statusCode"] == 200
+    assert "date" in result  # the explicit-date relay contract holds on every path
     mock_publish.assert_called_once_with([])
+
+
+@patch("event_handler.publish_public_db")
+def test_handle_publish_db_carries_the_events_date(mock_publish):
+    """A state-carried date wins over the get_date() fallback.
+
+    last_run reaches PublishToDb with the date LoadWorkingSet stamped, so
+    the kick gets the date this run actually published for.
+    """
+    event = {"players": [{"id": 1, "stat": 0.8}], "date": "2026-01-14"}
+
+    result = handle_publish_db(event, {})
+
+    assert result == {"statusCode": 200, "date": "2026-01-14"}
 
 
 def test_handle_parse_teams_empty_event():

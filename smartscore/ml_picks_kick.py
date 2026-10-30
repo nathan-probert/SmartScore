@@ -1,15 +1,16 @@
-"""Per-game ML picks kick relay (Architecture A).
+"""Per-game ML picks kick relay.
 
-EventBridge fires the per-game ``TriggerStateMachineAt_*`` rule at
-game_start + ML_KICK_OFFSET_MIN (utility.py) and Targets entry #2 invokes
-this Lambda, which turns the trigger into a single ``repository_dispatch``
-call on the GitHub repo so .github/workflows/ml-picks.yml runs the daily
-picks pass on the Actions runner. AWS EventBridge stays the source of
-truth for "when"; the compute lives in Actions.
+The PlayerProcessingPipeline state machine's KickMLPicks Task state invokes
+this Lambda at the END of the run (after SaveToDb/UpdateHistory/PublishToDb).
+The relay turns the kick into a single ``repository_dispatch`` call on the
+GitHub repo so .github/workflows/ml-picks.yml runs the daily picks pass on
+the Actions runner. Serialization is the whole point (PR #146 follow-up
+race fix): the kick can only fire once today's snapshot rows are published,
+so the Actions job never computes picks from stale groups.
 
 RELAY ONLY: stdlib urllib for the HTTP call, no ML dependencies, and no
 Supabase/Picks access of any kind - the workflow performs those upserts.
-docs/ml-picks-runbook.md ("Per-game kick (A-architecture)").
+docs/ml-picks-runbook.md ("Per-game kick").
 """
 
 import datetime
@@ -61,13 +62,13 @@ def pick_date_now(zone_name=None):
 
 
 def resolve_pick_date(event):
-    """Pick-date for this kick: event payload first, Toronto-today fallback.
+    """Pick-date for this kick: explicit ``event.date`` wins.
 
-    schedule_run() stamps ``date`` into the kick target's Input at rule
-    creation time (the ET date of game_start + the offset), so a warm
-    Lambda invoked hours late still relays the correct slate. If no value
-    arrived (manual invoke, older rule), fall back to the pipeline's
-    Toronto-today computed at invocation time.
+    The invoking pipeline (KickMLPicks at the end of the state machine run)
+    passes the pick date it actually published for, so a warm-Lambda delay
+    can never shift the slate. The Toronto-today fallback is ONLY for an
+    owner manual invoke with no date at all - schedule_run no longer
+    dates-stamps anything, and the state machine always passes one.
     """
     from_event = (event or {}).get("date")
     if isinstance(from_event, str) and from_event.strip():
@@ -103,11 +104,12 @@ def _post_dispatch(payload, token, owner, repo):
 
 
 def relay_game_kick(event):
-    """Relay one per-game EventBridge trigger into the ml-picks workflow.
+    """Relay one per-game pipeline-finish kick into the ml-picks workflow.
 
     Args:
-        event: EventBridge (or manual) payload. Recognized keys: ``date``
-            (slate YYYY-MM-DD) and ``dry`` (bool, smoke-run the pass).
+        event: the invoking state's (or a manual) payload. Recognized keys:
+            ``date`` (pick-date YYYY-MM-DD, always set by the KickMLPicks
+            state) and ``dry`` (bool, smoke-run the pass).
 
     Returns:
         dict: outcome summary, e.g. {"dispatched": True, ...}.
