@@ -106,6 +106,20 @@ backtrack-publish:
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-team $(SEASON)
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-goalies $(SEASON)
 
+# Owner-run ONE-SHOT top-up (stage-2 RAW per-game columns, migration 20261027):
+# fills game_shots/game_goals/game_points/game_toi_min for ALL historical rows
+# of Player-Snapshots-backtrack-$(ENV) from the local raw store
+# (data/raw_nhl.sqlite player_games). Preconditions: the migration landed on
+# the target tables (deploy.yml's migrate job, or owner psql) AND the local
+# store is loaded/derived (make backtrack-load SEASON=... first). Idempotent
+# (PK upserts on (date, player_id)); no DDL is performed here.
+#   make topup-raw-game-cols ENV=dev   # dev first, spot-check, then ENV=prod
+#   make topup-raw-game-cols ENV=prod SPOT_CHECK=1  # verify-and-exit
+# Runbook: docs/ml-picks-runbook.md (stage-2 apply paths).
+topup-raw-game-cols:
+	@uv run python $(BACKTRACK)/topup_raw_game_cols.py --env $(if $(ENV),$(ENV),dev) $(if $(SPOT_CHECK),--spot-check,) $(if $(SKIP_SPOT_CHECK),--skip-spot-check,)
+.PHONY: topup-raw-game-cols
+
 # Owner-side OFFLINE store utility (no ML-picks role anymore): since the
 # stage-2 raw-column change the picks path reads Supabase alone (the daily
 # gap-fill is backfill_missing_days.py), but the local store still feeds

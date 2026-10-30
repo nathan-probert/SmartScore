@@ -123,6 +123,94 @@ LOUDLY naming the migration file when the columns are missing — apply
 `deploy` PR to apply it to dev first) and run the one-shot history top-up
 BEFORE the first post-merge picks run.
 
+### 1.2.1 Getting the 20261027 stage-2 DDL onto PROD — the two owner paths
+
+Diagnosis (why prod is not migrated as of 2026-10-30): the `migrate` job
+(deploy.yml:155-223) applies ONE env per run — `ENV=prod` ONLY on a push to
+main (deploy.yml:162,166), `ENV=dev` on a `pull_request` carrying the
+`deploy` label (deploy.yml:163). The migration exists only on
+`feat/final-clean`/PR #146 (commit `ca1f44e`); main's latest scaffold
+(`c002cc1`, run 40575778111) does not contain it. So the Oct-28 green
+migrate run 40690521087 applied the file with `ENV=dev` (job log: "Applying
+supabase/migrations/20261027_... .sql (ENV=dev)") — the `-dev` tables got
+the four columns + `Player-Game-Raw-Markers-dev`; `-prod` was never
+touched. The job succeeded, which also proves the repo secret
+`SUPABASE_DB_URL` (deploy.yml:167) IS configured in Settings -> Secrets —
+no missing secrets, no token needed (`SUPABASE_ACCESS_TOKEN` only matters
+for the optional `supabase db push` variant, deploy.yml:200-209). The DML
+top-up (`topup_raw_game_cols.py`) runs over PostgREST with the
+service-role key (its client performs NO DDL, docs/backtrack_dev_deleted.md:47
+is why DDL needs psql), so it does not depend on `SUPABASE_DB_URL`.
+
+**PATH A — merge-then-auto-apply (zero manual SQL).**
+1. Merge PR #146. The main-push `migrate` run re-applies every file
+   idempotently with `ENV=prod`, so the four ALTERs + the marker CREATE
+   land on `Player-Snapshots-backtrack-prod` with no owner action.
+2. The next picks pass tops up YESTERDAY's (and up to
+   `MAX_MISSING_DAYS = 14` calendar days of unmarked FINAL days,
+   backfill_missing_days.py:95) rows automatically — first run writes,
+   every same-day re-run skips on the marker rows.
+3. History older than the 14-day window keeps `game_*` NULL until the
+   one-shot top-up: `make topup-raw-game-cols ENV=prod --` (us-local,
+   owner AWS/DB-side; needs data/raw_nhl.sqlite loaded) or a CI wrap —
+   no make target existed, so `topup-raw-game-cols` was added to the
+   Makefile; a CI job hint if wanted later:
+   `gh workflow run`-style `Actions -> run topup_raw_game_cols
+   --env prod` would need a new sparse job wiring the
+   `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` secrets (the same ones the
+   picks workflow already carries) — the local path is cheaper and needs
+   no new YAML.
+
+**PATH B — pre-merge manual apply (owner Supabase dashboard/psql).**
+No env-var substitution in the dashboard: run ONE of the two verbatim
+variants in the Supabase project's SQL editor / psql
+(`psql "$DATABASE_URL" < ...`, the URL from the project's Database
+settings — NOT the SUPABASE_SERVICE_ROLE_KEY: the service-role key is
+PostgREST-only and CANNOT run DDL; see proof that PostgREST cannot
+DROP/ALTER in docs/backtrack_dev_deleted.md:47):
+
+DEV variant (only if re-scoping to dev):
+```sql
+ALTER TABLE "Player-Snapshots-backtrack-dev"
+    ADD COLUMN IF NOT EXISTS "game_shots"   INTEGER,
+    ADD COLUMN IF NOT EXISTS "game_goals"   INTEGER,
+    ADD COLUMN IF NOT EXISTS "game_points"  INTEGER,
+    ADD COLUMN IF NOT EXISTS "game_toi_min" DOUBLE PRECISION;
+CREATE TABLE IF NOT EXISTS "Player-Game-Raw-Markers-dev" (
+    "date" TEXT NOT NULL,
+    "games" INTEGER NOT NULL,
+    "player_games" INTEGER NOT NULL,
+    "backfilled_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT "Player-Game-Raw-Markers-dev_pkey" PRIMARY KEY ("date")
+);
+ALTER TABLE "Player-Game-Raw-Markers-dev" ENABLE ROW LEVEL SECURITY;
+```
+
+PROD variant (the one prod needs):
+```sql
+ALTER TABLE "Player-Snapshots-backtrack-prod"
+    ADD COLUMN IF NOT EXISTS "game_shots"   INTEGER,
+    ADD COLUMN IF NOT EXISTS "game_goals"   INTEGER,
+    ADD COLUMN IF NOT EXISTS "game_points"  INTEGER,
+    ADD COLUMN IF NOT EXISTS "game_toi_min" DOUBLE PRECISION;
+CREATE TABLE IF NOT EXISTS "Player-Game-Raw-Markers-prod" (
+    "date" TEXT NOT NULL,
+    "games" INTEGER NOT NULL,
+    "player_games" INTEGER NOT NULL,
+    "backfilled_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT "Player-Game-Raw-Markers-prod_pkey" PRIMARY KEY ("date")
+);
+ALTER TABLE "Player-Game-Raw-Markers-prod" ENABLE ROW LEVEL SECURITY;
+```
+
+Then complete the per-row fill (PostgREST/service-role WRITES are permitted
+once the columns exist; the top-up is data-DML only):
+`make topup-raw-game-cols ENV=prod` (equivalent:
+`uv run python smartscore/scripts/backtrack/topup_raw_game_cols.py
+--env prod`, idempotent PK upserts over the ~623k prod history rows; add
+`SPOT_CHECK=1` to verify-and-exit). If instead PATH A was taken, this is
+the same one-shot top-up — unchanged.
+
 then builds the frame via `model.build_frame`/`add_derived(source="supabase")`
 (a pick-date context row per fixture is injected from the live snapshot's
 own morning rates and confirmed opponent goalie, since the backtrack tables
