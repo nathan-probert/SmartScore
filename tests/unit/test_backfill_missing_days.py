@@ -287,8 +287,11 @@ def test_backfill_writes_only_missing_dates_rows(wired):
     create_rows = [row for batch in snapshots.upserts for row in batch if set(row) != raw_keys]
     assert {row["player_id"] for row in create_rows} == {1, 2, 3}
     newcomer = next(row for row in create_rows if row["player_id"] == 3)
-    assert newcomer["season"] == "20262027" and newcomer["team_abbrev"] == "MTL"
+    assert newcomer["team_abbrev"] == "MTL"
     assert newcomer["opponent_abbrev"] == "TOR" and newcomer["scored"] == 0
+    # the backtracking table carries NO season column (run_daily_picks derives
+    # the season label from the date) - a season key would be a PGRST204 400
+    assert "season" not in newcomer
 
 
 def test_backfill_two_lanes_top_up_existing_create_absent(wired, monkeypatch):

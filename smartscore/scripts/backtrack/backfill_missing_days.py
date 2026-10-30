@@ -38,9 +38,13 @@ step too, where the per-date markers make the second call a no-op skip):
              precomputed rolling columns and every other published column
              are untouched;
            - a row the table lacks is CREATED as a minimal snapshot shape:
-             identity columns (date, player_id, season, name, team_abbrev,
+             identity columns (date, player_id, name, team_abbrev,
              opponent_abbrev, scored) + the raw block, with the rolling
-             cells left NULL for the nightly publish to fill forward.
+             cells left NULL for the nightly publish to fill forward. No
+             ``season`` value ships - the backtracking tables carry no
+             season column and never have (run_daily_picks derives the
+             season label from the date at recompute time), so a season
+             key would be an unmapped-column PostgREST 400 (PGRST204).
        * a per-date marker row is written AFTER the upserts land - a date
          whose games were not all final, or whose writes failed, stays
          UNMARKED and is retried by a later pass; a marked date costs the
@@ -135,22 +139,6 @@ def player_table(env):
 
 def marker_table(env):
     return f"{MARKER_TABLE_PREFIX}{env}"
-
-
-def season_label(on_date):
-    """The NHL season id ('20262027') a slate date belongs to. Same rule as
-    run_daily_picks.season_label (not imported: that module pulls boto3 and
-    the full inference stack, and this helper must stay light) - the season
-    that started the prior October runs through June, with the COVID-era
-    exceptions (Jul-Sep 2020 games key 20192020, July 2021 keys 20202021 -
-    the store's own ids)."""
-    day = datetime.date.fromisoformat(on_date)
-    if datetime.date(2020, 7, 1) <= day <= datetime.date(2020, 9, 30):
-        return "20192020"
-    if datetime.date(2021, 7, 1) <= day <= datetime.date(2021, 7, 31):
-        return "20202021"
-    start = day.year if day.month >= 7 else day.year - 1
-    return f"{start}{start + 1}"
 
 
 def yesterday_et(now=None):
@@ -265,7 +253,6 @@ def _record_rows(game, records):
             create_rows.append(
                 {
                     **raw,
-                    "season": season_label(str(row_date)),
                     "name": record.get("name") or f"player-{record['player_id']}",
                     "team_abbrev": team,
                     "opponent_abbrev": opponent,
@@ -278,7 +265,6 @@ def _record_rows(game, records):
             create_rows.append(
                 {
                     **raw,
-                    "season": season_label(str(row_date)),
                     "name": record.get("name") or f"player-{record['player_id']}",
                 }
             )

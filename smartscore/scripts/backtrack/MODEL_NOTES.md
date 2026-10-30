@@ -1809,6 +1809,13 @@ The model production chain lives outside this flat tree:
 - **Data lineage:** the raw dumps under `data/dumps/` are the committed
   source of truth for training (V15b dumps `9c9f315`; monthly-window cache
   refresh after the 57014 fix).
+- **Stage-2 raw-exactness backfill (DONE 2026-10-30):** the one-time
+  missing-day top-up (NHL API gap-fill, dates 2026-10-25..2026-10-29,
+  34 games / 1,224 player-game rows) and the full-history per-game raw
+  top-up (topup_raw_game_cols.py over all ~624k published rows) are
+  COMPLETE on Player-Snapshots-backtrack-prod; the stage-2 published
+  raw columns now cover every row from 2013-10-01 through 2026-10-29,
+  so the daily picks pass runs with zero missing-row warnings.
 
 ## Next actions
 
