@@ -147,9 +147,11 @@ def test_first_run_fetches_lineups_before_predictions():
 def test_normal_run_archives_before_publishing():
     pipeline = _asl("player_processing_pipeline.asl.json")["States"]
 
-    routing = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckInitialRun"]["Choices"]}
-    assert routing["normal_run"] == "SaveToDb"
-    assert routing["first_run"] == "SaveToDb"
+    # The former CheckInitialRun Choice state was a no-op once PR #134 made
+    # normal_run archive too (all three branches went to the same SaveToDb);
+    # GetTims now routes straight to SaveToDb.
+    assert pipeline["GetTims"]["Next"] == "SaveToDb"
+    assert "CheckInitialRun" not in pipeline
 
     assert pipeline["SaveToDb"]["Next"] == "CheckSaveHistory"
     history = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckSaveHistory"]["Choices"]}
@@ -228,15 +230,12 @@ def test_status_routes_to_the_expected_archive_branch(status):
 
     if status == "last_run":
         # last_run is routed at CheckLastRun, before the enrichment chain;
-        # CheckInitialRun must be unreachable for it.
+        # the enrichment branches (GetTims -> SaveToDb) must be unreachable for it.
         last_run_routing = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckLastRun"]["Choices"]}
         assert last_run_routing["last_run"] == "PublishToDb"
-        initial = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckInitialRun"]["Choices"]}
-        assert "last_run" not in initial
         return
 
-    initial = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckInitialRun"]["Choices"]}
-    assert initial[status] == "SaveToDb"
+    assert pipeline["GetTims"]["Next"] == "SaveToDb"
 
     history = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckSaveHistory"]["Choices"]}
     assert history["first_run"] == "UpdateHistory"

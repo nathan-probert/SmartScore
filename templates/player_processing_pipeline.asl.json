@@ -77,7 +77,7 @@
         },
         "EnsureFirstRunStatus": {
             "Type": "Pass",
-            "Comment": "The GetPlayers sub-machine returns only players/teams. This branch is first_run by construction, so restore the status CheckInitialRun/CheckSaveHistory need.",
+            "Comment": "The GetPlayers sub-machine returns only players/teams. This branch is first_run by construction, so restore the status CheckSaveHistory need.",
             "Parameters": {
                 "players.$": "$.players",
                 "teams.$": "$.teams",
@@ -118,24 +118,9 @@
         },
         "GetTims": {
             "Type": "Task",
+            "Comment": "First/normal runs archive AND publish via SaveToDb (PR #134 made normal_run archive too, and PR #136 made last_run exit at CheckLastRun), so the former CheckInitialRun Choice state had all three branches going to the same SaveToDb and was removed. CheckSaveHistory still branches on $.status.",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTims-${ENV}",
-            "Next": "CheckInitialRun"
-        },
-        "CheckInitialRun": {
-            "Type": "Choice",
-            "Choices": [
-                {
-                    "Variable": "$.status",
-                    "StringEquals": "first_run",
-                    "Next": "SaveToDb"
-                },
-                {
-                    "Variable": "$.status",
-                    "StringEquals": "normal_run",
-                    "Next": "SaveToDb"
-                }
-            ],
-            "Default": "SaveToDb"
+            "Next": "SaveToDb"
         },
         "SaveToDb": {
             "Type": "Task",

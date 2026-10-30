@@ -149,7 +149,7 @@ def handle_load_working_set(event, context):
 
     Args:
         event (dict): The status-only state from CheckCompleted; ``status`` is
-            carried through so CheckInitialRun still routes correctly.
+            carried through so CheckSaveHistory still routes correctly.
         context (dict): Unused Lambda context.
 
     Returns:

@@ -128,7 +128,7 @@ def test_handle_load_working_set_returns_separated_slices(mock_load, mock_get_da
 
 @patch("event_handler.load_working_set")
 def test_handle_load_working_set_passes_status_through(mock_load):
-    """last_run must survive to CheckInitialRun's routing."""
+    """last_run must survive to CheckSaveHistory's routing."""
     mock_load.return_value = ([{"id": 1}], [{"team_id": 10}])
 
     result = handle_load_working_set({"status": "last_run"}, {})
