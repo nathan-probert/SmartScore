@@ -274,6 +274,17 @@ the newer key away). The local file `train_export.py` writes,
 `data/ml/artifact_<train_through>_<seed>.joblib`, and the upload key share
 the same object — the workflow reads the UPLOADED key by default.
 
+Latest vintage: `artifact_2026-10-29_0.joblib` (2026-10-30 owner refresh;
+`--env prod --source supabase --seed 0` — 624,582 rows, frame_source
+supabase, through 2026-10-29, seed 0, version 2) uploaded to Supabase
+Storage `ml-artifacts/predict/ml/artifact_2026-10-29_0.joblib`
+(byte-identical round-trip verified); the (2026-10-30 + 2026-10-29) local
+dry smokes with it print NO staleness warning (`age=1d`) and 3 picks
+(mean_max_prob 0.9815 / 0.9259). `artifact_2026-10-27_0.joblib` (and the
+legacy `artifact_2026-06-14_0.joblib`) remain on the prefix as rollback
+keys — the loader picks the lexically latest, so a rollback is a re-upload
+of the older key.
+
 **Artifact SOURCES, in strict resolution order** (`run_daily_picks
 .pick_daily_bundle`):
 
