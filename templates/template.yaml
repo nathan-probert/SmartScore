@@ -31,7 +31,18 @@ Parameters:
     Type: String
     Default: ""
     Description: PostHog project/personal API key for runtime feature-flag evaluation
-
+  GithubDispatchToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >-
+      Fine-grained PAT (Actions: write, this repo only) that
+      MLPicksKick-{ENV} uses to repository_dispatch 'ml-picks-game' into
+      .github/workflows/ml-picks.yml. (CFN logical IDs are alphanumeric-only,
+      so the environment-variable-style GITHUB_DISPATCH_TOKEN name cannot be
+      used as a declaration key here.) Empty is allowed (deploy param
+      override or GITHUB_DISPATCH_TOKEN env in deploy.sh); the relay then
+      fails loudly per invocation instead of silently dropping kicks.
 Resources:
   # IAM Role for Lambda Execution
   LambdaExecutionRole:
@@ -103,6 +114,7 @@ Resources:
                   - !GetAtt SendEmailsFunction.Arn
                   - !GetAtt SavePlayersFunction.Arn
                   - !GetAtt LoadWorkingSetFunction.Arn
+                  - !GetAtt MLPicksKickFunction.Arn
               - Effect: Allow
                 Action:
                   - states:StartExecution
@@ -495,6 +507,46 @@ Resources:
           SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           POSTHOG_FEATURE_FLAG_KEY: !Ref PosthogApiKey
 
+  # Per-game ML picks kick relay: the PlayerProcessingPipeline state
+  # machine's KickMLPicks Task state invokes this Lambda at the END of the
+  # run (after SaveToDb/UpdateHistory/PublishToDb) so the GitHub Actions
+  # ML pass only starts once today's snapshot rows are published (PR #146
+  # follow-up race fix). No Supabase access, stdlib urllib only. Real code
+  # is pushed by deploy.sh's LAMBDA_FUNCTIONS loop (MLPicksKick-$ENV entry).
+  MLPicksKickFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "MLPicksKick-${ENV}"
+      Handler: event_handler.handle_ml_picks_kick
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      # One urllib POST + one backoff retry: 30s is generous headroom.
+      Timeout: 30
+      MemorySize: 512
+      Code:
+        ZipFile: |
+          # Provisional entry matching the Handler below; deploy.sh pushes
+          # the real event_handler.py via update-function-code right after.
+          def handle_ml_picks_kick(event, context):
+              return {"status": "lambda function placeholder"}
+      Environment:
+        Variables:
+          GITHUB_DISPATCH_TOKEN: !Ref GithubDispatchToken
+
+  # State machine -> Lambda invoke grant. The OLD MLPicksKickFunctionPermission
+  # (Principal: events.amazonaws.com, SourceArn scoped to the per-game
+  # TriggerStateMachineAt_* rules) is REMOVED - EventBridge no longer targets
+  # this Lambda; the state machine is the invoke principal (defensive
+  # function-level policy here, primary grant is the StateMachineExecutionRole
+  # Resource list above).
+  MLPicksKickStatePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt MLPicksKickFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: states.amazonaws.com
+      SourceArn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:PlayerProcessingPipeline-${ENV}"
+
   # IAM Role for EventBridge to invoke Step Function
   EventBridgeInvokeRole:
     Type: AWS::IAM::Role
@@ -675,6 +727,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/GetGoalies-${ENV}"
+      RetentionInDays: 1
+
+  MLPicksKickLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/MLPicksKick-${ENV}"
       RetentionInDays: 1
 
 Outputs:

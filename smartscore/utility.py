@@ -206,6 +206,20 @@ def create_cron_schedule(date_string):
     return cron_expression
 
 
+# --- Per-game pipeline restart ----------------------------------------------
+# EventBridge stays the SOURCE OF TRUTH for "restart the pipeline ~5 minutes
+# after every distinct game start". No ML kick lives here anymore: the kick
+# moved downstream INTO the PlayerProcessingPipeline ASL (KickMLPicks Task
+# state, after PublishToDb). That ordering is the serialize point - the
+# Actions ML pass runs the second the write path (SaveToDb/UpdateHistory/
+# PublishToDb) completes, so its snapshot read can no longer race fresh
+# Tims/snapshot writes with stale groups.
+PIPELINE_RESTART_OFFSET_MIN = 5
+"""Minutes after each distinct game start the state machine restarts.
+
+Knob: change here only - the '+5 minutes' timedelta the rules always used."""
+
+
 def delete_expired_rules():
     client = boto3.client("events")
     response = client.list_rules()
@@ -221,13 +235,27 @@ def delete_expired_rules():
 
 
 def schedule_run(times):
+    """Create one per-game rule with the SINGLE state-machine target.
+
+    Each TriggerStateMachineAt_*-{ENV} rule put by this function targets
+    ONLY the PlayerProcessingPipeline state machine (the pre-#146 shape).
+    The old parallel MLPicksKick Lambda target is gone: the ML picks
+    dispatch now fires from the KickMLPicks state at the END of the state
+    machine run (after SaveToDb/UpdateHistory/PublishToDb), so nothing can
+    execute the ML pass before the refetched Tims/LIVE snapshot rows are
+    written. delete_expired_rules() swaps stale multi-target rules for
+    single-target ones on the next pipeline event (rules are recreated per
+    day, same rule-name family).
+    """
     logger.info(f"Scheduling rule for given times: [{times}]")
     delete_expired_rules()
 
     times = sorted(times)
     for idx, time_str in enumerate(times):
         event_time = parser.parse(time_str)
-        trigger_time = event_time + timedelta(minutes=5)
+        # PIPELINE_RESTART_OFFSET_MIN is the single knob for the game-start
+        # offset: the state machine restarts just after each game starts.
+        trigger_time = event_time + timedelta(minutes=PIPELINE_RESTART_OFFSET_MIN)
         cron_schedule = create_cron_schedule(trigger_time)
 
         rule_name = f"TriggerStateMachineAt_{trigger_time.strftime('%Y%m%d%H%M')}-{ENV}"
@@ -262,7 +290,7 @@ def schedule_run(times):
                     "Arn": state_machine_arn,
                     "RoleArn": role_arn,
                     "Input": json.dumps(input_payload),
-                }
+                },
             ],
         )
 

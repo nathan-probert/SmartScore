@@ -1,45 +1,192 @@
 name: ML Daily Picks
 
-# STARTER SCAFFOLD - REGISTRATION ONLY, NOT THE REAL PIPELINE.
-#
-# GitHub only registers (and only allows manual dispatch of) workflows that
-# live on the default branch. Until PR #146 merges, this placeholder is that
-# registration for .github/workflows/ml-picks.yml: once this lands on main,
-# the Actions page shows the workflow and its "Run workflow" branch selector
-# can dispatch ANY branch. Choose feat/final-clean to run the REAL pipeline:
-# workflow_dispatch executes the workflow file AS IT EXISTS ON THE SELECTED
-# REF (main -> this placeholder; feat/final-clean -> the real pipeline, with
-# the repo secrets the owner configured).
-#
-# It deliberately does NOT run the inference here: main has no Supabase
-# secrets/credentials yet, and this placeholder exists only so the workflow
-# is registered and dispatch-able. PR #146 replaces this file's content with
-# the full real pipeline (schedule + repository_dispatch + the picks job);
-# the `name:` matches the real workflow so the registration carries over as
-# ONE workflow, not a rename. docs/ml-picks-runbook.md (S3 note).
+# Predict-only daily ML picks (Picks-{ENV}) - the replacement for the retired
+# MLPicks Lambda/image surface. SAME inference path (the artifact -> Supabase
+# read -> build_frame/add_derived -> ensemble rank-mean -> daily_picks ->
+# the schema-safe Picks write in smartscore/scripts/backtrack/run_daily_picks.py
+# (save_picks_db: probe-before-delete + restore-on-insert-failure), lifted
+# verbatim from the former handler); $0.00 infra. docs/ml-picks-runbook.md.
 
 on:
+  schedule:
+    # 05:30 ET-equivalent to the retired EventBridge trigger's cron 30 9.
+    # DST caveat: GitHub cron is a FIXED UTC clock while the pipeline's
+    # "today" is America/Toronto - 09:30 UTC is 05:30 EDT but 04:30 EST,
+    # so the local wall-clock anchor shifts one hour across clock changes
+    # (same accepted behaviour the template documented for its crons).
+    - cron: '30 9 * * *'
   workflow_dispatch:
     inputs:
       date:
         description: 'Slate date YYYY-MM-DD (default: ET-today)'
         required: false
         default: ''
-        type: string
       dry:
-        description: 'Smoke run: skip the Picks write (starter default true)'
+        description: 'Smoke run: assemble the picks, skip the Picks write'
         type: boolean
         required: false
-        default: true
+        default: false
+  # Per-game kicks (race-fixed): each TriggerStateMachineAt_* rule
+  # (utility.py schedule_run, game_start + PIPELINE_RESTART_OFFSET_MIN)
+  # restarts the pipeline state machine, whose final KickMLPicks state
+  # invokes the MLPicksKick Lambda - which repository_dispatches here, only
+  # AFTER the run's SaveToDb/PublishToDb writes completed (so the pass never
+  # reads stale groups). The nightly cron remains the default full-day
+  # fallback pass, and this path is ADDITIVE.
+  repository_dispatch:
+    types: [ml-picks-game]
 
 permissions:
   contents: read
 
+# Picks writes are per-day upserts; serialize reruns rather than racing them.
+concurrency:
+  group: ml-picks
+  cancel-in-progress: false
+
 jobs:
-  ml-picks:
+  picks:
     runs-on: ubuntu-latest
+    # The picks pass is now narrow: one bounded gap-fill (a couple of NHL API
+    # requests per missing completed day - rarely more than yesterday's slate)
+    # + one artifact download + inference over published history. 45 min keeps
+    # a pathological NHL API lag (a long missing-days gap, capped at 14) from
+    # hanging the job; typical runs finish well under 10.
+    timeout-minutes: 45
+    env:
+      ENV: prod
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # Artifact-fact convention: whatever the last owner refresh pushed, under
+      # the dated prefix read at run time (prefix predict/ml = both S3's
+      # ML_ARTIFACT_PREFIX and Storage's ML_ARTIFACT_STORAGE_PREFIX).
+      # DEFAULT source is SUPABASE STORAGE (ML_STORAGE_BUCKET bucket
+      # `ml-artifacts`, PRIVATE bucket, read with the SUPABASE_* secrets the
+      # job already needs - NO extra owner secret). The S3 read (ML_S3_BUCKET)
+      # stays OPTIONAL for owner-side AWS setups. docs/ml-picks-runbook.md §2/§3
+      ML_STORAGE_BUCKET: ${{ secrets.ML_STORAGE_BUCKET || 'ml-artifacts' }}
+      ML_ARTIFACT_STORAGE_PREFIX: predict/ml
+      ML_S3_BUCKET: ${{ secrets.ML_S3_BUCKET }}
     steps:
-      - name: Placeholder registration scaffold
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/setup-uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
+      # Mirror of deploy.yml's deploy-job install (uv sync --no-dev, pinned
+      # by uv.lock) - runtime deps only; lint/dev groups are not needed here.
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      # ---------------- Stage-2 gap-fill (published per-game raw columns) ----
+      # The 14 shot/TOI features are recomputed EXACTLY at inference time from
+      # the published per-game record in Supabase (run_daily_picks.
+      # shot_block_from_history -> model.shot_features_from_games over the
+      # stage-2 raw columns game_goals/game_shots/game_toi_min). This FIRST
+      # step tops up any completed game days the nightly publish has not
+      # covered yet - bounded: the schedule endpoint once per missing DAY
+      # (typically exactly one: yesterday) plus one boxscore request per
+      # FINAL game that day; NO season sweeps, no local store, no dumps.
+      # Games in a non-terminal state (LIVE/FUT) are skipped - the
+      # fetch_boxscore cache-hostage guard (backfill_missing_days.
+      # TERMINAL_GAME_STATES) - and replayed on a later pass once final.
+      # dry=true: the step runs READ-ONLY (fetch + log, no upserts) and the
+      # inference pass below also skips its Picks write.
+      # NOTE: this step needs the stage-2 DDL to have landed on
+      # Player-Snapshots-backtrack-{env}; run_daily_picks fails loudly naming
+      # 20261027_add_per_game_raw_columns_player_snapshots_backtrack.sql if
+      # the columns are missing.
+      - name: Resolve the slate date (ET)
+        id: slate
         run: |
-          echo "starter scaffold: real pipeline lives on PR #146"
-          exit 0
+          D="${DISPATCH_DATE:-$(TZ=America/Toronto date +%F)}"
+          echo "et_date=${D}" >> "$GITHUB_OUTPUT"
+        env:
+          DISPATCH_DATE: ${{ inputs.date || github.event.client_payload.date }}
+      - name: Backfill the last published date's missing completed game days (NHL API, bounded)
+        env:
+          DISPATCH_DRY: ${{ inputs.dry || github.event.client_payload.dry }}
+        run: |
+          # through YESTERDAY (ET): the picks pass's own first step re-invokes
+          # the helper (backfill_missing_days.backfill) with the same window;
+          # the per-date markers make the second call a no-op skip. Games on
+          # the slate date itself are never backfilled here - they are not
+          # final when the morning run fires.
+          ARGS="--env ${ENV} --through-date $(TZ=America/Toronto date -d yesterday +%F)"
+          if [ "${DISPATCH_DRY:-false}" == "true" ]; then
+            ARGS="${ARGS} --dry"
+            echo "dry=true: the backfill step runs READ-ONLY (no upserts)"
+          fi
+          uv run --frozen python smartscore/scripts/backtrack/backfill_missing_days.py ${ARGS}
+      # Prior stages this replaced (both REMOVED from the picks path):
+      #  * `dump_store.py --load` (rebuild data/raw_nhl.sqlite from the
+      #    committed data/dumps/ dumps) and `refresh_store.py --skip-load`
+      #    (incremental NHL crawl of the current season, incl. the
+      #    data/cache crawl-cache step). The runner no longer holds or
+      #    rebuilds the raw store at all: Supabase IS the live data plane,
+      #    the dumps stay the committed backup, and refresh_store.py
+      #    survives ONLY as an owner-side offline utility (make
+      #    backtrack-refresh) for store maintenance.
+
+      # Artifact source step: the script resolves the artifact in this order
+      # (docs/ml-picks-runbook.md §2): --artifact PATH (local file, always
+      # wins) -> S3 bucket/prefix (only when ML_S3_BUCKET is configured AND
+      # AWS credentials exist) -> Supabase Storage ML_STORAGE_BUCKET/prefix
+      # (the DEFAULT here: same SUPABASE_* secrets this job already needs -
+      # no AWS at all). If S3 is configured but its secrets are absent, the
+      # run falls through to Storage automatically.
+      # Steps 3+4: run_daily_picks fetches the artifact (Storage dated-prefix
+      # latest by default) then performs inference via model.py + its
+      # schema-safe Picks write (save_picks_db) - the same inference path the
+      # handler ran.
+
+      # Trigger-source resolution, workflow_dispatch semantics preserved:
+      # explicit inputs.date/inputs.dry win; repository_dispatch (the
+      # per-game kick, fired from the state machine's KickMLPicks state)
+      # supplies client_payload {date, dry, context: 'post-game-start'}.
+      # Multiple kicks per date are fine and expected (one per state-machine
+      # run): each is one extra idempotent pass - the Picks write is a full
+      # wipe-then-reinsert of the same rows, so a repeat pass for a date
+      # rewrites, not duplicates.
+      # docs/ml-picks-runbook.md ("Per-game kick").
+      - name: Run the daily ML picks pass
+        env:
+          DISPATCH_DATE: ${{ inputs.date || github.event.client_payload.date }}
+          DISPATCH_DRY: ${{ inputs.dry || github.event.client_payload.dry }}
+        run: |
+          ARGS=""
+          if [ -n "${DISPATCH_DATE}" ]; then
+            ARGS="${ARGS} --date ${DISPATCH_DATE}"
+          fi
+          if [ "${DISPATCH_DRY}" == "true" ]; then
+            ARGS="${ARGS} --dry"
+          fi
+          echo "Trigger context: ${{ github.event_name }} (date:'${DISPATCH_DATE}' dry:'${DISPATCH_DRY}')"
+          uv run --with lightgbm==4.7.0 python smartscore/scripts/backtrack/run_daily_picks.py ${ARGS}
+
+      # Step 5: the script prints the single structured SMARTSCORE_ML_PICKS
+      # log line and appends the headline to $GITHUB_STEP_SUMMARY; this step
+      # surfaces the run verdict in the job log as well.
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -s "${GITHUB_STEP_SUMMARY:-}" ]; then
+            echo "ML picks run complete - see the job summary for the headline."
+          else
+            echo "ML picks run finished (no summary written: the pass did not reach job_summary)."
+          fi

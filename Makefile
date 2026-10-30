@@ -105,3 +105,43 @@ backtrack-publish:
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish $(SEASON)
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-team $(SEASON)
 	@ENV=$(ENV) uv run python $(BACKTRACK)/local_store.py --publish-goalies $(SEASON)
+
+# Owner-run ONE-SHOT top-up (stage-2 RAW per-game columns, migration 20261027):
+# fills game_shots/game_goals/game_points/game_toi_min for ALL historical rows
+# of Player-Snapshots-backtrack-$(ENV) from the local raw store
+# (data/raw_nhl.sqlite player_games). Preconditions: the migration landed on
+# the target tables (deploy.yml's migrate job, or owner psql) AND the local
+# store is loaded/derived (make backtrack-load SEASON=... first). Idempotent
+# (PK upserts on (date, player_id)); no DDL is performed here.
+#   make topup-raw-game-cols ENV=dev   # dev first, spot-check, then ENV=prod
+#   make topup-raw-game-cols ENV=prod SPOT_CHECK=1  # verify-and-exit
+# Runbook: docs/ml-picks-runbook.md (stage-2 apply paths).
+topup-raw-game-cols:
+	@uv run python $(BACKTRACK)/topup_raw_game_cols.py --env $(if $(ENV),$(ENV),dev) $(if $(SPOT_CHECK),--spot-check,) $(if $(SKIP_SPOT_CHECK),--skip-spot-check,)
+.PHONY: topup-raw-game-cols
+
+# Owner-side OFFLINE store utility (no ML-picks role anymore): since the
+# stage-2 raw-column change the picks path reads Supabase alone (the daily
+# gap-fill is backfill_missing_days.py), but the local store still feeds
+# train_export/publish_shot_cols. This target is the old refresh chain, kept
+# for local store maintenance only: dump load + current-season crawl.
+backtrack-refresh:
+	@echo "Refreshing the local raw store (dumps + current season crawl) - owner-side only"
+	@uv run python $(BACKTRACK)/refresh_store.py $(if $(THROUGH),--through $(THROUGH),)
+
+# ---------------- On-demand ML artifact refresh --------------------------
+# Owner-run, on-demand only: training NEVER happens on AWS or in CI, and no
+# target here is scheduled. The workflow (.github/workflows/ml-picks.yml) is
+# predict-only and reads the artifact this target's upload produces.
+#   docs: docs/ml-picks-runbook.md
+MLS3_BUCKET      ?= $(if $(ML_S3_BUCKET),$(ML_S3_BUCKET),smartscore-ml-artifacts)
+
+# Local dry training + export + upload (the on-demand artifact refresh): the
+# artifact-fact convention is s3://$(MLS3_BUCKET)/predict/ml/artifact_<through>_<seed>.joblib
+# (names sort by vintage; the daily workflow reads the lexically latest .joblib).
+#   make train-ml-export ENV=prod SEASON=2023 THROUGH=2026-06-14 SEED=0
+train-ml-export:
+	ENV=$(ENV) uv run --with lightgbm==4.7.0 python $(BACKTRACK)/train_export.py \
+	  --env $(ENV) $(if $(SEASON),--season $(SEASON),) $(if $(THROUGH),--through-date $(THROUGH),) \
+	  --seed $(if $(SEED),$(SEED),0) --upload --s3-bucket $(MLS3_BUCKET)
+.PHONY: train-ml-export backtrack-refresh
