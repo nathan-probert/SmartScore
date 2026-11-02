@@ -155,9 +155,7 @@ def test_403_body_and_scope_hint_are_surfaced(token_env, monkeypatch):
     body verbatim plus the corrected permission guidance in the message.
     """
     with patch("ml_picks_kick.urllib.request.urlopen") as mock_urlopen:
-        mock_urlopen.side_effect = [
-            _http_error(403, b'{ "message": "Resource not accessible by integration" }')
-        ]
+        mock_urlopen.side_effect = [_http_error(403, b'{ "message": "Resource not accessible by integration" }')]
         with pytest.raises(
             RuntimeError,
             match="Resource not accessible by integration",
@@ -181,11 +179,7 @@ def test_transient_failure_retry_log_includes_body(token_env, monkeypatch, caplo
             relay_game_kick({"date": "2026-03-14"})
 
     needle = "Transient GitHub dispatch failure"
-    warnings = [
-        r
-        for r in caplog.records
-        if r.levelno == logging.WARNING and needle in r.message
-    ]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and needle in r.message]
     assert warnings, "retry warning expected"
     assert "soz, blip" in warnings[0].getMessage()
 
