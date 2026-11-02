@@ -26,6 +26,17 @@ on:
         type: boolean
         required: false
         default: false
+      # Manual-dispatch override of the job-level ENV (below) - the fail-safe
+      # default 'prod' means a dispatch that forgets the input still lands on
+      # Picks-prod, never on a silent fallback. Scheduled and
+      # repository_dispatch runs DO NOT read this input at all: they resolve
+      # ONLY the job-level ENV: prod (the "Resolve the picks ENV" step), so a
+      # cron run can never drift to dev. docs/ml-picks-runbook.md §1 (env matrix).
+      environment:
+        description: 'Picks table + snapshot source env (dev|prod)'
+        type: string
+        required: false
+        default: prod
   # Per-game kicks (race-fixed): each TriggerStateMachineAt_* rule
   # (utility.py schedule_run, game_start + PIPELINE_RESTART_OFFSET_MIN)
   # restarts the pipeline state machine, whose final KickMLPicks state
@@ -54,6 +65,16 @@ jobs:
     # hanging the job; typical runs finish well under 10.
     timeout-minutes: 45
     env:
+      # Scheduled + repository_dispatch runs resolve ONLY this job-level
+      # default (schedule has no `inputs` path): prod, i.e. Picks-prod /
+      # Player-Snapshots-prod / *-backtrack-prod. Manual workflow_dispatch
+      # overrides it per-run via the `environment` input at the "Resolve the
+      # picks ENV" step (ENV: ${{ steps.picks_env.outputs.picks_env }} on the
+      # script steps). GitHub Actions sets job/step env in the PROCESS env
+      # before `python` starts, so config.py's import-time read
+      # (config.ENV = os.environ.get("ENV", "dev"), config.py:12) resolves it
+      # unambiguously - no import-ordering hazard, no --env flag needed on
+      # run_daily_picks. docs/ml-picks-runbook.md §1.
       ENV: prod
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
@@ -118,15 +139,49 @@ jobs:
           echo "et_date=${D}" >> "$GITHUB_OUTPUT"
         env:
           DISPATCH_DATE: ${{ inputs.date || github.event.client_payload.date }}
+      # ENV resolution - the safety-critical, fail-closed form:
+      #  * scheduled + repository_dispatch runs (no dispatch input) resolve
+      #    ONLY the job-level env: ENV: prod -> Picks-prod; no silent env
+      #    default can land them on the wrong Picks table;
+      #  * workflow_dispatch overrides via the `environment` input (default
+      #    prod; set dev to write Picks-dev / read the -dev-suffixed tables).
+      #    `inputs.environment` is NOT referenced unconditionally: on a
+      #    schedule event it resolves EMPTY, and an empty step-level ENV
+      #    would override the job-level prod -> config.ENV's 'dev' fallback.
+      #    Gated the other way round (empty -> job ENV), that cannot happen.
+      #  * the resolved value is whitelisted dev|prod and echoed so the
+      #    resolved write target is visible in the job log ("env: prod").
+      # The step-level ENV below binds the SAME resolved value to both script
+      # steps (GitHub Actions puts it in the process env before python
+      # starts, so config.py's import-time read is unambiguous).
+      - name: 'Resolve the picks ENV (scheduled=prod; manual dispatch: the environment input)'
+        id: picks_env
+        env:
+          DISPATCH_ENV: ${{ inputs.environment }}
+        run: |
+          RESOLVED="${DISPATCH_ENV}"
+          if [ -z "${RESOLVED}" ]; then
+            RESOLVED="${ENV}"
+          fi
+          case "${RESOLVED}" in
+            dev|prod) ;;
+            *)
+              echo "::error::environment must be dev or prod (got '${RESOLVED}')"
+              exit 1 ;;
+          esac
+          echo "env: ${RESOLVED}"
+          echo "picks_env=${RESOLVED}" >> "$GITHUB_OUTPUT"
       - name: Backfill the last published date's missing completed game days (NHL API, bounded)
         env:
           DISPATCH_DRY: ${{ inputs.dry || github.event.client_payload.dry }}
+          ENV: ${{ steps.picks_env.outputs.picks_env }}
         run: |
           # through YESTERDAY (ET): the picks pass's own first step re-invokes
           # the helper (backfill_missing_days.backfill) with the same window;
           # the per-date markers make the second call a no-op skip. Games on
           # the slate date itself are never backfilled here - they are not
           # final when the morning run fires.
+          echo "env: ${ENV}"
           ARGS="--env ${ENV} --through-date $(TZ=America/Toronto date -d yesterday +%F)"
           if [ "${DISPATCH_DRY:-false}" == "true" ]; then
             ARGS="${ARGS} --dry"
@@ -168,7 +223,9 @@ jobs:
         env:
           DISPATCH_DATE: ${{ inputs.date || github.event.client_payload.date }}
           DISPATCH_DRY: ${{ inputs.dry || github.event.client_payload.dry }}
+          ENV: ${{ steps.picks_env.outputs.picks_env }}
         run: |
+          echo "env: ${ENV}"
           ARGS=""
           if [ -n "${DISPATCH_DATE}" ]; then
             ARGS="${ARGS} --date ${DISPATCH_DATE}"

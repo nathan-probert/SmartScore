@@ -29,7 +29,35 @@ runner:
    inputs:
    * `date` — slate date `YYYY-MM-DD` (default: ET-today);
    * `dry` — smoke run: assembles + validates the 3 picks and prints the
-     SMARTSCORE_ML_PICKS log line, but **skips the Picks write**.
+     SMARTSCORE_ML_PICKS log line, but **skips the Picks write**;
+   * `environment` — Picks table + snapshot source env (`dev|prod`,
+     default: `prod` — the env matrix below).
+
+### Environment matrix — what writes to WHICH Picks table (ml-picks.yml ENV)
+
+The workflow's `ENV` resolution is EXPLICIT and fail-closed so no run can
+silently land on the wrong table (the mechanism: the job-level default
+`env: ENV: prod` in `jobs.picks.env`, overridden per-run at the
+"Resolve the picks ENV" step, which echoes `env: <resolved>` into the job
+log, whitelists `dev|prod` and hard-fails on anything else, and re-binds the
+resolved value as a step-level `ENV` on BOTH script steps — GitHub Actions
+sets job/step env in the PROCESS environment before `python` starts, so
+`config.ENV`'s import-time read (`config.py:12`,
+`ENV = os.environ.get("ENV", "dev")`) is unambiguous; `run_daily_picks`
+needs no `--env` flag):
+
+| How the run starts | Resolved `ENV` | Tables written / read |
+| --- | --- | --- |
+| **Scheduled** (`cron '30 9 * * *'`) | **prod** — the job-level default ONLY (a scheduled run has no `inputs.environment`; that resolves empty and is never referenced unconditionally, so it cannot override the default with `''` → the `'dev'` fallback) | `Picks-prod` + `Player-Snapshots-prod` + `*-backtrack-prod` |
+| **Per-game kick** (`repository_dispatch`, ML Picks Restart) | **prod** — same job-level default | prod tables |
+| **Manual dispatch** | the `environment` input (`prod` default; set **dev** to write `Picks-dev` / read the `-dev`-suffixed tables) — i.e. the owner's answer: scheduled = **prod**; a manual dispatch with `environment=dev` writes to **Picks-dev** | `Picks-{environment}` etc. |
+
+FAIL-SAFE (in force in BOTH modes, not env-dependent): the Picks write goes
+through the schema-safe writer `save_picks_db`
+(`run_daily_picks.py`, probe-before-delete + restore-on-insert-failure) — an
+unsupported payload key aborts BEFORE any delete, and a failed
+insert/count-verify restores the pre-wipe rows and raises, so a failed run
+leaves `Picks-dev`/`Picks-prod` as the OLD table, never 0 rows.
 
 Either way the job does: checkout -> `uv sync --frozen --no-dev` (the same
 runtime dependency surface `deploy.yml`'s deploy job installs) -> artifact

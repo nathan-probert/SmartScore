@@ -1193,3 +1193,121 @@ def test_artifact_v1_fallback_warns_loud_and_still_picks(capsys):
     # and the shape the daily pass needs: one pick per (date, tims) group
     picks = model.daily_picks(sim, "ensemble")
     assert len(picks) == 1
+
+
+# ------------------------------------------------------ explicit ENV resolution
+# The ml-picks.yml safety contract: the workflow resolves ENV explicitly
+# (scheduled = the job-level env: ENV: prod ONLY; manual dispatch = the
+# `environment` input override at the "Resolve the picks ENV" step) and binds
+# the resolved value as a step-level ENV on both script steps - GitHub Actions
+# puts it in the PROCESS environment before `python` starts, so config.py's
+# import-time read (config.py:12, ENV = os.environ.get("ENV", "dev")) is the
+# single, final resolution. These tests pin the import math of that contract:
+# a FRESH config + run_daily_picks import sees exactly the os.environ value
+# present before import, and save_picks_db routes every surface (schema probe,
+# prior read, wipe, upsert, verify) to Picks-{ENV} - so a workflow run cannot
+# silently write the wrong Picks table.
+
+
+class _EnvProbeTable:
+    """Minimal supabase-py builder-chain fake for save_picks_db's five
+    surfaces: the schema probe (select(col-csv).limit(1) MUST succeed =
+    prove-before-delete), the prior-row read (select '*'), the wipe
+    (delete().neq), the upsert, and the post-write id verify."""
+
+    def __init__(self, state):
+        self._state = state
+
+    def select(self, *_columns):
+        self._state["result"] = list(self._state["rows"])
+        return self
+
+    def limit(self, _n):
+        return self
+
+    def delete(self):
+        return self
+
+    def neq(self, _col, _value):
+        self._state["rows"] = []
+        return self
+
+    def upsert(self, rows):
+        self._history_upserted = [dict(row) for row in rows]
+        self._state.setdefault("upserts", []).extend(self._history_upserted)
+        self._state["rows"] = [dict(row) for row in rows]
+        return self
+
+    def execute(self):
+        return types.SimpleNamespace(data=list(self._state.get("result", [])))
+
+
+class _EnvProbeClient:
+    """Name-recording client: every .table() call records the table name, so
+    the test asserts ALL of the write path's surfaces hit the SAME table."""
+
+    def __init__(self):
+        self.tables = {}
+
+    def table(self, name):
+        self._state = self.tables.setdefault(name, {"rows": [], "result": [], "upserts": []})
+        return _EnvProbeTable(self._state)
+
+
+def _fresh_import_with_env(monkeypatch, env_value=None):
+    """Import a SECOND config + run_daily_picks copy with os.environ.ENV set
+    (or absent) BEFORE import - the GitHub Actions contract above. `config` is
+    swapped in sys.modules for a fresh copy because a cached `from config
+    import ENV` would rebind the STALE import-time value instead of the one
+    the fresh process env would give; monkeypatch restores the real modules
+    after the test. load_dotenv is neutralized so a local .env (which carries
+    ENV=prod on owner machines) cannot shadow the env-under-test the way CI
+    (no .env) sees it."""
+    if env_value is None:
+        monkeypatch.delenv("ENV", raising=False)
+    else:
+        monkeypatch.setenv("ENV", env_value)
+    monkeypatch.setattr(sys.modules["dotenv"], "load_dotenv", lambda *args, **kwargs: False)
+
+    spec = importlib.util.spec_from_file_location(
+        f"config_envprobe_{env_value or 'unset'}", ROOT / "smartscore" / "config.py"
+    )
+    fresh_config = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "config", fresh_config)
+    spec.loader.exec_module(fresh_config)
+
+    name = f"run_daily_picks_envprobe_{env_value or 'unset'}"
+    spec = importlib.util.spec_from_file_location(
+        name, ROOT / "smartscore" / "scripts" / "backtrack" / "run_daily_picks.py"
+    )
+    fresh = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, fresh)
+    spec.loader.exec_module(fresh)
+    return fresh
+
+
+@pytest.mark.parametrize("env_value", [None, "dev", "prod"])
+def test_env_resolved_at_import_routes_the_picks_write(monkeypatch, env_value):
+    """The ENV import math: unset -> config's 'dev' default; ENV=prod preset ->
+    'prod'. Each fresh module then runs the SAvE path (save_picks_db) and
+    every surface - schema probe, prior read, wipe, upsert, verify - must
+    resolve to Picks-{env}. The env_vars fixture's module-global monkeypatch
+    path (mod.ENV rebind after import) remains covered by the tests above."""
+    fresh = _fresh_import_with_env(monkeypatch, env_value)
+    expected_env = env_value or "dev"
+
+    # the workflow res ENV is visible module-side exactly as the runner set it
+    assert fresh.ENV == expected_env
+
+    client = _EnvProbeClient()
+    monkeypatch.setattr(fresh, "SUPABASE_ADMIN_CLIENT", client)
+    table = f"Picks-{expected_env}"
+    rows = [{"player_id": 123, "tims": 2, "stat": 51.0, "date": "2026-06-15"}]
+
+    fresh.save_picks_db(rows, "2026-06-15")
+
+    # ALL surfaces (probe/prior/wipe/upsert/verify) targeted the SAME table
+    assert set(client.tables) == {table}, f"save path touched {set(client.tables)}, not purely {table}"
+    payload = client.tables[table]["upserts"]
+    assert [row["id"] for row in payload] == [1]
+    assert payload[0]["player_id"] == 123
