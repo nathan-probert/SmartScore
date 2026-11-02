@@ -536,7 +536,15 @@ the pipeline run itself.
   source). The old `MLPicksKickFunctionPermission` (events.amazonaws.com,
   per-rule SourceArn) was removed with the parallel target.
 * **PAT setup (one time):** create a **fine-grained PAT** scoped to this
-  repository with **Actions: write** permission only, short expiry
+  repository with **BOTH Actions: Read & write AND Contents: Read & write**
+  permissions (the OLD guidance here said "Actions: write only" — that token
+  deploys fine but GitHub rejects its `repository_dispatch` with
+  `403 Resource not accessible by integration`, which is the exact failure
+  diagnosed in the run below). Fine-grained PATs need the Contents
+  permission for dispatch; Actions-only is the common single-checkbox miss.
+  **Simpler alternative (recommended):** a **classic PAT with the `repo`
+  scope** — the dispatch endpoint typically only accepts it with that scope
+  and it cannot be under-scoped in the same way. Short expiry
   (30–90 days; note rotation below). Unchanged: store it as the GitHub
   repo secret `MLPICKS_DISPATCH_TOKEN` (Actions forbids secret names
   starting with `GITHUB_`; the Lambda env key stays

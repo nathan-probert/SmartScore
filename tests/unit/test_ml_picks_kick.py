@@ -10,6 +10,8 @@ that an explicit event date is used verbatim (no ET-today derivation when
 the pipeline passes one). docs/ml-picks-runbook.md ("Per-game kick").
 """
 
+import io
+import logging
 import re
 from unittest.mock import patch
 
@@ -44,8 +46,10 @@ class _FakeResponse:
         return False
 
 
-def _http_error(status):
-    return ml_picks_kick.urllib.error.HTTPError(url=DISPATCH_URL, code=status, msg="error", hdrs=None, fp=None)
+def _http_error(status, body=b""):
+    return ml_picks_kick.urllib.error.HTTPError(
+        url=DISPATCH_URL, code=status, msg="error", hdrs=None, fp=io.BytesIO(body)
+    )
 
 
 @pytest.fixture
@@ -140,6 +144,50 @@ def test_permanent_failure_is_not_retried(token_env, monkeypatch):
             relay_game_kick({"date": "2026-03-14"})
 
     assert mock_urlopen.call_count == 1  # 4xx is deterministic: no retry
+
+
+def test_403_body_and_scope_hint_are_surfaced(token_env, monkeypatch):
+    """The 403 must never be a black box: body + scope hint in the raise.
+
+    GitHub's 403 body is the ONLY way to diagnose an under-scoped token from
+    inside the Lambda (fine-grained PAT with Actions: write only → 'Resource
+    not accessible by integration'), so the relay includes GitHub's response
+    body verbatim plus the corrected permission guidance in the message.
+    """
+    with patch("ml_picks_kick.urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.side_effect = [
+            _http_error(403, b'{ "message": "Resource not accessible by integration" }')
+        ]
+        with pytest.raises(
+            RuntimeError,
+            match="Resource not accessible by integration",
+        ) as excinfo:
+            relay_game_kick({"date": "2026-03-14"})
+
+    message = str(excinfo.value)
+    assert "status=403" in message
+    assert "Actions: Read & write AND Contents: Read & write" in message
+    assert "repo scope" in message
+
+
+def test_transient_failure_retry_log_includes_body(token_env, monkeypatch, caplog):
+    monkeypatch.setattr(ml_picks_kick.time, "sleep", lambda seconds: None)
+    with patch("ml_picks_kick.urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.side_effect = [
+            _http_error(502, b'{"message": "soz, blip"}'),
+            _FakeResponse(),
+        ]
+        with caplog.at_level(logging.WARNING):
+            relay_game_kick({"date": "2026-03-14"})
+
+    needle = "Transient GitHub dispatch failure"
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and needle in r.message
+    ]
+    assert warnings, "retry warning expected"
+    assert "soz, blip" in warnings[0].getMessage()
 
 
 def test_missing_token_fails_loudly_before_any_http(monkeypatch):

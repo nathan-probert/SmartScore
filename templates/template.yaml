@@ -36,7 +36,8 @@ Parameters:
     NoEcho: true
     Default: ""
     Description: >-
-      Fine-grained PAT (Actions: write, this repo only) that
+      Fine-grained PAT (Actions: Read & write AND Contents: Read & write,
+      this repo only - Actions: write alone is REJECTED with 403) that
       MLPicksKick-{ENV} uses to repository_dispatch 'ml-picks-game' into
       .github/workflows/ml-picks.yml. (CFN logical IDs are alphanumeric-only,
       so the environment-variable-style GITHUB_DISPATCH_TOKEN name cannot be

@@ -43,6 +43,10 @@ RETRY_BACKOFF_SECONDS = 5
 #: 401/403/422 are deterministic failures and must not be retried.
 TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
+#: 403 = token reached GitHub but was rejected for permissions (scope miss),
+#: not a bad-credentials problem (that is 401). Worth a fingerprint + hint.
+PERMISSION_DENIED_STATUS = 403
+
 
 class MissingDispatchTokenError(RuntimeError):
     """Raised when GITHUB_DISPATCH_TOKEN is absent/empty (fail loudly)."""
@@ -76,8 +80,22 @@ def resolve_pick_date(event):
     return pick_date_now()
 
 
+def _http_error_body(exc):
+    """Best-effort read of an HTTPError's response body (TA: never a black box).
+
+    GitHub's 403/422 bodies are the ONLY way to tell token-scope rejections
+    ("Resource not accessible by integration") apart from settings-level
+    blocks from inside the Lambda, so the body must survive into the logs.
+    Test doubles may hand us an fp-less HTTPError, hence the guard.
+    """
+    try:
+        return (exc.read() or b"").decode("utf-8", errors="replace").strip()
+    except Exception:  # noqa: BLE001 - diagnostics only, must never mask the status
+        return ""
+
+
 def _post_dispatch(payload, token, owner, repo):
-    """POST one repository_dispatch; returns (ok, status_code_or_None)."""
+    """POST one repository_dispatch; returns (ok, status_code_or_None, body)."""
     url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/dispatches"
     headers = {
         "Accept": "application/vnd.github+json",
@@ -95,12 +113,12 @@ def _post_dispatch(payload, token, owner, repo):
         # Success is an empty 204; read-and-discard keeps urllib happy.
         with urllib.request.urlopen(request, timeout=20) as response:
             response.read()
-            return True, response.status
+            return True, response.status, ""
     except urllib.error.HTTPError as exc:
-        return False, exc.code
+        return False, exc.code, _http_error_body(exc)
     except urllib.error.URLError as exc:
         logger.error(f"GitHub dispatch network error: {exc}")
-        return False, None
+        return False, None, ""
 
 
 def relay_game_kick(event):
@@ -125,7 +143,8 @@ def relay_game_kick(event):
         logger.error(
             "GITHUB_DISPATCH_TOKEN is empty - cannot relay ml-picks-game; "
             "set the CloudFormation GITHUB_DISPATCH_TOKEN parameter "
-            "(fine-grained PAT, Actions write, this repo only)."
+            "(fine-grained PAT with Actions AND Contents write, this repo only, "
+            "or a classic PAT with the repo scope)."
         )
         raise MissingDispatchTokenError("GITHUB_DISPATCH_TOKEN env var is missing or empty")
 
@@ -144,15 +163,28 @@ def relay_game_kick(event):
         },
     }
 
-    ok, status = _post_dispatch(dispatch_payload, token, owner, repo)
+    ok, status, body = _post_dispatch(dispatch_payload, token, owner, repo)
     if not ok and status in TRANSIENT_STATUS_CODES:
-        logger.warning(f"Transient GitHub dispatch failure ({status}); retrying in {RETRY_BACKOFF_SECONDS}s")
+        body_note = f" response_body={body}" if body else ""
+        logger.warning(f"Transient GitHub dispatch failure ({status}){body_note}; retrying in {RETRY_BACKOFF_SECONDS}s")
         time.sleep(RETRY_BACKOFF_SECONDS)
-        ok, status = _post_dispatch(dispatch_payload, token, owner, repo)
+        ok, status, body = _post_dispatch(dispatch_payload, token, owner, repo)
 
     if not ok:
-        logger.error(f"GitHub repository_dispatch failed for {owner}/{repo} (status: {status})")
-        raise RuntimeError(f"GitHub repository_dispatch failed (owner={owner}, repo={repo}, status={status})")
+        detail = f"GitHub response body: {body}" if body else "GitHub response body: <empty>"
+        logger.error(f"GitHub repository_dispatch failed for {owner}/{repo} (status: {status}) - {detail}")
+        hint = ""
+        if status == PERMISSION_DENIED_STATUS:
+            hint = (
+                "403 rejection (e.g. 'Resource not accessible by integration') means the token reached "
+                "GitHub but lacks permission: a fine-grained PAT needs BOTH Actions: Read & write AND "
+                "Contents: Read & write on this repo (Actions: write alone is the common miss); a classic "
+                "PAT with the repo scope is the simpler alternative. Not expiry (that is 401)."
+            )
+        raise RuntimeError(
+            f"GitHub repository_dispatch failed (owner={owner}, repo={repo}, status={status}) - {detail}"
+            + (f" HINT: {hint}" if hint else "")
+        )
 
     logger.info(f"ml-picks-game dispatched to {owner}/{repo} payload={dispatch_payload['client_payload']}")
     return {"statusCode": 200, "dispatched": True, "client_payload": dispatch_payload["client_payload"]}
