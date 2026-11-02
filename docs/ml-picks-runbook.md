@@ -513,6 +513,22 @@ the pipeline run itself.
 * **The relay is bounded by design:** `smartscore/ml_picks_kick.py` uses
   stdlib urllib only, no ML dependencies, and never touches Supabase or
   Picks — it forwards `{date, dry}` and nothing more.
+* **Cold-start env wiring (PR #146 escalation fix):** the relay's Handler is
+  `event_handler.handle_ml_picks_kick`, which lives in the SHARED
+  `event_handler` module chain — `event_handler.py:9 -> player_archive.py:38
+  -> config.py` — and `config.py:19/:23` builds BOTH Supabase clients at
+  module import. The first deployment carried only `GITHUB_DISPATCH_TOKEN`
+  and died on cold start (`SupabaseException: supabase_url is required`)
+  before the handler ever ran. The template now wires
+  `SUPABASE_URL`/`SUPABASE_API_KEY`/`SUPABASE_SERVICE_ROLE_KEY` into
+  `MLPicksKickFunction`'s Environment from the SAME CloudFormation params
+  the other 15 functions use (`SupabaseUrl`/`SupabaseApiKey`/
+  `SupabaseServiceRoleKey`) — no new secrets. The runtime contract is
+  UNCHANGED: the relay never USES the clients (guarded by
+  tests/unit/test_ml_picks_import_chain.py, which imports the real chain in
+  a deploy-zip-shaped sandbox; test_template_env_vars.py asserts the wiring
+  and reduces the old relay exemption to the optional ENV/PostHog keys
+  only).
 * **IAM:** `StateMachineExecutionRole` carries `lambda:InvokeFunction` on
   `MLPicksKickFunction` plus a `states.amazonaws.com` function-level
   permission (`MLPicksKickStatePermission`, SourceArn pinned to the

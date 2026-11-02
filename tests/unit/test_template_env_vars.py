@@ -49,23 +49,34 @@ TEMPLATE_TEXT = TEMPLATE_PATH.read_text(encoding="utf-8")
 TEMPLATE = yaml.load(TEMPLATE_TEXT, Loader=CfnLoader)
 VALUE_TEMPLATE = yaml.load(TEMPLATE_TEXT, Loader=CfnValueLoader)
 
+# Import-time REQUIRED (cold_start): every Handler in this template lives in
+# the shared ``event_handler`` module chain, which imports ``config.py`` and
+# builds BOTH Supabase clients while the module is being imported
+# (event_handler.py:9 -> player_archive.py:38 -> config.py:19/:23). Missing
+# any of the three crashes the Lambda on cold start with ``SupabaseException``
+# before the handler runs. PR #146 escalation: MLPicksKick-{env} deployed
+# with only GITHUB_DISPATCH_TOKEN and could never boot - the pure relay
+# semantics hid the shared-import requirement.
+IMPORT_REQUIRED_ENV_VARS = (
+    "SUPABASE_URL",
+    "SUPABASE_API_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+)
+
 # Credentials shared by every handler: the Supabase/PostHog clients, which
 # player_archive also needs because Player-Snapshots has RLS on and no policies
 # (service role only). Scoped per-handler credentials (Brevo) are deliberately
 # excluded - only SendEmailsFunction needs those.
-SHARED_ENV_VARS = (
-    "ENV",
-    "SUPABASE_URL",
-    "SUPABASE_API_KEY",
-    "SUPABASE_SERVICE_ROLE_KEY",
-    "POSTHOG_FEATURE_FLAG_KEY",
-)
+SHARED_ENV_VARS = ("ENV", *IMPORT_REQUIRED_ENV_VARS, "POSTHOG_FEATURE_FLAG_KEY")
 
-# Architecture A relay only: MLPicksKick performs a single GitHub
-# repository_dispatch (stdlib urllib) and deliberately touches no database,
-# so Supabase/PostHog wiring (and its cost of keeping them secret in a
-# no-write Lambda) is intentionally absent. Its real dependency is the
-# dispatch token, asserted separately in RelayEnvVars below.
+# Relay-exempt variables: ENV and the PostHog key are OPTIONAL at import
+# (ENV defaults to "dev" and feature_flags only lazily consults PostHog), so
+# the relay may still omit them. The relay must NOT be exempt from
+# IMPORT_REQUIRED_ENV_VARS: it shares event_handler's import chain
+# (test_relay_carries_import_required_env_var... below). The old FULL
+# exemption of MLPicksKick from Supabase wiring predates the cold-start
+# escalation and was wrong: "never USES Supabase" does not mean "never
+# IMPORTS config".
 RELAY_ONLY_FUNCTIONS = frozenset({"MLPicksKickFunction"})
 
 # Per-function scoped credentials not covered by SHARED_ENV_VARS.
@@ -95,7 +106,9 @@ def test_every_lambda_function_gets_shared_env_var(env_var):
 
     A new Lambda added to the template without this variable would otherwise
     only fail when that handler first runs. Relay-only functions
-    (RELAY_ONLY_FUNCTIONS) are exempt - they hold no DB access by design.
+    (RELAY_ONLY_FUNCTIONS) are exempt ONLY from the optional shared vars
+    (ENV/POSTHOG): they still must carry IMPORT_REQUIRED_ENV_VARS - see
+    test_relay_carries_import_required_env_var_from_the_shared_param.
     """
     missing = [
         name
@@ -106,6 +119,42 @@ def test_every_lambda_function_gets_shared_env_var(env_var):
     assert not missing, (
         f"{len(missing)} Lambda function(s) missing {env_var}: {sorted(missing)}. "
         f"Add it to the Environment.Variables block of each."
+    )
+
+
+# The import trio's values come from the SAME parameters the other 15
+# functions use - no new secrets and no inline values.
+IMPORT_REQUIRED_PARAM_SOURCES = {
+    "SUPABASE_URL": "SupabaseUrl",
+    "SUPABASE_API_KEY": "SupabaseApiKey",
+    "SUPABASE_SERVICE_ROLE_KEY": "SupabaseServiceRoleKey",
+}
+
+
+@pytest.mark.parametrize(
+    "env_var,param_name",
+    sorted(IMPORT_REQUIRED_PARAM_SOURCES.items()),
+)
+def test_relay_carries_import_required_env_var_from_the_shared_param(env_var, param_name):
+    """MLPicksKick is a relay at RUNTIME but a full pipeline module at IMPORT.
+
+    Its Handler is ``event_handler.handle_ml_picks_kick``, so the Lambda
+    imports the shared chain the other 15 functions share, and
+    ``config.py:19/:23`` builds both Supabase clients at module import. The
+    deployed escalation proved it: with only GITHUB_DISPATCH_TOKEN wired the
+    relay died on cold start with ``SupabaseException: supabase_url is
+    required``. Assert presence AND parameter source - the trio must come
+    from the same ``Supabase*`` CloudFormation parameters the other
+    functions use.
+    """
+    resource = lambda_functions().get("MLPicksKickFunction")
+    assert resource is not None, "MLPicksKickFunction missing from template.yaml"
+    assert env_var in env_vars(resource), f"MLPicksKickFunction is missing {env_var} (import-required, config.py)"
+
+    variables = VALUE_TEMPLATE["Resources"]["MLPicksKickFunction"]["Properties"]["Environment"]["Variables"]
+    assert variables[env_var] == param_name, (
+        f"MLPicksKickFunction's {env_var} must be !Ref {param_name} (the shared Supabase parameter), "
+        f"got {variables[env_var]!r}"
     )
 
 

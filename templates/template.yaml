@@ -529,8 +529,24 @@ Resources:
           # the real event_handler.py via update-function-code right after.
           def handle_ml_picks_kick(event, context):
               return {"status": "lambda function placeholder"}
+      # ENV wiring (PR #146 escalation): the Handler lives in the SHARED
+      # event_handler module chain (event_handler.handle_ml_picks_kick ->
+      # player_archive.py:38 -> config.py), and config.py builds BOTH
+      # Supabase clients at import time (config.py:19/:23). Without the
+      # Supabase env the COLD START dies with SupabaseException before the
+      # handler runs - which is exactly how MLPicksKick-{env} deployed with
+      # only GITHUB_DISPATCH_TOKEN failed to ever boot. The relay still never
+      # USES the clients (stdlib urllib relay only); this wiring exists for
+      # the import, from the SAME parameters the other 15 functions use
+      # (SupabaseUrl/SupabaseApiKey/SupabaseServiceRoleKey) - no new secrets.
+      # ENV/POSTHOG_FEATURE_FLAG_KEY are NOT needed here: the import chain
+      # defaults ENV ("dev", config.py:12) and only lazily consults PostHog,
+      # and the relay never evaluates flags.
       Environment:
         Variables:
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_API_KEY: !Ref SupabaseApiKey
+          SUPABASE_SERVICE_ROLE_KEY: !Ref SupabaseServiceRoleKey
           GITHUB_DISPATCH_TOKEN: !Ref GithubDispatchToken
 
   # State machine -> Lambda invoke grant. The OLD MLPicksKickFunctionPermission
