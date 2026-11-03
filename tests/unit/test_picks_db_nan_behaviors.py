@@ -264,10 +264,10 @@ def make_sim():
 
 
 def test_stat_value_convention_matches_the_legacy_percent():
-    """stat_value is the ONE shared stat convention (the legacy 3-row
-    publish and the stat_update PATCHes): percent, 1 decimal, None on a
-    non-finite prediction (a NaN must never patch a number into the
-    column)."""
+    """stat_value is the DISPLAY convention (0-100 percent, 1 decimal);
+    the DB write divides it by 100 at the stat_update PATCH boundary, so
+    the column holds a 0-1 fraction. None on a non-finite prediction (a
+    NaN must never patch a number into the column)."""
     assert mod.stat_value(0.12345) == 12.3
     assert mod.stat_value(0.999) == 99.9
     assert mod.stat_value(np.nan) is None

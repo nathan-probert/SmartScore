@@ -336,6 +336,14 @@ that exists). The ML model's job in the ONLY mode, `stat_update`, is to:
   writes nothing — the site's pipeline always eventually publishes the
   slate and the next kick re-fills it.
 
+**`stat` column convention (0-1 fraction):** the DB `stat` column holds a
+0-1 decimal fraction, not a percent. The site's own publish writes raw
+model scores on that scale, so the ML path divides its 0-100 rank
+percentile by 100 at the write boundary (`stat_value(ensemble) / 100`).
+The ML log, `SMARTSCORE_ML_PICKS` payload and job summary deliberately
+stay on the 0-100 display scale; readers that show a percentage multiply
+by 100 (`smartscore/scripts/get_odds.py:218,232`, and the site UI).
+
 The **top-3-per-group challenge picks are an OUTPUT**, full stop:
 they rank within `(date, tims)` exactly as before, but are emitted only
 through the structured `SMARTSCORE_ML_PICKS` log (a `picks` array) and the
@@ -381,7 +389,7 @@ prod full-slate: `stat_update: filled stat on 495/495` with 0 call-up
 warnings; prod pre/post JSON diff shows exactly `{'stat': 495}` — the only
 column touched, on all 495 rows (row count 495 unchanged, row ids
 unchanged; all 495 previously held the site's raw fractions, 0.20–0.28
-style, now scaled rank percentiles e.g. Teddy Blueger 0.2045 → 51.3);
+style, now scaled rank percentiles e.g. Teddy Blueger 0.2045 → 0.513);
 the SECOND prod pass wrote byte-identical values (full-table capture
 sha256 equal across runs) — deterministic per-row inference, idempotent
 re-fill confirmed; mean_max_prob 0.9481 with top-of-group Cutter Gauthier

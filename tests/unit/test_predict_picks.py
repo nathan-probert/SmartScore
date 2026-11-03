@@ -1645,6 +1645,8 @@ def test_stat_update_is_the_only_write_mode(env_vars, prediction_tables, monkeyp
     assert payload["stat_column"]["stat_filled"] == 4
     assert len(payload["picks"]) == 3 and {row["tims"] for row in payload["picks"]} == {1, 2, 3}
     assert all(row["stat"] is not None for row in payload["picks"])
+    # the log stat stays on the 0-100 display scale; the DB value is that / 100
+    assert all(0.0 <= row["stat"] <= 100.0 for row in payload["picks"])
 
 
 def test_stat_update_missing_slate_skips_cleanly_no_insert(env_vars, prediction_tables, monkeypatch, capsys):
