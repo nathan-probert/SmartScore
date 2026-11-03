@@ -31,13 +31,16 @@ runner:
    * `dry` — smoke run: assembles + validates the 3 picks and prints the
      SMARTSCORE_ML_PICKS log line, but **skips the Picks write**;
    * `environment` — the WRITE side: which Picks table the run replaces
-     plus the default LIVE source (`dev|prod`, default: `prod` — the env
-     matrix below);
+     (`dev|prod`, default: `prod` — the env matrix below). It does NOT
+     decide the LIVE-read source;
    * `source` — the LIVE-READ side ONLY: which snapshot TODAY's rows are
-     read from (`Player-Snapshots-{source}`, `dev|prod`, default `prod`).
-     The default keeps every pre-hybrid path byte-identical; the hybrid
-     profile below (`environment=dev` + `source=prod`) reads the REAL
-     prod slate and writes ONLY `Picks-dev`.
+     read from (`Player-Snapshots-{source}`, `dev|prod`, default `prod`
+     UNCONDITIONALLY — independent of the write env, per the owner's rule
+     that prod is the source of truth for feature reads; see the
+     SOURCE-default rule note below the env matrix). So `environment=dev`
+     with `source` unset reads the REAL prod slate and writes ONLY
+     `Picks-dev`; an explicitly set `source=dev` is the legacy dev-side
+     override.
 
 ### Environment matrix — what writes to WHICH Picks table (ml-picks.yml ENV)
 
@@ -47,9 +50,10 @@ docstring in `run_daily_picks.py` cites the exact order): the **write** env
 deliberately NO `--env` CLI flag: a flag would re-bind the
 `from config import ENV` global after import — the exact hazard the
 earlier ENV fixture bug warned about); the **source** env —
-`--source-env` (CLI → `SOURCE_ENV` env var → the write env;
-`today_live_rows` reads `Player-Snapshots-{source_env}`, DEFAULT it
-follows the write env); and the **history** env — `--history-env`
+`--source-env` (CLI → `SOURCE_ENV` env var → `'prod'` DEFAULT — the
+`today_live_rows` reads `Player-Snapshots-{source_env}`; since 2026-11-03
+the default is UNCONDITIONALLY prod and never follows the write env); and
+the **history** env — `--history-env`
 (default: `'prod'` PINNED) whose value only makes the rule explicit,
 because the history reads route to the ONE shared `-prod` ledger
 REGARDLESS (027ef47).
@@ -72,8 +76,23 @@ global; the LIVE-READ side takes `--source-env`):
 | --- | --- | --- |
 | **Scheduled** (`cron '30 9 * * *'`) | **prod** / prod — the job-level defaults ONLY (a scheduled run has no `inputs`; they resolve empty and are never referenced unconditionally, so a cron run keeps BOTH axes prod: zero behavioral change from the hybrid feature) | `Picks-prod` + `Player-Snapshots-prod` + the SHARED history ledger `Player-Snapshots-backtrack-prod` |
 | **Per-game kick** (`repository_dispatch`, ML Picks Restart) | **prod** / prod — same job-level defaults | prod tables |
-| **Manual dispatch** | the `environment` input (default **prod**) / the `source` input (default **prod**) — i.e. a manual dispatch with `environment=dev` writes to **Picks-dev** and reads the dev LIVE table unless `source` overrides the read | `Picks-{environment}` + LIVE `Player-Snapshots-{source}`; historical reads and the backfill go to the SHARED ledger `Player-Snapshots-backtrack-prod` regardless (§10) |
+| **Manual dispatch** | the `environment` input (default **prod**) for the WRITE table; the `source` input for the live read (default **prod**, UNCONDITIONAL — the write env does NOT decide it since 2026-11-03) — i.e. a manual dispatch with `environment=dev` and `source` unset writes **Picks-dev** and reads the REAL prod LIVE table `Player-Snapshots-prod` | `Picks-{environment}` + LIVE `Player-Snapshots-{source}` (unset ⇒ `Player-Snapshots-prod`); historical reads and the backfill go to the SHARED ledger `Player-Snapshots-backtrack-prod` regardless (§10) |
+| **Manual dispatch — explicit legacy dev read** | `environment=dev` + `source=dev` (the ONLY way to read the dev LIVE table now) | `Picks-dev` + LIVE `Player-Snapshots-dev` (empty shell — see the note below) + the SHARED ledger |
 | **Manual dispatch — PRE-DEPLOYMENT VALIDATION (HYBRID)** | `environment=dev` + `source=prod`: real prod slate | **writes ONLY `Picks-dev`** (Picks-prod untouched; the write is a full single-day REPLACE of the target table per run) while TODAY's rows are read from `Player-Snapshots-prod` (the real LIVE prod snapshot) and history stays the SHARED `Player-Snapshots-backtrack-prod` — the owner validates end-to-end picks against real live data without touching Picks-prod. Verified live 2026-11-03: dry --date 2026-10-23 (3 picks, mean 0.9232, no write) and non-dry --date 2026-10-19 (Picks-dev = 3 rows for 2026-10-19; Picks-prod count unchanged at 495) |
+
+**SOURCE-default rule (2026-11-03, the owner's "prod is the source of truth
+for feature reads"):** the SOURCE env now defaults to **prod** even in a dev
+write-mode run — both in the workflow's resolve step
+(`SOURCE_RESOLVED="${DISPATCH_SOURCE:-prod}"`: the fallback never consults
+the write env) and in `run_daily_picks.py` (`SOURCE_ENV_DEFAULT = "prod"`,
+replacing the old follow-the-write-env fallback). A dispatch with
+`environment=dev` and `source` unset reads the REAL prod slate and writes
+only `Picks-dev`. Before this change such a run defaulted the live read to
+the WRITE env, silently read the **empty** `Player-Snapshots-dev` shell, and
+clean-skipped (`no picks computed: no live snapshot rows for <date>`, exit
+0) — a green-but-empty run that computes nothing. Set `source=dev`
+explicitly for the legacy dev-side live-read if ever desired; an explicitly
+set `source` input remains the only dev-read override.
 
 The ARTIFACT selection is INDEPENDENT of all three axes — the same
 relative-key select on every profile (S3 `ML_S3_BUCKET`/prefix or Supabase
@@ -100,9 +119,9 @@ skip), then assembles the day's frame from THREE read-only sources
 * **today's rows** — the LIVE snapshot table
   `Player-Snapshots-{source_env}` (the daily snapshot the pipeline's
   snapshot build publishes each morning; `source_env` = the `--source-env`
-  axis above — it FOLLOWS the write env by default, so the pre-hybrid
-  reads are unchanged, and `environment=dev` + `source=prod` is the
-  supported hybrid);
+  axis above — it defaults to `prod` UNCONDITIONALLY (independent of the
+  write env, the owner's source-of-truth rule; `source=dev` is the legacy
+  override for a dev-side live read);
 * **history** — the backtrack history, which is ONE SHARED LEDGER:
   `Player-Snapshots-backtrack-prod` (plus the team/goalie rates at publish
   cadence from `Team-Stats-backtrack-prod` / `Goalie-Snapshots-backtrack-
@@ -304,6 +323,14 @@ warning when the artifact trains through a date older than 7 days.
   `no picks computed: no live snapshot rows for <date>`, appends the same
   line to the job summary, writes NO Picks rows, and exits 0 — CLEANLY, no
   traceback. The scheduled job stays green.
+* The SAME clean-skip became an OWNER CONFUSION before 2026-11-03: with
+  the then-default live read FOLLOWING the write env, an
+  `environment=dev` dispatch with `source` unset silently read the EMPTY
+  `Player-Snapshots-dev` shell and clean-skipped exactly this way — green
+  job, zero picks. That default is retired (see the SOURCE-default rule
+  below the env matrix in §1: unset `source` now resolves to `prod` on
+  every axis); a clean-skip today means the PROD live snapshot genuinely
+  has no rows for the pick date yet.
 * The artifact staleness warning is unchanged (section 6).
 * Train/run parity of the shot block is enforced by test
   `test_live_shot_block_matches_training_core` /

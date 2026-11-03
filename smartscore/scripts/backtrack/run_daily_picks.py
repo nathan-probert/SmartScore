@@ -9,8 +9,9 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
     pushed from the local machine;
   * TODAY's prediction rows come from the LIVE snapshot table
     Player-Snapshots-{source_env} - the HYBRID-able read side
-    (--source-env, default: follow the write env; the resolution order is
-    documented below). The BACKTRACK history is the ONE shared ledger
+    (--source-env, default: 'prod' - INDEPENDENT of the write env; the
+    resolution order is documented below). The BACKTRACK history is the ONE
+    shared ledger
     (Player-Snapshots-backtrack-prod): the history reads (players, teams,
     goalies) always go to the -prod backtrack tables whatever the env axes
     are, because the dev backtrack tables were DELETED after prod was
@@ -72,9 +73,13 @@ THE THREE ENV AXES (HYBRID mode) and their EXACT resolution order:
     config default 'dev'.
   * SOURCE env - which LIVE snapshot TODAY's rows are read from
     (Player-Snapshots-{source_env}, today_live_rows): CLI ``--source-env``
-    -> ``event["source_env"]`` -> env var ``SOURCE_ENV`` -> the WRITE env
-    (ENV). DEFAULT: it FOLLOWS the write env, so every pre-hybrid caller
-    behaves exactly as before.
+    -> ``event["source_env"]`` -> env var ``SOURCE_ENV`` -> 'prod' DEFAULT
+    (SOURCE_ENV_DEFAULT). DEFAULT: 'prod' UNCONDITIONALLY - prod is the
+    source of truth for feature reads regardless of the write env (owner
+    rule 2026-11-03: the dev live snapshot shell is empty, and the old
+    follow-the-write-env default made an ENV=dev run clean-skip on it -
+    the exact silent green-but-empty confusion; pass ``--source-env dev``
+    explicitly for the legacy dev-side live read).
   * HISTORY env - CLI ``--history-env`` (default: 'prod' PINNED; explicit
     flag only, ``event["history_env"]`` -> env var ``HISTORY_ENV`` ->
     'prod'): whatever its value, the reads route to the ONE shared
@@ -264,12 +269,21 @@ REMOVE_KEYS = ["ppg"]
 #              global after import is the exact hazard the ENV fixture bug
 #              warned about, and the import-time read happens once per
 #              process anyway - the workflow's step-level ENV IS the bind.
-#   source  -> CLI --source-env -> event["source_env"] -> SOURCE_ENV var -> ENV.
+#   source  -> CLI --source-env -> event["source_env"] -> SOURCE_ENV var
+#              -> 'prod' (SOURCE_ENV_DEFAULT, INDEPENDENT of the write env;
+#              prod is the source of truth for feature reads - owner rule -
+#              since the dev live shell is empty; --source-env dev is the
+#              legacy override).
 #   history -> CLI --history-env -> event["history_env"] -> HISTORY_ENV var
 #              -> "prod" PINNED; the reads route to the shared -prod ledger
 #              regardless of the value (027ef47's shared-ledger rule).
 ENV_CHOICES = ("dev", "prod")
 HISTORY_ENV_DEFAULT = "prod"
+# The SOURCE axis's fallback: NOT the write env - 'prod' unconditionally
+# (owner rule: prod is the source of truth for the live-read side; the dev
+# snapshot shell is empty and the old follow-the-write-env default is what
+# made an environment=dev run clean-skip on an empty table).
+SOURCE_ENV_DEFAULT = "prod"
 
 
 def resolve_env_axis(cli_value, env_var, fallback):
@@ -532,9 +546,9 @@ def require_live_columns(today, on_date, source_env=None):
     and naming exactly what is missing - the shape the 16-column check had.
 
     ``source_env`` names the LIVE-read axis (Player-Snapshots-{source_env});
-    it falls back to the write env (module ENV) so pre-hybrid callers keep
-    their exact message."""
-    source_env = source_env or ENV
+    it falls back to 'prod' (SOURCE_ENV_DEFAULT - the source-of-truth rule,
+    NOT the write env) so unset callers read the real snapshot."""
+    source_env = source_env or SOURCE_ENV_DEFAULT
     missing = [col for col in REQUIRED_LIVE_COLUMNS if col not in today.columns]
     if missing:
         raise RuntimeError(
@@ -1385,10 +1399,12 @@ def run(event=None, context=None):
     on_date = str(event.get("date") or today_et())
     dry = bool(event.get("dry"))
     # THE TWO HYBRID AXES (resolution order in the module docstring):
-    #   source:  CLI --source-env / event source_env -> SOURCE_ENV var -> ENV
+    #   source:  CLI --source-env / event source_env -> SOURCE_ENV var ->
+    #            'prod' (SOURCE_ENV_DEFAULT - the write env does NOT decide
+    #            the live read; 'dev' must be passed explicitly)
     #   history: CLI --history-env / event history_env -> HISTORY_ENV var ->
     #            'prod' (pinned default; routed to the shared ledger anyway)
-    source_env = resolve_env_axis(event.get("source_env"), "SOURCE_ENV", ENV)
+    source_env = resolve_env_axis(event.get("source_env"), "SOURCE_ENV", SOURCE_ENV_DEFAULT)
     history_env = resolve_env_axis(event.get("history_env"), "HISTORY_ENV", HISTORY_ENV_DEFAULT)
     if history_env != HISTORY_ENV_DEFAULT:
         print(
@@ -1455,8 +1471,9 @@ def run(event=None, context=None):
     else:
         warn_missing_backfill_days(ENV, yesterday)
 
-    # The LIVE read: Player-Snapshots-{source_env} (the HYBRID axis). On the
-    # defaults source_env == ENV, so this is byte-for-byte today's behavior.
+    # The LIVE read: Player-Snapshots-{source_env} (the HYBRID axis).
+    # source_env defaults to 'prod' regardless of the write env (the
+    # owner's source-of-truth rule).
     loaded = load_prediction_tables(source_env, on_date, history_env)
     if loaded is None:
         # CLEAN EXIT (owner rule): no LIVE snapshot rows for the pick date =
@@ -1592,7 +1609,9 @@ def main(argv=None):
         choices=ENV_CHOICES,
         default=None,
         help="which LIVE snapshot table to read TODAY's rows from: Player-Snapshots-{source-env}. "
-        "DEFAULT: follow the picks env (ENV). Resolution: this flag -> SOURCE_ENV env var -> ENV. "
+        "DEFAULT: 'prod' - prod is the source of truth for feature reads regardless of the picks env "
+        "(the dev live snapshot shell is empty; pass --source-env dev explicitly for the legacy "
+        "dev-side live read). Resolution: this flag -> SOURCE_ENV env var -> 'prod'. "
         "THE HYBRID is ENV=dev + --source-env prod: reads the real prod live slate (and the "
         "always-shared history) but writes ONLY Picks-dev - Picks-prod is untouched",
     )

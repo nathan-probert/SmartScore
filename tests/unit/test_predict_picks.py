@@ -1460,10 +1460,11 @@ def test_hybrid_source_env_env_var_axis_wins_over_fallback(env_vars, prediction_
     assert "live read=Player-Snapshots-prod" in out
 
 
-def test_hybrid_default_unset_follows_env_exactly(env_vars, prediction_tables, monkeypatch, capsys):
-    """(d) Default-unset == today's behavior: no --source-env, no SOURCE_ENV
-    var -> the live read FOLLOWS the write env (ENV=prod ->
-    Player-Snapshots-prod) and nothing else changes."""
+def test_hybrid_default_unset_source_resolves_prod(env_vars, prediction_tables, monkeypatch, capsys):
+    """(c) Unset source + a PROD write-side env resolves exactly as before:
+    no --source-env, no SOURCE_ENV var, ENV=prod -> the live read is
+    Player-Snapshots-prod (the source-of-truth default) and nothing else
+    changes."""
     monkeypatch.delenv("SOURCE_ENV", raising=False)
     monkeypatch.delenv("HISTORY_ENV", raising=False)
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
@@ -1474,11 +1475,66 @@ def test_hybrid_default_unset_follows_env_exactly(env_vars, prediction_tables, m
     result = mod.handler({"date": ON_DATE, "dry": True}, None)
 
     assert result["statusCode"] == 200 and len(result["picks"]) == 3
-    assert "Player-Snapshots-prod" in names  # followed ENV, same as before
+    assert "Player-Snapshots-prod" in names  # the source-of-truth default
     out = capsys.readouterr().out
     picks_line = [line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0]
     payload = json.loads(picks_line)
     assert payload["write_env"] == "prod" and payload["source_env"] == "prod" and payload["history_env"] == "prod"
+
+
+def test_dispatch_matrix_unset_source_with_dev_write_resolves_prod(env_vars, prediction_tables, monkeypatch, capsys):
+    """(a) THE OWNER'S CASE (behavior change): an environment=dev dispatch
+    with an UNSET source runs EXACTLY the pre-hybrid-safe dispatch path the
+    workflow's resolve step passes (no source_env key, no SOURCE_ENV var,
+    ENV=dev) - and the live read resolves to PROD. The OLD fallback (source
+    follows the write env) silently read the EMPTY Player-Snapshots-dev
+    shell here and clean-skipped; now: Player-Snapshots-prod is the live
+    read, Picks-dev is the (dry) write side, and Picks-prod stays PROD-prod
+    untouched."""
+    monkeypatch.setattr(mod, "ENV", "dev")  # environment=dev (WRITE side only)
+    monkeypatch.delenv("SOURCE_ENV", raising=False)
+    monkeypatch.delenv("HISTORY_ENV", raising=False)
+    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"dev": True, "prod": True})
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls: list = []
+    fake_save(monkeypatch, calls)
+    names = record_table_names(prediction_tables)
+
+    result = mod.handler({"date": ON_DATE, "dry": True}, None)  # NO source_env key
+
+    assert result["statusCode"] == 200 and len(result["picks"]) == 3
+    assert "Player-Snapshots-prod" in names  # the live read IS prod...
+    assert "Player-Snapshots-dev" not in names  # ...never the empty dev shell
+    out = capsys.readouterr().out
+    picks_line = [line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0]
+    payload = json.loads(picks_line)
+    assert payload["write_env"] == "dev" and payload["source_env"] == "prod" and payload["history_env"] == "prod"
+    assert "live read=Player-Snapshots-prod" in out
+
+
+def test_dispatch_matrix_explicit_source_dev_overrides(env_vars, prediction_tables, monkeypatch, capsys):
+    """(b) The legacy override: an EXPLICIT source=dev (event source_env on
+    the resolved-axes contract, i.e. the workflow's explicitly-set
+    source=dev input) still resolves the live read to
+    Player-Snapshots-dev (the empty shell in real life - this is the
+    dev-side testing profile)."""
+    monkeypatch.setattr(mod, "ENV", "dev")
+    monkeypatch.delenv("SOURCE_ENV", raising=False)
+    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"dev": True, "prod": True})
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls: list = []
+    fake_save(monkeypatch, calls)
+    names = record_table_names(prediction_tables)
+
+    result = mod.handler({"date": ON_DATE, "dry": True, "source_env": "dev"}, None)
+
+    assert result["statusCode"] == 200 and len(result["picks"]) == 3
+    assert "Player-Snapshots-dev" in names  # the explicit override won
+    out = capsys.readouterr().out
+    picks_line = [line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0]
+    payload = json.loads(picks_line)
+    assert payload["write_env"] == "dev" and payload["source_env"] == "dev" and payload["history_env"] == "prod"
+    assert "live read=Player-Snapshots-dev" in out
 
 
 def test_resolve_env_axis_resolution_order(monkeypatch):
@@ -1487,12 +1543,16 @@ def test_resolve_env_axis_resolution_order(monkeypatch):
     resolve step."""
     monkeypatch.delenv("SOURCE_ENV", raising=False)
     monkeypatch.delenv("HISTORY_ENV", raising=False)
-    # fallback = the write env (source follows ENV by default)
-    assert mod.resolve_env_axis(None, "SOURCE_ENV", "dev") == "dev"
-    # env var beats the fallback, CLI beats the env var
-    monkeypatch.setenv("SOURCE_ENV", "prod")
-    assert mod.resolve_env_axis(None, "SOURCE_ENV", "dev") == "prod"
-    assert mod.resolve_env_axis("dev", "SOURCE_ENV", "dev") == "dev"
+    # fallback = SOURCE_ENV_DEFAULT 'prod' unconditionally (the source-of-
+    # truth rule: run() passes SOURCE_ENV_DEFAULT, NEVER the write env -
+    # the pre-20261103 caller passed ENV and re-created the silent
+    # Player-Snapshots-dev clean-skip on an environment=dev run)
+    assert mod.resolve_env_axis(None, "SOURCE_ENV", mod.SOURCE_ENV_DEFAULT) == "prod"
+    # env var beats the fallback, CLI beats the env var (the legacy dev
+    # live-read override)
+    monkeypatch.setenv("SOURCE_ENV", "dev")
+    assert mod.resolve_env_axis(None, "SOURCE_ENV", mod.SOURCE_ENV_DEFAULT) == "dev"
+    assert mod.resolve_env_axis("prod", "SOURCE_ENV", "dev") == "prod"
     # history axis: the 'prod' default is what run() passes (pinned)
     assert mod.resolve_env_axis(None, "HISTORY_ENV", mod.HISTORY_ENV_DEFAULT) == "prod"
     monkeypatch.setenv("HISTORY_ENV", "dev")  # accepted value (routing still shared)

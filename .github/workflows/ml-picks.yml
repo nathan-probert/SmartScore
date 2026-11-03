@@ -33,18 +33,19 @@ on:
       # ONLY the job-level ENV: prod (the "Resolve the picks ENV" step), so a
       # cron run can never drift to dev. docs/ml-picks-runbook.md §1 (env matrix).
       environment:
-        description: 'Picks table + default snapshot source env (dev|prod)'
+        description: 'Picks table to write (dev|prod). Does NOT decide the LIVE-read source (that is `source`, default prod)'
         type: string
         required: false
         default: prod
       # The HYBRID axis: source splits the LIVE-read side from the write side.
       # `environment` keeps deciding the WRITE side (Picks-{environment});
       # `source` decides ONLY which LIVE snapshot TODAY's rows are read from
-      # (Player-Snapshots-{source}, run_daily_picks --source-env). The owner's
-      # pre-deployment-validation profile: environment=dev + source=prod -
-      # real prod slate, writes Picks-dev, picks-prod untouched. Default
-      # prod keeps every pre-hybrid path byte-identical; the nightly cron and
-      # repository_dispatch runs resolve prod for BOTH axes (no inputs read).
+      # (Player-Snapshots-{source}, run_daily_picks --source-env). The default
+      # is UNCONDITIONAL prod - even on an environment=dev write-mode run
+      # (owner rule: prod is the source of truth for feature reads;
+      # source=dev is the legacy override for dev-side testing). The nightly
+      # cron and repository_dispatch runs resolve prod for BOTH axes (no
+      # inputs read).
       # docs/ml-picks-runbook.md §1 (env matrix) + §10 (shared ledger).
       source:
         description: 'LIVE snapshot source env for TODAYS rows (dev|prod; default prod)'
@@ -162,8 +163,14 @@ jobs:
       #    ONLY the job-level env: ENV: prod -> Picks-prod; no silent env
       #    default can land them on the wrong Picks table;
       #  * workflow_dispatch overrides via the `environment` input (default
-      #    prod; set dev to write Picks-dev / default to the dev LIVE source
-      #    unless `source` overrides the READ side separately).
+      #    prod; set dev to write Picks-dev). The WRITE env never decides the
+      #    LIVE-READ source ANYMORE: source defaults to 'prod'
+      #    unconditionally even on a dev write-mode run (owner rule 2026-11-03:
+      #    the -dev backtrack/live shells are empty and prod is the source of
+      #    truth for feature reads - the old follow-the-write-env default
+      #    silently read the empty Player-Snapshots-dev and clean-skipped).
+      #    Only an EXPLICITLY set source input = 'dev' overrides (legacy
+      #    dev-side live read for dev testing).
       #    `inputs.environment` is NOT referenced unconditionally: on a
       #    schedule event it resolves EMPTY, and an empty step-level ENV
       #    would override the job-level prod -> config.ENV's 'dev' fallback.
@@ -172,6 +179,9 @@ jobs:
       #    resolved write target is visible in the job log ("env: prod").
       #  * the SOURCE axis (inputs.source, default prod): which LIVE
       #    snapshot TODAY's rows are read from (Player-Snapshots-{source}).
+      #    The in-step fallback is UNCONDITIONAL prod - `${DISPATCH_SOURCE:-prod}`
+      #    never consults the write env (the owner's source-of-truth rule);
+      #    an explicit source=dev input is the ONLY dev-live-read override.
       #    Scheduled + repository_dispatch resolve NO source input at all ->
       #    prod (nightly unchanged: BOTH axes prod). Whitelisted dev|prod,
       #    hard-failed otherwise, the same fail-closed form.
@@ -196,8 +206,13 @@ jobs:
               echo "::error::environment must be dev or prod (got '${RESOLVED}')"
               exit 1 ;;
           esac
-          # SOURCE axis: empty on schedule/repository_dispatch -> prod, so the
-          # nightly keeps BOTH axes prod (zero behavioral change).
+          # SOURCE axis: ${DISPATCH_SOURCE:-prod} - the fallback is
+          # UNCONDITIONAL 'prod' (the write env NEVER decides the live read;
+          # owner rule: prod is the source of truth for feature reads -
+          # 2026-11-03, after the -dev backtrack/live shells were removed as
+          # tables-of-record). An explicitly set source=dev dispatch input is
+          # the only dev-live-read override. Schedule/kick runs dispatch no
+          # source at all -> prod (nightly: BOTH axes prod, unchanged).
           SOURCE_RESOLVED="${DISPATCH_SOURCE:-prod}"
           case "${SOURCE_RESOLVED}" in
             dev|prod) ;;
