@@ -382,6 +382,22 @@ full-slate rows (templates/player_processing_pipeline.asl.json:
 `PublishToDb -> KickMLPicks`). A manual run against a date the site has
 not published yet hits the warn + clean skip above.
 
+**Verified live 2026-11-03 (slate 2026-11-03, artifact
+(`artifact_2026-10-29_0.joblib`, 5d — fine), 495-row full slate on BOTH
+tables):** dev dry run (read-only): `stat_column {stat_fill_skipped: true,
+reason: dry}`, 3 top picks assembled, Picks-dev byte-identical pre/post (0
+rows, 0 columns changed — dry stays read-only end to end); dev non-dry +
+prod full-slate: `stat_update: filled stat on 495/495` with 0 call-up
+warnings; prod pre/post JSON diff shows exactly `{'stat': 495}` — the only
+column touched, on all 495 rows (row count 495 unchanged, row ids
+unchanged; all 495 previously held the site's raw fractions, 0.20–0.28
+style, now scaled rank percentiles e.g. Teddy Blueger 0.2045 → 51.3);
+the SECOND prod pass wrote byte-identical values (full-table capture
+sha256 equal across runs) — deterministic per-row inference, idempotent
+re-fill confirmed; mean_max_prob 0.9481 with top-of-group Cutter Gauthier
+(tims 1, 93.3), Logan Stankoven (tims 2, 95.6), Jakob Chychrun (tims 3,
+95.6).
+
 ### 1.1 Missing-day and empty-snapshot semantics (owner-approved)
 
 * A missing backtrack day is **NORMAL**: the tables only gain a date's rows
