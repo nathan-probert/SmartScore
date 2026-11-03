@@ -35,7 +35,8 @@ def get_html_and_text(picks: List[Dict], display_name: str = "") -> (str, str):
     for pick in sorted_picks:
         stat = pick.get("stat", "")
         try:
-            stat_str = f"{float(stat):.2f}%"
+            # DB stat is a 0-1 fraction
+            stat_str = f"{float(stat) * 100:.2f}%"
         except (ValueError, TypeError):
             stat_str = str(stat)
         text_body += f"{pick.get('tims', '')} | {pick.get('name', '')} | {pick.get('team_name', '')} | {stat_str}\n"
@@ -77,7 +78,8 @@ def get_html_and_text(picks: List[Dict], display_name: str = "") -> (str, str):
     for pick in sorted_picks:
         stat = pick.get("stat", "")
         try:
-            stat_str = f"{float(stat):.2f}%"
+            # DB stat is a 0-1 fraction
+            stat_str = f"{float(stat) * 100:.2f}%"
         except (ValueError, TypeError):
             stat_str = f"{stat}%" if stat != "" else ""
         html_body += f"""
