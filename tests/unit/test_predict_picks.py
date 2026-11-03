@@ -51,12 +51,20 @@ sys.modules.setdefault("make_predictions_rust", _rust_stub)
 # sys.path bootstrap precedes these imports deliberately (see above)
 # (bootstrap deliberately precedes these imports)
 # noqa anchor
-_SPEC = importlib.util.spec_from_file_location(  # noqa: E402
-    "run_daily_picks", ROOT / "smartscore" / "scripts" / "backtrack" / "run_daily_picks.py"
-)
-mod = importlib.util.module_from_spec(_SPEC)
-sys.modules["run_daily_picks"] = mod
-_SPEC.loader.exec_module(mod)
+# run_daily_picks is loaded ONCE per session under its canonical name: other
+# unit files (tests/unit/test_picks_db_nan_behaviors.py) stub the same module
+# with the file's fixtures patching by string key ("run_daily_picks.ENV"),
+# which only lands if sys.modules["run_daily_picks"] is the SAME object this
+# file's `mod` refers to (a second exec_module would clobber the entry and a
+# name-keyed patch would land on the wrong module object -> cross-file
+# pollution, 26 failures when the files share a session).
+_run_dp_path = ROOT / "smartscore" / "scripts" / "backtrack" / "run_daily_picks.py"
+mod = sys.modules.get("run_daily_picks")
+if not hasattr(mod, "__file__") or Path(mod.__file__).resolve() != _run_dp_path.resolve():
+    _SPEC = importlib.util.spec_from_file_location("run_daily_picks", _run_dp_path)  # noqa: E402
+    mod = importlib.util.module_from_spec(_SPEC)
+    sys.modules["run_daily_picks"] = mod
+    _SPEC.loader.exec_module(mod)
 
 # The runner-side refresh wrapper (ml-picks.yml's crawl step): same import
 # pattern, no Supabase config manufactured (refresh_store deliberately

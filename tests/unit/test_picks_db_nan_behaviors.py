@@ -50,9 +50,20 @@ sys.modules.setdefault("make_predictions_rust", _rust_stub)
 _SPEC = importlib.util.spec_from_file_location(
     "run_daily_picks", ROOT / "smartscore" / "scripts" / "backtrack" / "run_daily_picks.py"
 )
-mod = importlib.util.module_from_spec(_SPEC)
-sys.modules["run_daily_picks"] = mod
-_SPEC.loader.exec_module(mod)
+# Reuse the module tests/unit/test_predict_picks.py already loaded under the
+# canonical "run_daily_picks" name when this file shares a session with it:
+# BOTH files patch by string key ("run_daily_picks.SUPABASE_ADMIN_CLIENT"),
+# and re-executing the module under the same sys.modules key would replace
+# the entry with a new object - the other file's patches (and `mod`) would
+# then point at a stale object -> cross-file pollution (26 failures). One
+# shared module object per session, each test wiring its own fakes via
+# monkeypatch (which restores attributes between tests), keeps both files'
+# `mod` references consistent.
+mod = sys.modules.get("run_daily_picks")
+if not hasattr(mod, "__file__") or Path(mod.__file__).resolve() != Path(_SPEC.origin).resolve():
+    mod = importlib.util.module_from_spec(_SPEC)
+    sys.modules["run_daily_picks"] = mod
+    _SPEC.loader.exec_module(mod)
 
 ON_DATE = "2026-10-19"
 
