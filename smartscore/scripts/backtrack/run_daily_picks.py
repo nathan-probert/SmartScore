@@ -8,12 +8,12 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
     versioned joblib artifact that the owner's train_export.py --upload run
     pushed from the local machine;
   * TODAY's prediction rows come from the LIVE snapshot table
-    Player-Snapshots-{ENV} (what the pipeline's daily snapshot build
-    publishes each morning; the ONLY env-resolved reads together with the
-    Picks table). The BACKTRACK history is the ONE shared ledger
+    Player-Snapshots-{source_env} - the HYBRID-able read side
+    (--source-env, default: follow the write env; the resolution order is
+    documented below). The BACKTRACK history is the ONE shared ledger
     (Player-Snapshots-backtrack-prod): the history reads (players, teams,
-    goalies) always go to the -prod backtrack tables whatever the picks env
-    is, because the dev backtrack tables were DELETED after prod was
+    goalies) always go to the -prod backtrack tables whatever the env axes
+    are, because the dev backtrack tables were DELETED after prod was
     verified to supersede them (docs/backtrack_dev_deleted.md) - they gain a
     date's rows after that day's games end and the publish runs, so a
     missing recent day is NORMAL: the run prints ONE warning and continues;
@@ -58,6 +58,43 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
 
 Manual trigger: the workflow's ``date`` input (or ``--date YYYY-MM-DD``)
 overrides ET-today; ``dry``/``--dry`` skips the Picks write (smoke run).
+
+THE THREE ENV AXES (HYBRID mode) and their EXACT resolution order:
+
+  * WRITE env - which Picks table this run REPLACES: the module-global
+    ``ENV`` (config.ENV, the import-time read ``os.environ.get("ENV", "dev")``
+    at config.py:12). NO CLI flag by design: a ``--env`` flag would need the
+    same module-global rebind care the earlier ENV fixture bug warned about
+    (the writer, live-table helper and gap-fill all capture ``from config
+    import ENV`` at import), and the workflow already binds the job/step
+    ``ENV`` in the process environment before ``python`` starts - that IS
+    the single, unambiguous re-bind point. Resolution: process env ENV ->
+    config default 'dev'.
+  * SOURCE env - which LIVE snapshot TODAY's rows are read from
+    (Player-Snapshots-{source_env}, today_live_rows): CLI ``--source-env``
+    -> ``event["source_env"]`` -> env var ``SOURCE_ENV`` -> the WRITE env
+    (ENV). DEFAULT: it FOLLOWS the write env, so every pre-hybrid caller
+    behaves exactly as before.
+  * HISTORY env - CLI ``--history-env`` (default: 'prod' PINNED; explicit
+    flag only, ``event["history_env"]`` -> env var ``HISTORY_ENV`` ->
+    'prod'): whatever its value, the reads route to the ONE shared
+    ``-prod`` ledger REGARDLESS (027ef47's shared-ledger rule: the dev
+    backtrack tables are deleted). 'dev' is an accepted choice so the flag
+    is honest about the axis, and a dev request prints a loud note that it
+    routes to the shared ledger anyway.
+
+  Supported combos, precisely:
+    - ENV=prod + source-env=prod (the nightly/defaults: prod tables, the
+      unchanged behavior);
+    - ENV=dev  + source-env=prod  - THE HYBRID: real prod live slate,
+      history is always shared - only Picks-dev is written, so the owner
+      validates end-to-end picks against live prod data without touching
+      Picks-prod;
+    - ENV=dev  + source-env=dev   - plain dev mode (unchanged legacy).
+  The Picks write is a full REPLACE of the target table (single-day
+  convention: Picks-{write_env} holds ONLY the last written date's picks -
+  it is wiped and re-inserted with ids restarting at 1 on every run,
+  save_picks_db below).
 
 Artifact source (the artifact-fact convention), in this documented order:
 (1) ``--artifact PATH`` (a local file, e.g. one committed under data/ml/) -
@@ -219,6 +256,34 @@ EXPECTED_PICKS = 3
 # table left empty. The whitelist keeps the training-frame keys for the
 # record; REMOVE_KEYS decides what is actually serialized.
 REMOVE_KEYS = ["ppg"]
+
+# ---------------------------------------------------------------- env axes
+# Resolution order (the module docstring documents it precisely):
+#   write   -> module-global ENV (config.ENV; the process env the workflow
+#              binds). NO CLI re-bind: re-binding a `from config import ENV`
+#              global after import is the exact hazard the ENV fixture bug
+#              warned about, and the import-time read happens once per
+#              process anyway - the workflow's step-level ENV IS the bind.
+#   source  -> CLI --source-env -> event["source_env"] -> SOURCE_ENV var -> ENV.
+#   history -> CLI --history-env -> event["history_env"] -> HISTORY_ENV var
+#              -> "prod" PINNED; the reads route to the shared -prod ledger
+#              regardless of the value (027ef47's shared-ledger rule).
+ENV_CHOICES = ("dev", "prod")
+HISTORY_ENV_DEFAULT = "prod"
+
+
+def resolve_env_axis(cli_value, env_var, fallback):
+    """One env axis: CLI/event value -> process env var -> fallback.
+
+    Whitelists dev|prod and raises naming the axis (fail-closed, the same
+    form the workflow's resolve step hard-fails with) - a typo like
+    'staging' must abort the run BEFORE any read, never string-suffix a
+    table guess into PostgREST.
+    """
+    resolved = cli_value or os.environ.get(env_var) or fallback
+    if resolved not in ENV_CHOICES:
+        raise ValueError(f"invalid env value {resolved!r}: must be one of {list(ENV_CHOICES)} (axis: {env_var})")
+    return resolved
 
 
 # ---------------------------------------------------------------- artifact
@@ -462,13 +527,18 @@ def today_live_rows(env, on_date):
     return pd.DataFrame(rows)
 
 
-def require_live_columns(today, on_date):
+def require_live_columns(today, on_date, source_env=None):
     """The live snapshot's context contract (REQUIRED_LIVE_COLUMNS), fail-closed
-    and naming exactly what is missing - the shape the 16-column check had."""
+    and naming exactly what is missing - the shape the 16-column check had.
+
+    ``source_env`` names the LIVE-read axis (Player-Snapshots-{source_env});
+    it falls back to the write env (module ENV) so pre-hybrid callers keep
+    their exact message."""
+    source_env = source_env or ENV
     missing = [col for col in REQUIRED_LIVE_COLUMNS if col not in today.columns]
     if missing:
         raise RuntimeError(
-            f"{live_player_table(ENV)} rows for {on_date} lack the context columns the "
+            f"{live_player_table(source_env)} rows for {on_date} lack the context columns the "
             f"ML pick pass consumes: missing exactly {missing}. "
             "The daily snapshot build published a malformed slice."
         )
@@ -518,8 +588,10 @@ def history_team_rows(env, before_date):
     (tgpg/otga/otshga) at the training grain AND the game-day
     schedule add_derived computes rest days from.
 
-    SHARED-LEDGER RULE: always the -prod backtrack table whatever the picks
-    env is - Team-Stats-backtrack-dev was deleted
+    ``env`` carries the explicit --history-env value; SHARED-LEDGER RULE
+    (027ef47, kept verbatim): the routing below is always the -prod
+    backtrack table whatever that value is -
+    Team-Stats-backtrack-dev was deleted
     (docs/backtrack_dev_deleted.md) and there is ONE history source."""
     table = SHARED_TEAM_TABLE
     frame = _paged_date_window(
@@ -982,8 +1054,14 @@ def _inject_today_context(teams, goalies, today, on_date):
     return teams, goalies
 
 
-def load_prediction_tables(env, on_date):
+def load_prediction_tables(source_env, on_date, history_env=HISTORY_ENV_DEFAULT):
     """The run's data assembly - every read READ-ONLY.
+
+    ``source_env`` is the LIVE-read axis: ``today`` is read from
+    Player-Snapshots-{source_env} (the --source-env flag; defaults to the
+    write env at the caller). ``history_env`` is DOCUMENTATION-IN-CODE only:
+    the history reads route to the ONE shared -prod ledger whatever it says
+    (027ef47; the flag makes the rule explicit, the routing stays pinned).
 
     Returns (today, players, teams, goalies, history); ``today`` is None when
     the LIVE snapshot has no rows for the pick date (the caller exits cleanly:
@@ -994,13 +1072,13 @@ def load_prediction_tables(env, on_date):
     ``history`` is the raw fetch (including the stage-2 per-game raw columns)
     that shot_block_from_history runs the exact recompute on.
     """
-    today = today_live_rows(env, on_date)
+    today = today_live_rows(source_env, on_date)
     if today is None:
         return None
-    require_live_columns(today, on_date)
-    teams = history_team_rows(env, on_date)
-    goalies = history_goalie_rows(env, on_date)
-    history = history_rows(env, on_date)
+    require_live_columns(today, on_date, source_env=source_env)
+    teams = history_team_rows(history_env, on_date)
+    goalies = history_goalie_rows(history_env, on_date)
+    history = history_rows(history_env, on_date)
     today = _map_live_rows(today, history, goalies)
     teams, goalies = _inject_today_context(teams, goalies, today, on_date)
     players = pd.concat([history, today], ignore_index=True)
@@ -1296,11 +1374,34 @@ def pick_daily_bundle(bucket, prefix, artifact_path, storage_bucket=None, storag
 
 def run(event=None, context=None):
     """The former Lambda handler, unchanged in behaviour. `event` carries
-    optional date / dry / artifact_path / s3_bucket / s3_prefix; `context`
-    is kept in the signature so the lifted test surface stays drop-in."""
+    optional date / dry / artifact_path / s3_bucket / s3_prefix - plus the
+    HYBRID axes: `source_env` (the LIVE-read side; which Player-Snapshots-
+    {source_env} today's rows come from) and `history_env` (default
+    'prod' pinned: the shared-ledger reads are unchanged whatever it says).
+    The WRITE side stays the module-global ENV: Picks-{ENV} is replaced.
+    `context` is kept in the signature so the lifted test surface stays
+    drop-in."""
     event = event or {}
     on_date = str(event.get("date") or today_et())
     dry = bool(event.get("dry"))
+    # THE TWO HYBRID AXES (resolution order in the module docstring):
+    #   source:  CLI --source-env / event source_env -> SOURCE_ENV var -> ENV
+    #   history: CLI --history-env / event history_env -> HISTORY_ENV var ->
+    #            'prod' (pinned default; routed to the shared ledger anyway)
+    source_env = resolve_env_axis(event.get("source_env"), "SOURCE_ENV", ENV)
+    history_env = resolve_env_axis(event.get("history_env"), "HISTORY_ENV", HISTORY_ENV_DEFAULT)
+    if history_env != HISTORY_ENV_DEFAULT:
+        print(
+            f"NOTE: --history-env {history_env} is accepted but the reads still route to the "
+            f"ONE shared ledger ({SHARED_HISTORY_TABLE} et al., 027ef47) - the dev backtrack "
+            "tables are deleted",
+            flush=True,
+        )
+    print(
+        f"env axes: write=Picks-{ENV} | live read=Player-Snapshots-{source_env} "
+        f"| history=shared {SHARED_HISTORY_TABLE} (history_env={history_env})",
+        flush=True,
+    )
 
     bucket = event.get("s3_bucket") or os.environ.get("ML_S3_BUCKET")
     prefix = event.get("s3_prefix") or os.environ.get("ML_ARTIFACT_PREFIX", "predict/ml")
@@ -1330,6 +1431,10 @@ def run(event=None, context=None):
     # for the next pass.
     yesterday = (datetime.date.fromisoformat(on_date) - datetime.timedelta(days=1)).isoformat()
     if not dry:
+        # UNCHANGED shared-ledger behavior (027ef47): the gap-fill targets
+        # Player-Snapshots-backtrack-prod REGARDLESS of the picks env or the
+        # --history-env value (the helper's routing is env-independent; the
+        # arg is compatibility surface only).
         try:
             summary = backfill_missing_days.backfill(ENV, through_date=yesterday)
             if summary.get("failed_days"):
@@ -1350,7 +1455,9 @@ def run(event=None, context=None):
     else:
         warn_missing_backfill_days(ENV, yesterday)
 
-    loaded = load_prediction_tables(ENV, on_date)
+    # The LIVE read: Player-Snapshots-{source_env} (the HYBRID axis). On the
+    # defaults source_env == ENV, so this is byte-for-byte today's behavior.
+    loaded = load_prediction_tables(source_env, on_date, history_env)
     if loaded is None:
         # CLEAN EXIT (owner rule): no LIVE snapshot rows for the pick date =
         # the morning snapshot build has not run yet and there is nothing to
@@ -1421,6 +1528,9 @@ def run(event=None, context=None):
                 "n_picks": len(rows),
                 "mean_max_prob": mean_max_prob,
                 "ensemble_scale": "within-(date,tims) rank percentile",
+                "write_env": ENV,
+                "source_env": source_env,
+                "history_env": history_env,
                 "artifact": {
                     "key": key,
                     "train_through": meta.get("train_through"),
@@ -1477,6 +1587,24 @@ def main(argv=None):
         default=None,
         help="Supabase Storage path override (default the ML_ARTIFACT_STORAGE_PREFIX env, predict/ml)",
     )
+    parser.add_argument(
+        "--source-env",
+        choices=ENV_CHOICES,
+        default=None,
+        help="which LIVE snapshot table to read TODAY's rows from: Player-Snapshots-{source-env}. "
+        "DEFAULT: follow the picks env (ENV). Resolution: this flag -> SOURCE_ENV env var -> ENV. "
+        "THE HYBRID is ENV=dev + --source-env prod: reads the real prod live slate (and the "
+        "always-shared history) but writes ONLY Picks-dev - Picks-prod is untouched",
+    )
+    parser.add_argument(
+        "--history-env",
+        choices=ENV_CHOICES,
+        default=None,
+        help="the explicit history-axis flag; DEFAULT 'prod' is PINNED: Player-Snapshots-"
+        "backtrack-prod + Team-Stats-backtrack-prod + Goalie-Snapshots-backtrack-prod are read "
+        "REGARDLESS (027ef47's shared-ledger rule - the dev backtrack tables are deleted), so a "
+        "'dev' value is accepted but routed to the same shared ledger (loud note printed)",
+    )
     args = parser.parse_args(argv)
 
     event = {}
@@ -1484,6 +1612,10 @@ def main(argv=None):
         event["date"] = args.date
     if args.dry:
         event["dry"] = True
+    if args.source_env:
+        event["source_env"] = args.source_env
+    if args.history_env:
+        event["history_env"] = args.history_env
     if args.artifact:
         event["artifact_path"] = args.artifact
     if args.s3_bucket:

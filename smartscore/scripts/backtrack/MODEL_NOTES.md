@@ -1794,7 +1794,10 @@ The model production chain lives outside this flat tree:
 
 - **Predict/pass runner:** the daily ML picks pass runs as the scheduled
   `.github/workflows/ml-picks.yml` workflow; `docs/ml-picks-runbook.md` is
-  its runbook (artifact refresh, secrets, cost, stale roll-forward).
+  its runbook (artifact refresh, secrets, cost, stale roll-forward; env
+  matrix incl. the HYBRID profile — `environment=dev` + `source=prod`
+  reads today's rows from Player-Snapshots-prod and writes ONLY Picks-dev
+  via run_daily_picks' --source-env axis; nightly stays prod/prod).
   Per-game kick: pipeline state machine KickMLPicks (post-PublishToDb) ->
   MLPicksKick-{ENV} -> repository_dispatch (race fix: serialized after the
   write path); pipeline runtime: GitHub Actions; runbook: ml-picks-runbook.md.

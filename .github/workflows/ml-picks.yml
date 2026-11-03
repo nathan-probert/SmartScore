@@ -33,7 +33,21 @@ on:
       # ONLY the job-level ENV: prod (the "Resolve the picks ENV" step), so a
       # cron run can never drift to dev. docs/ml-picks-runbook.md §1 (env matrix).
       environment:
-        description: 'Picks table + snapshot source env (dev|prod)'
+        description: 'Picks table + default snapshot source env (dev|prod)'
+        type: string
+        required: false
+        default: prod
+      # The HYBRID axis: source splits the LIVE-read side from the write side.
+      # `environment` keeps deciding the WRITE side (Picks-{environment});
+      # `source` decides ONLY which LIVE snapshot TODAY's rows are read from
+      # (Player-Snapshots-{source}, run_daily_picks --source-env). The owner's
+      # pre-deployment-validation profile: environment=dev + source=prod -
+      # real prod slate, writes Picks-dev, picks-prod untouched. Default
+      # prod keeps every pre-hybrid path byte-identical; the nightly cron and
+      # repository_dispatch runs resolve prod for BOTH axes (no inputs read).
+      # docs/ml-picks-runbook.md §1 (env matrix) + §10 (shared ledger).
+      source:
+        description: 'LIVE snapshot source env for TODAYS rows (dev|prod; default prod)'
         type: string
         required: false
         default: prod
@@ -68,13 +82,17 @@ jobs:
       # Scheduled + repository_dispatch runs resolve ONLY this job-level
       # default (schedule has no `inputs` path): prod, i.e. Picks-prod /
       # Player-Snapshots-prod / *-backtrack-prod. Manual workflow_dispatch
-      # overrides it per-run via the `environment` input at the "Resolve the
-      # picks ENV" step (ENV: ${{ steps.picks_env.outputs.picks_env }} on the
-      # script steps). GitHub Actions sets job/step env in the PROCESS env
-      # before `python` starts, so config.py's import-time read
-      # (config.ENV = os.environ.get("ENV", "dev"), config.py:12) resolves it
+      # overrides it per-run via the `environment` input (WRITE side) and the
+      # `source` input (LIVE-READ side) at the "Resolve the picks ENV +
+      # SOURCE env" step (ENV: steps.picks_env.outputs.picks_env and
+      # SOURCE_ENV: steps.picks_env.outputs.source_env on the picks step).
+      # GitHub Actions sets job/step env in the PROCESS env before `python`
+      # starts, so config.py's import-time read (config.ENV =
+      # os.environ.get("ENV", "dev"), config.py:12) resolves it
       # unambiguously - no import-ordering hazard, no --env flag needed on
-      # run_daily_picks. docs/ml-picks-runbook.md §1.
+      # run_daily_picks (the LIVE-read side DOES take --source-env; the two
+      # axes default to prod each, so the nightly is unchanged).
+      # docs/ml-picks-runbook.md §1.
       ENV: prod
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
@@ -144,20 +162,29 @@ jobs:
       #    ONLY the job-level env: ENV: prod -> Picks-prod; no silent env
       #    default can land them on the wrong Picks table;
       #  * workflow_dispatch overrides via the `environment` input (default
-      #    prod; set dev to write Picks-dev / read the -dev-suffixed tables).
+      #    prod; set dev to write Picks-dev / default to the dev LIVE source
+      #    unless `source` overrides the READ side separately).
       #    `inputs.environment` is NOT referenced unconditionally: on a
       #    schedule event it resolves EMPTY, and an empty step-level ENV
       #    would override the job-level prod -> config.ENV's 'dev' fallback.
       #    Gated the other way round (empty -> job ENV), that cannot happen.
       #  * the resolved value is whitelisted dev|prod and echoed so the
       #    resolved write target is visible in the job log ("env: prod").
+      #  * the SOURCE axis (inputs.source, default prod): which LIVE
+      #    snapshot TODAY's rows are read from (Player-Snapshots-{source}).
+      #    Scheduled + repository_dispatch resolve NO source input at all ->
+      #    prod (nightly unchanged: BOTH axes prod). Whitelisted dev|prod,
+      #    hard-failed otherwise, the same fail-closed form.
       # The step-level ENV below binds the SAME resolved value to both script
       # steps (GitHub Actions puts it in the process env before python
-      # starts, so config.py's import-time read is unambiguous).
-      - name: 'Resolve the picks ENV (scheduled=prod; manual dispatch: the environment input)'
+      # starts, so config.py's import-time read is unambiguous); SOURCE_ENV
+      # rides only the picks step (the live-read side; the backfill step is
+      # env-independent by the shared-ledger rule 027ef47).
+      - name: 'Resolve the picks ENV (write side) + SOURCE env (live-read side)'
         id: picks_env
         env:
           DISPATCH_ENV: ${{ inputs.environment }}
+          DISPATCH_SOURCE: ${{ inputs.source || github.event.client_payload.source }}
         run: |
           RESOLVED="${DISPATCH_ENV}"
           if [ -z "${RESOLVED}" ]; then
@@ -169,8 +196,19 @@ jobs:
               echo "::error::environment must be dev or prod (got '${RESOLVED}')"
               exit 1 ;;
           esac
+          # SOURCE axis: empty on schedule/repository_dispatch -> prod, so the
+          # nightly keeps BOTH axes prod (zero behavioral change).
+          SOURCE_RESOLVED="${DISPATCH_SOURCE:-prod}"
+          case "${SOURCE_RESOLVED}" in
+            dev|prod) ;;
+            *)
+              echo "::error::source must be dev or prod (got '${SOURCE_RESOLVED}')"
+              exit 1 ;;
+          esac
           echo "env: ${RESOLVED}"
+          echo "source: ${SOURCE_RESOLVED}"
           echo "picks_env=${RESOLVED}" >> "$GITHUB_OUTPUT"
+          echo "source_env=${SOURCE_RESOLVED}" >> "$GITHUB_OUTPUT"
       - name: Backfill the last published date's missing completed game days (NHL API, bounded)
         env:
           DISPATCH_DRY: ${{ inputs.dry || github.event.client_payload.dry }}
@@ -223,10 +261,23 @@ jobs:
         env:
           DISPATCH_DATE: ${{ inputs.date || github.event.client_payload.date }}
           DISPATCH_DRY: ${{ inputs.dry || github.event.client_payload.dry }}
+          # WRITE side: the resolved picks env -> Picks-{ENV} (config.ENV).
           ENV: ${{ steps.picks_env.outputs.picks_env }}
+          # LIVE-READ side: the resolved source env -> Player-Snapshots-
+          # {source_env} via run_daily_picks' --source-env. The backfill
+          # (above) and the history reads are NOT source-resolved: the shared
+          # -prod ledger is read/written regardless (027ef47).
+          SOURCE_ENV: ${{ steps.picks_env.outputs.source_env }}
         run: |
           echo "env: ${ENV}"
-          ARGS=""
+          echo "source: ${SOURCE_ENV}"
+          # The write env stays ENV (no CLI re-bind: an --env flag would
+          # rebind the module-global config.ENV read at import - the hazard
+          # the ENV fixture bug warned about); the step-level env IS the
+          # bind. --source-env is passed explicitly so the live-read axis is
+          # visible in the script's own argv/log; history reads follow the
+          # pinned default 'prod'.
+          ARGS="--source-env ${SOURCE_ENV}"
           if [ -n "${DISPATCH_DATE}" ]; then
             ARGS="${ARGS} --date ${DISPATCH_DATE}"
           fi

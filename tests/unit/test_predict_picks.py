@@ -19,6 +19,7 @@ and the dry/published run paths.
 import datetime
 import importlib.util
 import io
+import json
 import sys
 import types
 from pathlib import Path
@@ -1376,3 +1377,167 @@ def test_env_resolved_at_import_routes_the_picks_write(monkeypatch, env_value):
     payload = client.tables[table]["upserts"]
     assert [row["id"] for row in payload] == [1]
     assert payload[0]["player_id"] == 123
+
+
+# ------------------------------------------------- hybrid mode (source/write)
+# The hybrid axes (run_daily_picks.run + --source-env/--history-env):
+#   WRITE env -> module-global ENV (config.ENV) - Picks-{ENV};
+#   SOURCE env -> --source-env / SOURCE_ENV var -> ENV (today_live_rows);
+#   HISTORY env -> --history-env (default 'prod' pinned) -> the ONE shared
+#   -prod ledger REGARDLESS (027ef47). The owner's pre-deployment
+#   validation profile: ENV=dev + --source-env prod (prod live slate,
+#   shared history, writes ONLY Picks-dev).
+
+
+def record_table_names(fake_client):
+    """Wrap a fake client's table() side_effect to record every table name
+    a run resolves (the routing witness for the env-axis tests)."""
+    names = []
+    real = fake_client.table.side_effect
+
+    def _recorder(name):
+        names.append(name)
+        return real(name)
+
+    fake_client.table.side_effect = _recorder
+    return names
+
+
+def test_hybrid_env_dev_source_prod_reads_prod_snapshot(env_vars, prediction_tables, monkeypatch, capsys):
+    """(a)+(b) THE HYBRID: ENV=dev (write side) + event source_env=prod -
+    today's rows are read from Player-Snapshots-prod (the REAL prod slate),
+    every history read still routes to the SHARED -prod ledger, and
+    Picks-dev is never read (the Picks write is a write-only surface and
+    this is a dry pass). Default-unset behavior is asserted separately."""
+    monkeypatch.setattr(mod, "ENV", "dev")  # the WRITE side of the hybrid
+    monkeypatch.delenv("SOURCE_ENV", raising=False)
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls: list = []
+    fake_save(monkeypatch, calls)
+    names = record_table_names(prediction_tables)
+
+    result = mod.handler({"date": ON_DATE, "dry": True, "source_env": "prod"}, None)
+
+    assert result["statusCode"] == 200
+    assert len(result["picks"]) == 3 and calls == []  # dry: assembled, no write
+    assert "Player-Snapshots-prod" in names  # the LIVE read IS source-resolved
+    assert "Player-Snapshots-dev" not in names  # the dev live table never touched
+    history_tables = [n for n in names if n != "Player-Snapshots-prod"]
+    assert not [n for n in history_tables if "Picks-" in n]
+    # (b) EVERY history read routes to the shared -prod ledger (027ef47)
+    for shared in (
+        "Player-Snapshots-backtrack-prod",
+        "Team-Stats-backtrack-prod",
+        "Goalie-Snapshots-backtrack-prod",
+    ):
+        assert shared in names
+    assert all(n.endswith("-prod") for n in names)  # one data plane, unchanged
+    assert "Player-Snapshots-backtrack-dev" not in names
+    out = capsys.readouterr().out
+    assert "env axes: write=Picks-dev | live read=Player-Snapshots-prod" in out
+    picks_line = [line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0]
+    payload = json.loads(picks_line)
+    assert payload["write_env"] == "dev" and payload["source_env"] == "prod"
+
+
+def test_hybrid_source_env_env_var_axis_wins_over_fallback(env_vars, prediction_tables, monkeypatch, capsys):
+    """(a) The SOURCE_ENV env var is honored without an event/CLI value - the
+    workflow passes the resolved source both ways (step env + CLI flag);
+    either alone drives the live read."""
+    monkeypatch.setattr(mod, "ENV", "dev")
+    monkeypatch.setenv("SOURCE_ENV", "prod")
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls: list = []
+    fake_save(monkeypatch, calls)
+    names = record_table_names(prediction_tables)
+
+    result = mod.handler({"date": ON_DATE, "dry": True}, None)  # NO source_env key
+
+    assert result["statusCode"] == 200 and len(result["picks"]) == 3
+    assert "Player-Snapshots-prod" in names
+    assert "Player-Snapshots-dev" not in names
+    out = capsys.readouterr().out
+    assert "live read=Player-Snapshots-prod" in out
+
+
+def test_hybrid_default_unset_follows_env_exactly(env_vars, prediction_tables, monkeypatch, capsys):
+    """(d) Default-unset == today's behavior: no --source-env, no SOURCE_ENV
+    var -> the live read FOLLOWS the write env (ENV=prod ->
+    Player-Snapshots-prod) and nothing else changes."""
+    monkeypatch.delenv("SOURCE_ENV", raising=False)
+    monkeypatch.delenv("HISTORY_ENV", raising=False)
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls: list = []
+    fake_save(monkeypatch, calls)
+    names = record_table_names(prediction_tables)
+
+    result = mod.handler({"date": ON_DATE, "dry": True}, None)
+
+    assert result["statusCode"] == 200 and len(result["picks"]) == 3
+    assert "Player-Snapshots-prod" in names  # followed ENV, same as before
+    out = capsys.readouterr().out
+    picks_line = [line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0]
+    payload = json.loads(picks_line)
+    assert payload["write_env"] == "prod" and payload["source_env"] == "prod" and payload["history_env"] == "prod"
+
+
+def test_resolve_env_axis_resolution_order(monkeypatch):
+    """The documented CLI->env-var->fallback order, whitelisted fail-closed:
+    a bad axis value aborts BEFORE any read (ValueError), like the workflow's
+    resolve step."""
+    monkeypatch.delenv("SOURCE_ENV", raising=False)
+    monkeypatch.delenv("HISTORY_ENV", raising=False)
+    # fallback = the write env (source follows ENV by default)
+    assert mod.resolve_env_axis(None, "SOURCE_ENV", "dev") == "dev"
+    # env var beats the fallback, CLI beats the env var
+    monkeypatch.setenv("SOURCE_ENV", "prod")
+    assert mod.resolve_env_axis(None, "SOURCE_ENV", "dev") == "prod"
+    assert mod.resolve_env_axis("dev", "SOURCE_ENV", "dev") == "dev"
+    # history axis: the 'prod' default is what run() passes (pinned)
+    assert mod.resolve_env_axis(None, "HISTORY_ENV", mod.HISTORY_ENV_DEFAULT) == "prod"
+    monkeypatch.setenv("HISTORY_ENV", "dev")  # accepted value (routing still shared)
+    assert mod.resolve_env_axis(None, "HISTORY_ENV", "prod") == "dev"
+    # fail-closed whitelist (delete the env var so the fallback is consulted)
+    with pytest.raises(ValueError, match="axis: SOURCE_ENV"):
+        mod.resolve_env_axis("staging", "SOURCE_ENV", "prod")
+    monkeypatch.delenv("SOURCE_ENV", raising=False)
+    monkeypatch.setenv("SOURCE_ENV", "")
+    with pytest.raises(ValueError):
+        mod.resolve_env_axis(None, "SOURCE_ENV", "staging")
+
+
+def test_cli_source_and_history_flags_map_into_the_event(monkeypatch):
+    """The CLI wiring: --source-env/--history-env ride the event; unset flags
+    add NO key (the run() fallbacks then apply)."""
+    events = []
+    monkeypatch.setattr(mod, "run", lambda event, context=None: (events.append(event), {"statusCode": 200})[1])
+
+    mod.main(["--date", "2026-10-23", "--source-env", "prod", "--dry"])
+    assert events[0]["source_env"] == "prod"
+    assert "history_env" not in events[0]  # default: no flag, no key
+
+    mod.main(["--date", "2026-10-23", "--history-env", "dev"])
+    assert events[1]["history_env"] == "dev"
+    assert "source_env" not in events[1]
+
+    with pytest.raises(SystemExit):
+        mod.main(["--source-env", "staging"])
+
+
+def test_hybrid_run_writes_picks_dev_with_prod_source(monkeypatch, capsys):
+    """(c) On the fresh-import surface (the workflow's exact import math): a
+    hybrid event (source_env=prod) resolves the READ axis to prod while the
+    WRITE global stays config.ENV ('dev') - and the real save path
+    (save_picks_db) targets Picks-dev on every surface."""
+    fresh = _fresh_import_with_env(monkeypatch, "dev")
+    # the resolution order on the fresh module: READ axis -> prod (explicit),
+    # WRITE env -> untouched 'dev' global (no CLI re-bind by design).
+    assert fresh.ENV == "dev"
+    assert fresh.resolve_env_axis("prod", "SOURCE_ENV", fresh.ENV) == "prod"
+
+    client = _EnvProbeClient()
+    monkeypatch.setattr(fresh, "SUPABASE_ADMIN_CLIENT", client)
+    rows = [{"player_id": 123, "tims": 2, "stat": 51.0, "date": "2026-06-15"}]
+    fresh.save_picks_db(rows, "2026-06-15")
+    assert set(client.tables) == {"Picks-dev"}, f"hybrid write touched {set(client.tables)}"
+    assert [row["id"] for row in client.tables["Picks-dev"]["upserts"]] == [1]

@@ -30,27 +30,56 @@ runner:
    * `date` — slate date `YYYY-MM-DD` (default: ET-today);
    * `dry` — smoke run: assembles + validates the 3 picks and prints the
      SMARTSCORE_ML_PICKS log line, but **skips the Picks write**;
-   * `environment` — Picks table + snapshot source env (`dev|prod`,
-     default: `prod` — the env matrix below).
+   * `environment` — the WRITE side: which Picks table the run replaces
+     plus the default LIVE source (`dev|prod`, default: `prod` — the env
+     matrix below);
+   * `source` — the LIVE-READ side ONLY: which snapshot TODAY's rows are
+     read from (`Player-Snapshots-{source}`, `dev|prod`, default `prod`).
+     The default keeps every pre-hybrid path byte-identical; the hybrid
+     profile below (`environment=dev` + `source=prod`) reads the REAL
+     prod slate and writes ONLY `Picks-dev`.
 
 ### Environment matrix — what writes to WHICH Picks table (ml-picks.yml ENV)
 
-The workflow's `ENV` resolution is EXPLICIT and fail-closed so no run can
-silently land on the wrong table (the mechanism: the job-level default
-`env: ENV: prod` in `jobs.picks.env`, overridden per-run at the
-"Resolve the picks ENV" step, which echoes `env: <resolved>` into the job
-log, whitelists `dev|prod` and hard-fails on anything else, and re-binds the
-resolved value as a step-level `ENV` on BOTH script steps — GitHub Actions
-sets job/step env in the PROCESS environment before `python` starts, so
-`config.ENV`'s import-time read (`config.py:12`,
-`ENV = os.environ.get("ENV", "dev")`) is unambiguous; `run_daily_picks`
-needs no `--env` flag):
+The env axes are now THREE, each explicitly resolved (the CLI flags'
+docstring in `run_daily_picks.py` cites the exact order): the **write** env
+— `Picks-{ENV}` (module-global config.ENV, job/step env in the workflow;
+deliberately NO `--env` CLI flag: a flag would re-bind the
+`from config import ENV` global after import — the exact hazard the
+earlier ENV fixture bug warned about); the **source** env —
+`--source-env` (CLI → `SOURCE_ENV` env var → the write env;
+`today_live_rows` reads `Player-Snapshots-{source_env}`, DEFAULT it
+follows the write env); and the **history** env — `--history-env`
+(default: `'prod'` PINNED) whose value only makes the rule explicit,
+because the history reads route to the ONE shared `-prod` ledger
+REGARDLESS (027ef47).
 
-| How the run starts | Resolved `ENV` | Tables written / read |
+The workflow's resolution is EXPLICIT and fail-closed for BOTH axes so no
+run can silently land on the wrong table (the mechanism: the job-level
+default `env: ENV: prod` in `jobs.picks.env`, overridden per-run at the
+"Resolve the picks ENV (write side) + SOURCE env (live-read side)" step,
+which echoes `env: <resolved>` AND `source: <resolved>` into the job log,
+whitelists each of `dev|prod` and hard-fails on anything else, and re-binds
+the resolved WRITE value as a step-level `ENV` on BOTH script steps and
+the resolved SOURCE as `SOURCE_ENV` + the explicit `--source-env` flag on
+the picks step — GitHub Actions sets job/step env in the PROCESS
+environment before `python` starts, so `config.ENV`'s import-time read
+(`config.py:12`, `ENV = os.environ.get("ENV", "dev")`) is unambiguous;
+`run_daily_picks` needs no `--env` flag — the WRITE side stays the module
+global; the LIVE-READ side takes `--source-env`):
+
+| How the run starts | Resolved ENV (write) / source (live read) | Tables written / read |
 | --- | --- | --- |
-| **Scheduled** (`cron '30 9 * * *'`) | **prod** — the job-level default ONLY (a scheduled run has no `inputs.environment`; that resolves empty and is never referenced unconditionally, so it cannot override the default with `''` → the `'dev'` fallback) | `Picks-prod` + `Player-Snapshots-prod` + the SHARED history ledger `Player-Snapshots-backtrack-prod` |
-| **Per-game kick** (`repository_dispatch`, ML Picks Restart) | **prod** — same job-level default | prod tables |
-| **Manual dispatch** | the `environment` input (`prod` default; set **dev** to write `Picks-dev` / read the dev LIVE table) — i.e. the owner's answer: scheduled = **prod**; a manual dispatch with `environment=dev` writes to **Picks-dev** | `Picks-{environment}` + LIVE `Player-Snapshots-{environment}`; historical reads and the backfill go to the SHARED ledger `Player-Snapshots-backtrack-prod` regardless (§10) |
+| **Scheduled** (`cron '30 9 * * *'`) | **prod** / prod — the job-level defaults ONLY (a scheduled run has no `inputs`; they resolve empty and are never referenced unconditionally, so a cron run keeps BOTH axes prod: zero behavioral change from the hybrid feature) | `Picks-prod` + `Player-Snapshots-prod` + the SHARED history ledger `Player-Snapshots-backtrack-prod` |
+| **Per-game kick** (`repository_dispatch`, ML Picks Restart) | **prod** / prod — same job-level defaults | prod tables |
+| **Manual dispatch** | the `environment` input (default **prod**) / the `source` input (default **prod**) — i.e. a manual dispatch with `environment=dev` writes to **Picks-dev** and reads the dev LIVE table unless `source` overrides the read | `Picks-{environment}` + LIVE `Player-Snapshots-{source}`; historical reads and the backfill go to the SHARED ledger `Player-Snapshots-backtrack-prod` regardless (§10) |
+| **Manual dispatch — PRE-DEPLOYMENT VALIDATION (HYBRID)** | `environment=dev` + `source=prod`: real prod slate | **writes ONLY `Picks-dev`** (Picks-prod untouched; the write is a full single-day REPLACE of the target table per run) while TODAY's rows are read from `Player-Snapshots-prod` (the real LIVE prod snapshot) and history stays the SHARED `Player-Snapshots-backtrack-prod` — the owner validates end-to-end picks against real live data without touching Picks-prod. Verified live 2026-11-03: dry --date 2026-10-23 (3 picks, mean 0.9232, no write) and non-dry --date 2026-10-19 (Picks-dev = 3 rows for 2026-10-19; Picks-prod count unchanged at 495) |
+
+The ARTIFACT selection is INDEPENDENT of all three axes — the same
+relative-key select on every profile (S3 `ML_S3_BUCKET`/prefix or Supabase
+Storage `ML_STORAGE_BUCKET` bucket `ml-artifacts`, prefix `predict/ml`,
+lexically latest `.joblib`; §2): no key change is needed when switching
+between prod and hybrid runs.
 
 FAIL-SAFE (in force in BOTH modes, not env-dependent): the Picks write goes
 through the schema-safe writer `save_picks_db`
@@ -68,9 +97,12 @@ as its own step; the per-date markers make the second invocation a no-op
 skip), then assembles the day's frame from THREE read-only sources
 (docs/ml-picks-runbook.md §1.1 below):
 
-* **today's rows** — the LIVE snapshot table `Player-Snapshots-{ENV}`
-  (the daily snapshot the pipeline's snapshot build publishes each
-  morning);
+* **today's rows** — the LIVE snapshot table
+  `Player-Snapshots-{source_env}` (the daily snapshot the pipeline's
+  snapshot build publishes each morning; `source_env` = the `--source-env`
+  axis above — it FOLLOWS the write env by default, so the pre-hybrid
+  reads are unchanged, and `environment=dev` + `source=prod` is the
+  supported hybrid);
 * **history** — the backtrack history, which is ONE SHARED LEDGER:
   `Player-Snapshots-backtrack-prod` (plus the team/goalie rates at publish
   cadence from `Team-Stats-backtrack-prod` / `Goalie-Snapshots-backtrack-
