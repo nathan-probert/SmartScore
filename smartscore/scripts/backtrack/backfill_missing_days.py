@@ -1,10 +1,20 @@
-"""Gap-filler: top up Player-Snapshots-backtrack-{ENV} for the recent completed
+"""Gap-filler: top up Player-Snapshots-backtrack-prod for the recent completed
 game days the nightly publish has not covered yet.
+
+THE SHARED LEDGER RULE: there is exactly ONE history ledger now
+(Player-Snapshots-backtrack-prod - the dev backtracking snapshot tables were
+deleted, docs/backtrack_dev_deleted.md). The backfill ALWAYS targets the
+shared ledger INDEPENDENT of the ``--env`` argument: a dev-mode run heals the
+same shared history the prod nightly publishes (self-healing; no false
+"bootstrap wall" for dev). Only the LIVE snapshot table
+(Player-Snapshots-{env}) and the Picks table stay env-resolved, and this
+helper touches neither of them. The arg is kept for CLI/workflow
+compatibility only (ml-picks.yml still passes --env).
 
 WHY (stage-2 exactness): the daily picks pass recomputes today's rolling/
 career shot features EXACTLY from the published per-game raw columns
 (game_goals / game_shots / game_points / game_toi_min on Player-Snapshots-
-backtrack-{env}, added by supabase/migrations/20261027_add_per_game_raw_
+backtrack-prod, added by supabase/migrations/20261027_add_per_game_raw_
 columns_player_snapshots_backtrack.sql). A published day with no rows would
 silently leave those games out of every player's shift(1)/rolling window, so
 this helper - the run's FIRST step of the day (run_daily_picks.run invokes it
@@ -12,7 +22,8 @@ before any history is read; the ml-picks workflow runs it as its own first
 step too, where the per-date markers make the second call a no-op skip):
 
   1. Reads the table's latest published date L (one query) and the dates the
-     marker table (Player-Game-Raw-Markers-{env}, same migration) already
+     marker table (Player-Game-Raw-Markers-prod - the shared ledger's marker
+     shelf, same migration) already
      recorded as fully backfilled.
   2. For EVERY game date strictly after L, up to ``--through-date``
      (default: ET-yesterday; usually exactly one day), NOT yet marked:
@@ -109,6 +120,14 @@ RAW_BLOCK_COLUMNS = ("game_shots", "game_goals", "game_points", "game_toi_min")
 
 MARKER_TABLE_PREFIX = "Player-Game-Raw-Markers-"
 
+# THE ONE shared history ledger (+ its marker shelf): the dev backtracking
+# snapshot tables were deleted (docs/backtrack_dev_deleted.md), so EVERY
+# backfill - whatever picks env the job runs in - writes up to and heals the
+# shared prod ledger; only the LIVE snapshot table (Player-Snapshots-{env})
+# and the Picks table stay env-resolved (neither is touched here).
+SHARED_HISTORY_LEDGER = "Player-Snapshots-backtrack-prod"
+SHARED_HISTORY_MARKERS = f"{MARKER_TABLE_PREFIX}prod"
+
 _RAW_SCHEMA_PROBE: dict[str, bool] = {}
 
 
@@ -134,11 +153,18 @@ def raw_columns_landed(table, probe_column="game_shots"):
 
 
 def player_table(env):
-    return f"Player-Snapshots-backtrack-{env}"
+    """The backfill's write target: ALWAYS the shared history ledger.
+
+    ``env`` is accepted (and ignored) so callers/tests keep their signature -
+    the ledger is shared, dev backtrack tables are deleted
+    (docs/backtrack_dev_deleted.md), and a dev-mode run must heal the same
+    ledger the prod nightly publishes (no suffix routing)."""
+    return SHARED_HISTORY_LEDGER
 
 
 def marker_table(env):
-    return f"{MARKER_TABLE_PREFIX}{env}"
+    """The backfill's marker shelf, ALSO shared (aligned with the ledger)."""
+    return SHARED_HISTORY_MARKERS
 
 
 def yesterday_et(now=None):
@@ -148,7 +174,8 @@ def yesterday_et(now=None):
 
 
 def latest_published_date(env):
-    """The newest date with any published snapshot row (None when empty)."""
+    """The newest date with any published snapshot row in the SHARED ledger
+    (None when the ledger is EMPTY - the bootstrap state, fail-loud)."""
     rows = (
         SUPABASE_ADMIN_CLIENT.table(player_table(env)).select("date").order("date", desc=True).limit(1).execute().data
         or []
@@ -369,7 +396,9 @@ def days_between(lo, through):
 
 def backfill(env, through_date=None, dry=False, delay_seconds=None):
     """The chain (read latest -> markers -> schedule per day -> FRESH boxscore
-    per FINAL game -> two-lane upserts -> marker row).
+    per FINAL game -> two-lane upserts -> marker row) - targeting the SHARED
+    history ledger whatever ``env`` says (env is kept for signature/CLI
+    compatibility only).
 
     Returns a summary dict: {status, games, rows, created, backfilled,
     skipped, failed_days, pending}. ``dry`` performs ZERO writes (no upserts,
@@ -400,7 +429,15 @@ def backfill(env, through_date=None, dry=False, delay_seconds=None):
         }
     latest = latest_published_date(env)
     if latest is None:
-        raise RuntimeError(f"{table} is empty - run the publish/backfill chain first; this helper is not the bootstrap")
+        # The ONLY fail-loud gate left in this helper - and it names the SHARED
+        # ledger's true bootstrap state (never the deleted-dev-shell routing
+        # the old publish-era guard surfaced: that false wall hit dev-mode
+        # runs whose ledger is the shared -prod one; a dev-mode run now
+        # self-heals against the shared ledger like any other).
+        raise RuntimeError(
+            f"the shared history ledger ({SHARED_HISTORY_LEDGER}) is empty: run the publish/bootstrap "
+            "chain once (make backtrack-publish ENV=prod) - the helper never bootstraps"
+        )
     summary = {
         "status": "ok",
         "games": 0,
@@ -514,7 +551,16 @@ def backfill(env, through_date=None, dry=False, delay_seconds=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--env", default="prod", choices=["dev", "prod"], help="backtrack table suffix (default prod)")
+    parser.add_argument(
+        "--env",
+        default="prod",
+        choices=["dev", "prod"],
+        help=(
+            "picks environment label - VESTIGIAL for the backfill: it always targets the SHARED "
+            "history ledger (Player-Snapshots-backtrack-prod) whatever this is; kept so the "
+            "ml-picks.yml wiring does not have to special-case the flag"
+        ),
+    )
     parser.add_argument(
         "--through-date",
         default=None,

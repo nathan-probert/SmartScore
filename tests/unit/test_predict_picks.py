@@ -222,7 +222,8 @@ def fake_live_rows():
 
 
 def fake_history_players():
-    """Player-Snapshots-backtrack-{ENV} shape: one row per player-game
+    """The SHARED history ledger Player-Snapshots-backtrack-prod shape (every
+    picks env reads that ONE ledger): one row per player-game
     STRICTLY before the pick date (the prior-games context: scored labels,
     club identity, rates), PLUS the stage-2 per-game raw columns."""
     return attach_fake_raw(fake_history_players_base())
@@ -798,6 +799,70 @@ def test_season_label_matches_the_store_keying_incl_covid():
     assert mod.season_label("2020-08-01") == "20192020"  # the bubble
     assert mod.season_label("2021-07-07") == "20202021"  # the delayed 2020-21 final
     assert mod.season_label("2022-06-26") == "20212022"  # a normal June final
+
+
+def test_history_rows_reads_the_shared_ledger_on_a_dev_run(env_vars, monkeypatch):
+    """(c) A dev-mode run's history_rows reads the SHARED ledger
+    (Player-Snapshots-backtrack-prod) - never the deleted `-dev` backtrack
+    name the old suffix routing resolved; only the LIVE table stays
+    env-resolved. Strictly-prior semantics unchanged (same function core)."""
+    seen_tables = []
+    history = fake_history_players()
+
+    def _spy_window(table, _columns, _first, before_date, _keys):
+        seen_tables.append((table, before_date))
+        old = history[history["date"].astype(str) < str(before_date)]
+        return old.reset_index(drop=True)
+
+    monkeypatch.setattr(mod, "_paged_date_window", _spy_window)
+    monkeypatch.setattr(mod, "_first_published_date", lambda table: "2013-10-01")
+    monkeypatch.setattr(mod, "_RAW_PROBE", {"dev": True})
+    frame = mod.history_rows("dev", ON_DATE)
+    assert seen_tables == [("Player-Snapshots-backtrack-prod", ON_DATE)]
+    assert not frame.empty  # strictly-before rows fetched whole, as before
+    # the deleted shell never resolves anywhere in the module's routing
+    assert "Player-Snapshots-backtrack-dev" not in " ".join(t for t, _b in seen_tables)
+
+
+def test_dev_run_history_reads_route_to_the_shared_ledger(env_vars, monkeypatch):
+    """(c) Wiring: a picks env of dev still routes EVERY history read
+    (players/teams/goalies) to the SHARED `-prod` backtrack tables; the only
+    env-resolved reads are the LIVE snapshot (`Player-Snapshots-dev`) and,
+    later, `Picks-dev`. Spied at the module's own routing layer
+    (_paged_date_window / _first_published_date / today_live_rows) so the
+    assertion does not depend on which run_daily_picks module instance the
+    fakes were wired to."""
+    routed = []
+    live_reads = []
+    live = fake_live_rows()
+    history = fake_history_players()
+
+    def _frame_for(table):
+        if table.startswith("Player-Snapshots-backtrack"):
+            return history
+        if table.startswith("Team-Stats"):
+            return fake_teams()
+        return fake_goalies()
+
+    def _window(table, _cols, _first, _before, _keys):
+        routed.append(table)
+        return _frame_for(table)
+
+    monkeypatch.setattr(mod, "_paged_date_window", _window)
+    monkeypatch.setattr(mod, "_first_published_date", lambda table: "2013-10-01")
+    monkeypatch.setattr(mod, "_RAW_PROBE", {"dev": True})
+
+    def _live_spy(env, on_date):
+        live_reads.append(mod.live_player_table(env))
+        return live
+
+    monkeypatch.setattr(mod, "today_live_rows", _live_spy)
+    today, _players, _teams, _goalies, history_out = mod.load_prediction_tables("dev", ON_DATE)
+    assert today is not None and not history_out.empty
+    assert live_reads == ["Player-Snapshots-dev"]  # the LIVE read IS env-resolved
+    assert routed == ["Team-Stats-backtrack-prod", "Goalie-Snapshots-backtrack-prod", "Player-Snapshots-backtrack-prod"]
+    assert all(n.endswith("-prod") for n in routed)  # SHARED ledgers only
+    assert "Player-Snapshots-backtrack-dev" not in routed  # the deleted shell never resolves
 
 
 def test_history_rows_fail_closed_without_raw_columns(env_vars, monkeypatch):

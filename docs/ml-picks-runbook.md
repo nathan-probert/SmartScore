@@ -48,9 +48,9 @@ needs no `--env` flag):
 
 | How the run starts | Resolved `ENV` | Tables written / read |
 | --- | --- | --- |
-| **Scheduled** (`cron '30 9 * * *'`) | **prod** — the job-level default ONLY (a scheduled run has no `inputs.environment`; that resolves empty and is never referenced unconditionally, so it cannot override the default with `''` → the `'dev'` fallback) | `Picks-prod` + `Player-Snapshots-prod` + `*-backtrack-prod` |
+| **Scheduled** (`cron '30 9 * * *'`) | **prod** — the job-level default ONLY (a scheduled run has no `inputs.environment`; that resolves empty and is never referenced unconditionally, so it cannot override the default with `''` → the `'dev'` fallback) | `Picks-prod` + `Player-Snapshots-prod` + the SHARED history ledger `Player-Snapshots-backtrack-prod` |
 | **Per-game kick** (`repository_dispatch`, ML Picks Restart) | **prod** — same job-level default | prod tables |
-| **Manual dispatch** | the `environment` input (`prod` default; set **dev** to write `Picks-dev` / read the `-dev`-suffixed tables) — i.e. the owner's answer: scheduled = **prod**; a manual dispatch with `environment=dev` writes to **Picks-dev** | `Picks-{environment}` etc. |
+| **Manual dispatch** | the `environment` input (`prod` default; set **dev** to write `Picks-dev` / read the dev LIVE table) — i.e. the owner's answer: scheduled = **prod**; a manual dispatch with `environment=dev` writes to **Picks-dev** | `Picks-{environment}` + LIVE `Player-Snapshots-{environment}`; historical reads and the backfill go to the SHARED ledger `Player-Snapshots-backtrack-prod` regardless (§10) |
 
 FAIL-SAFE (in force in BOTH modes, not env-dependent): the Picks write goes
 through the schema-safe writer `save_picks_db`
@@ -71,8 +71,12 @@ skip), then assembles the day's frame from THREE read-only sources
 * **today's rows** — the LIVE snapshot table `Player-Snapshots-{ENV}`
   (the daily snapshot the pipeline's snapshot build publishes each
   morning);
-* **history** — the backtrack tables (Player-Snapshots / Team-Stats /
-  Goalie-Snapshots `-backtrack-{ENV}`), STRICTLY before the pick date,
+* **history** — the backtrack history, which is ONE SHARED LEDGER:
+  `Player-Snapshots-backtrack-prod` (plus the team/goalie rates at publish
+  cadence from `Team-Stats-backtrack-prod` / `Goalie-Snapshots-backtrack-
+  prod`) — read on EVERY run, dev or prod, because the dev backtrack tables
+  were deleted (docs/backtrack_dev_deleted.md) and history is the single
+  training source; STRICTLY before the pick date,
   fetched FULL-history (career_* are expanding career sums; a bounded
   window mis-states every veteran's block) via `model.fetch_table`'s
   month-window pagination;
@@ -95,8 +99,8 @@ skip), then assembles the day's frame from THREE read-only sources
   `run_daily_picks.carry_forward_shot_block`, the clearly-marked last-resort
   fallback when the exact recompute itself raises). The only inputs not on
   the player table are the team/goalie rates, read at publish cadence from
-  Team-Stats / Goalie-Snapshots-backtrack (a lagging one prints a staleness
-  warning, never an exit).
+  Team-Stats / Goalie-Snapshots-backtrack-prod (the shared ledgers, §10; a
+  lagging one prints a staleness warning, never an exit).
 
 ### 1.2 The daily gap-fill (first task of the day; run_daily_picks step 1 + ml-picks.yml first step)
 
@@ -125,7 +129,9 @@ up BEFORE any history is read — typically exactly ONE day (yesterday),
    with the rolling cells left NULL for the nightly publish to fill
    forward. It does NOT recompute the 16 rolling columns: those stay the
    training-side history the publish's attach carries.
-4. It writes a per-date MARKER row (`Player-Game-Raw-Markers-{ENV}`, same
+4. It writes a per-date MARKER row (`Player-Game-Raw-Markers-prod`, the
+   shared ledger's marker shelf — the SAME marker table both dev and prod
+   run consult, §10; the table ships in the same
    migration) AFTER the date's upserts land. A date whose games were not
    all final, or whose writes failed, stays UNMARKED and is retried by a
    later pass; a MARKED date costs every later run NOTHING — no schedule
@@ -622,3 +628,43 @@ the pipeline run itself.
 * Actions minute limits: irrelevant for a public repo today, but if this
   repo goes private, free minutes are 2000/month — the job uses ~3-6
   minutes/day, introducing order-of-magnitude headroom before it matters.
+
+## 10. ONE SHARED HISTORY LEDGER (dev backtrack tables deleted)
+
+**ONE SHARED HISTORY LEDGER: `Player-Snapshots-backtrack-prod`.** Both dev
+and prod runs READ history from and BACKFILL into that same ledger; the ENV
+suffix applies ONLY to the LIVE `Player-Snapshots-{env}` table and the
+`Picks-{env}` table. The dev backtrack tables were deleted — see
+`docs/backtrack_dev_deleted.md` (per-table verification: prod was verified
+to supersede dev — identical key sets over the full dev range, value equality,
+and prod's extra rows are exactly the 2026-27 season — before the 617k/34k/36k
+player/team/goalie dev rows were removed).
+
+* **Who does what now:** the nightly publish and the one-shot top-ups publish
+  to the `-prod` backtrack tables (the bootstrap when the shared ledger is
+  truly empty: `make backtrack-publish ENV=prod`); `backfill_missing_days`
+  targets the shared ledger INDEPENDENT of `--env` (its only fail-loud gate
+  left is that shared ledger being TRULY empty — the real bootstrap state —
+  and it says exactly that); `run_daily_picks.history_rows` /
+  `history_team_rows` / `history_goalie_rows` read the shared `-prod`
+  ledgers regardless of the picks env. Dev-mode runs write their Picks and
+  read their LIVE snapshots `-dev`, but heal the SAME shared history.
+* **Direct owner note — dev-mode kicks are viable again:** a dev-mode run is
+  SELF-HEALING against the shared ledger: its first step backfills
+  YESTERDAY's FINAL games straight into `Player-Snapshots-backtrack-prod`
+  (write-up regardless of the picks env) before any history is read, and
+  `history_rows` reads that ledger down. There is NO more false
+  "Player-Snapshots-backtrack-dev is empty — run the publish/backfill chain
+  first" wall: that message came from the deleted-dev-shell suffix routing
+  (the fail-loud guard intended for the OLD publish flows), which has been
+  removed — a manual dispatch `environment=dev`
+  kick now does the right thing and only the LIVE/Picks writes land `-dev`.
+* **Bootstrap rule (unchanged in substance):** the ONE gate that still fails
+  loud is a genuinely empty shared ledger — run the publish/bootstrap chain
+  once (`make backtrack-publish ENV=prod`); the helper never bootstraps it.
+* In-code anchors: `SHARED_HISTORY_LEDGER` +
+  `player_table`/`marker_table` in `backfill_missing_days.py`;
+  `SHARED_HISTORY_TABLE` / `SHARED_TEAM_TABLE` / `SHARED_GOALIE_TABLE` in
+  `run_daily_picks.py` (the deleted-shell guard for any script that still
+  resolves a `-dev` backtrack name stays available:
+  `smartscore/scripts/backtrack/deleted_env_tables.py`).

@@ -9,15 +9,18 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
     pushed from the local machine;
   * TODAY's prediction rows come from the LIVE snapshot table
     Player-Snapshots-{ENV} (what the pipeline's daily snapshot build
-    publishes each morning); the BACKTRACK tables
-    (Player-Snapshots-backtrack-{ENV}, Team-Stats-backtrack-{ENV},
-    Goalie-Snapshots-backtrack-{ENV}) are used ONLY as history - they gain a
+    publishes each morning; the ONLY env-resolved reads together with the
+    Picks table). The BACKTRACK history is the ONE shared ledger
+    (Player-Snapshots-backtrack-prod): the history reads (players, teams,
+    goalies) always go to the -prod backtrack tables whatever the picks env
+    is, because the dev backtrack tables were DELETED after prod was
+    verified to supersede them (docs/backtrack_dev_deleted.md) - they gain a
     date's rows after that day's games end and the publish runs, so a
     missing recent day is NORMAL: the run prints ONE warning and continues;
   * the 14 shot/TOI features for today's rows are recomputed EXACTLY by the
     SAME pandas core model.shot_features_from_games (imported, never forked)
     over the PUBLISHED per-game record in Supabase (the stage-2 raw columns
-    game_goals/game_shots/game_toi_min on Player-Snapshots-backtrack-{ENV},
+    game_goals/game_shots/game_toi_min on Player-Snapshots-backtrack-prod,
     added by 20261027_add_per_game_raw_columns_player_snapshots_backtrack.sql)
     plus one synthetic today-row per player; the rolling/career attach's
     stage-1 "last published row" approximation is GONE from the primary path
@@ -28,7 +31,8 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
     partial-prefix recompute, LOUD-warned, parity-vs-training degrades to a
     tolerance until the top-up closes the gap). The only inputs still not on
     the player table are the team/goalie rates, read at publish cadence from
-    Team-Stats / Goalie-Snapshots-backtrack (a lagging one of those prints
+    Team-Stats / Goalie-Snapshots-backtrack-prod (the same shared-ledger
+    rule; a lagging one of those prints
     the runbook's staleness warning, never an exit);
     a day the backfill has not covered yet costs a WARNING, not the run;
   * STAGE B, the daily gap-fill, is the run's FIRST data step (only when NOT
@@ -95,6 +99,15 @@ from team_map import TEAM_ABBREV_TO_PLACE  # noqa: E402
 
 from config import ENV, SUPABASE_ADMIN_CLIENT  # noqa: E402
 
+# THE shared history ledgers (docs/backtrack_dev_deleted.md): the dev
+# backtracking tables were deleted after prod was verified to supersede them,
+# so EVERY history read - whatever picks env the run is in - goes to the
+# -prod backtrack tables. Only the LIVE snapshot table (Player-Snapshots-
+# {env}, today_live_rows) and the Picks table stay env-resolved.
+SHARED_HISTORY_TABLE = backfill_missing_days.SHARED_HISTORY_LEDGER
+SHARED_TEAM_TABLE = "Team-Stats-backtrack-prod"
+SHARED_GOALIE_TABLE = "Goalie-Snapshots-backtrack-prod"
+
 # The existing Picks-{ENV} conventions (save_to_db, utility.py) are kept as
 # documentation-of-record; the write itself goes through save_picks_db below
 # (schema-probe -> wipe -> insert -> restore-on-failure) because save_to_db's
@@ -112,7 +125,8 @@ HISTORY_WINDOW_DAYS = int(os.environ.get("ML_HISTORY_WINDOW_DAYS", "60"))
 ARTIFACT_STALE_DAYS = 7
 
 # Columns the run consumes from the published history (Player-Snapshots-
-# backtrack-{ENV}): the frame's prior-games context (scored labels for
+# backtrack-prod, the SHARED ledger - read regardless of the picks env): the
+# frame's prior-games context (scored labels for
 # prevN_goals/games_since_goal, tims/rate/lineup fields, club identity).
 # tgpg/otga/otshga are NOT here: on the player table they are null
 # placeholders (build_frame drops and re-merges them from Team-Stats).
@@ -500,10 +514,14 @@ def _first_published_date(table):
 
 
 def history_team_rows(env, before_date):
-    """Team-Stats-backtrack-{ENV} history, strictly before the pick date: the
-    club rates (tgpg/otga/otshga) at the training grain AND the game-day
-    schedule add_derived computes rest days from."""
-    table = model.team_stats_table(env)
+    """Team-Stats history, STRICTLY before the pick date: the club rates
+    (tgpg/otga/otshga) at the training grain AND the game-day
+    schedule add_derived computes rest days from.
+
+    SHARED-LEDGER RULE: always the -prod backtrack table whatever the picks
+    env is - Team-Stats-backtrack-dev was deleted
+    (docs/backtrack_dev_deleted.md) and there is ONE history source."""
+    table = SHARED_TEAM_TABLE
     frame = _paged_date_window(
         table, TEAM_FETCH_COLUMNS, _first_published_date(table), before_date, ["date", "team_abbrev"]
     )
@@ -511,11 +529,11 @@ def history_team_rows(env, before_date):
 
 
 def history_goalie_rows(env, before_date):
-    """Goalie-Snapshots-backtrack-{ENV} history, strictly before the pick
+    """Goalie-Snapshots history, strictly before the pick
     date (the season-to-date goalie rates the training frame merges; the
     pick date's own opponent-goalie row is injected from the live snapshot
-    in _inject_today_context)."""
-    table = model.goalie_table(env)
+    in _inject_today_context) - the SHARED -prod ledger (SHARED-LEDGER RULE)."""
+    table = SHARED_GOALIE_TABLE
     return _paged_date_window(
         table, GOALIE_FETCH_COLUMNS, _first_published_date(table), before_date, ["date", "player_id"]
     )
@@ -685,8 +703,9 @@ def _latest_shot_columns(env, player_ids):
     """Each fallback player's latest published row, 14 rolling columns only.
 
     Chunked ``in`` queries (PostgREST 400s oversized payloads), paged reads;
-    the per-player latest row is taken in pandas (order by date)."""
-    table = model.player_table(env)
+    the per-player latest row is taken in pandas (order by date). The
+    fallback reads the SHARED ledger too (SHARED-LEDGER RULE)."""
+    table = SHARED_HISTORY_TABLE
     columns = ["date", "player_id", *model.SHOT_FEATURES]
     frames = []
     for start in range(0, len(player_ids), 200):
@@ -777,14 +796,16 @@ _RAW_PROBE: dict[str, bool] = {}
 
 
 def raw_columns_available(env):
-    """True once the stage-2 per-game raw migration exists on this table.
+    """True once the stage-2 per-game raw migration exists on the SHARED
+    history ledger (raw_columns_available probes Player-Snapshots-backtrack-
+    prod whatever picks env this run is).
 
     Same probe pattern publish_shot_cols.columns_landed uses (PostgREST 400s
     any request naming an unknown column). Cached per env within the run.
     """
     if env not in _RAW_PROBE:
         try:
-            SUPABASE_ADMIN_CLIENT.table(model.player_table(env)).select("game_shots").limit(1).execute()
+            SUPABASE_ADMIN_CLIENT.table(SHARED_HISTORY_TABLE).select("game_shots").limit(1).execute()
             _RAW_PROBE[env] = True
         except Exception:  # noqa: BLE001 - any failure means "the DDL is not there yet"
             _RAW_PROBE[env] = False
@@ -792,15 +813,19 @@ def raw_columns_available(env):
 
 
 def history_rows(env, before_date):
-    """FULL prior history from Player-Snapshots-backtrack-{env}, STRICTLY
+    """FULL prior history from the SHARED history ledger
+    (Player-Snapshots-backtrack-prod - read INDEPENDENT of the picks env:
+    the dev backtrack tables were deleted, docs/backtrack_dev_deleted.md,
+    and history is the one shared training source), STRICTLY
     before the pick date (post-game rows for the pick date itself never
     enter pre-game features), via the month-window pagination model.fetch_table
     uses. Full history ON PURPOSE: career_games / career_goals_pg /
     career_shots_pg are expanding career sums and ewm_* is career-long, so a
     windowed fetch would mis-state every veteran's block - and with the
     stage-2 raw columns landed, these published rows ARE the per-game series
-    the exact recompute runs on."""
-    table = model.player_table(env)
+    the exact recompute runs on. The ``before_date`` strictness is unchanged
+    (missing-day semantics unchanged)."""
+    table = SHARED_HISTORY_TABLE
     columns = list(HISTORY_FETCH_COLUMNS)
     if not raw_columns_available(env):
         raise RuntimeError(

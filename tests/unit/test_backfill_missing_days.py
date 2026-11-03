@@ -472,6 +472,67 @@ def test_backfill_skips_gracefully_pre_migration(monkeypatch, capsys):
     assert "not landed" in out and "20261027" in out
 
 
+# --------------------------------------------- shared-ledger routing (§10)
+
+SHARED_LEDGER = "Player-Snapshots-backtrack-prod"
+
+
+def test_backfill_dev_run_targets_the_shared_ledger(wired, capsys):
+    """(a) A dev-mode run's backfill targets the SHARED history ledger (and
+    its shared marker shelf), NOT the deleted `-dev` backtrack table that the
+    old suffix routing resolved - the owner's dev-mode traceback was exactly
+    that stale routing. No `RuntimeError` / 'run the publish/backfill chain
+    first' wall: the run HEALS the shared ledger like any other."""
+    # the resolution itself: env-independent
+    assert bf.player_table("dev") == SHARED_LEDGER == bf.player_table("prod")
+    assert bf.marker_table("dev") == "Player-Game-Raw-Markers-prod" == bf.marker_table("prod")
+    summary = bf.backfill("dev", through_date=DAY, dry=False)
+    assert summary["status"] == "ok" and summary["backfilled"] == [DAY]
+    out = capsys.readouterr().out
+    assert "backtrack-dev" not in out  # no deleted shell ever resolved
+    # the writes went through the shared ledger's routing (the `wired` fake
+    # keys ONLY the shared names) - a dev-suffix table request would have raised
+    snapshots, markers = wired
+    assert snapshots.upserts and markers.upserts
+
+
+def test_backfill_empty_shared_ledger_fails_loud_bootstrap(monkeypatch):
+    """(d) The ONE remaining fail-loud gate: a genuinely EMPTY shared ledger
+    names the bootstrap chain (make backtrack-publish ENV=prod) - a
+    DIFFERENT, clearer message than the removed publish-era wall, and never
+    the deleted-dev-shell routing ('...-backtrack-dev' / 'run the
+    publish/backfill chain first')."""
+
+    class _EmptyTable:
+        """A PostgREST chain over a table with ZERO rows (the probe AND the
+        latest-date read both land here)."""
+
+        def select(self, *_a, **_k):
+            return self
+
+        def order(self, *_a, **_k):
+            return self
+
+        def limit(self, *_a, **_k):
+            return self
+
+        def execute(self):
+            return MagicMock(data=[])
+
+    fake_client = MagicMock()
+    fake_client.table.side_effect = lambda *_a, **_k: _EmptyTable()
+    monkeypatch.setattr(bf, "SUPABASE_ADMIN_CLIENT", fake_client)
+    monkeypatch.setattr(bf, "_RAW_SCHEMA_PROBE", {})  # probe succeeds: columns landed
+    with pytest.raises(
+        RuntimeError,
+        match="shared history ledger.*make backtrack-publish ENV=prod.*never bootstraps",
+    ) as raised:
+        bf.backfill("dev", through_date=DAY, dry=False)
+    message = str(raised.value)
+    assert "run the publish/backfill chain first" not in message  # the false wall is GONE
+    assert "backtrack-dev" not in message  # no deleted shell ever resolved
+
+
 def test_days_between_bounds_the_sweep():
     """A >14-day gap is capped: the helper never sweeps a season."""
     days = bf.days_between("2026-09-01", "2026-10-01")
