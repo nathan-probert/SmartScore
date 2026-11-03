@@ -401,8 +401,11 @@ def test_skip_when_store_file_missing(log_and_db):
 
 def test_skip_when_no_projected_rows(log_and_db):
     log_path, _ = log_and_db
+    # prod: the dev daily-build table (Player-Snapshots-backtrack-dev) is
+    # deleted, so skip semantics are exercised on the prod leg - an empty
+    # projected read must skip without logging, on either leg.
     status, message = track_date(
-        "dev", "2026-10-22", supabase=_FakeClient([]), db_path=log_path.with_suffix(".sqlite"), log_path=log_path
+        "prod", "2026-10-22", supabase=_FakeClient([]), db_path=log_path.with_suffix(".sqlite"), log_path=log_path
     )
     assert status == "skip"
     assert "nothing to compare" in message
@@ -461,3 +464,21 @@ def test_track_date_happy_path_writes_log(tmp_path):
     assert int(unit_row["matches"]) == 2 and int(unit_row["n"]) == 4
     assert any(row["scope"] == "season" for row in rows), "season-scope aggregate rows are appended per run"
     # nothing below came from anywhere real: the fake client saw only synthetic rows
+
+
+# --- deleted dev daily-build table: fail loud on --env dev -------------------
+# Player-Snapshots-backtrack-dev was deleted (rows removed 2026-10-24, empty
+# shell dropped Oct 2026; docs/backtrack_dev_deleted.md), one shared history
+# ledger: there is exactly ONE daily-build history source and it is prod.
+
+
+def test_load_daily_build_dev_fails_loud():
+    """ENV=dev must raise the registry guard, not a PostgREST 404."""
+    with pytest.raises(RuntimeError, match="no longer exists"):
+        ft.load_daily_build("dev", "2026-10-22", supabase=_FakeClient([]))
+
+
+def test_track_date_dev_fails_loud():
+    """The CLI's (env, date) entry must raise the same guard for dev."""
+    with pytest.raises(RuntimeError, match="ENV=prod"):
+        ft.track_date("dev", "2026-10-22", supabase=_FakeClient([]))

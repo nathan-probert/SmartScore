@@ -1,3 +1,15 @@
+-- (deploy.yml 'Guard migration files' allowlist marker.)
+-- BACKTRACK-PROD-PINNED. The -dev backtracking tables were deleted Oct 2026:
+-- their rows were removed on 2026-10-24 and the owner issued the final
+-- DROP TABLE for the three empty shells that same month
+-- (docs/backtrack_dev_deleted.md; DROP SQL in docs/ml-picks-runbook.md,
+-- section "Deleting the -dev backtrack table shells").
+-- The standing migrate job re-applies every file in supabase/migrations/ on
+-- every run, so ALL statements in this file target the '-prod' tables
+-- LITERALLY. Do not re-introduce the __ENV__ token here: a PR deploy with
+-- ENV=dev would otherwise revive the retired '-dev' shell. These statements
+-- are idempotent no-ops against an environment that never had dev backtrack
+-- tables.
 -- Player-Snapshots-backtrack: shot/TOI rolling block + club identity (16 new columns).
 --
 -- SPEC: docs/supabase_shot_columns.md (§1 Block A, §2 Block B, §4 sketch).
@@ -27,7 +39,7 @@
 -- key through upsert. No Team-Stats-backtrack / Goalie-Snapshots-backtrack
 -- change: their rates already cover the team and opposing-goalie features
 -- joined at read time. Down-migration is a plain DROP COLUMN of these 16.
-ALTER TABLE "Player-Snapshots-backtrack-__ENV__"
+ALTER TABLE "Player-Snapshots-backtrack-prod"
     ADD COLUMN IF NOT EXISTS "sd_shots_pg"      DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS "sd_goals_pg"      DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS "sd_toi_pg"        DOUBLE PRECISION,
@@ -48,5 +60,5 @@ ALTER TABLE "Player-Snapshots-backtrack-__ENV__"
 -- Optional: serves the (date, club) join that Team-Stats lookups prefer.
 -- The existing PK (date, player_id) already leads with date, so this index is
 -- only worth adding if the planner churns on it in practice.
--- CREATE INDEX IF NOT EXISTS "Player-Snapshots-backtrack-__ENV___club_idx"
---     ON "Player-Snapshots-backtrack-__ENV__" ("team_abbrev", "date");
+-- CREATE INDEX IF NOT EXISTS "Player-Snapshots-backtrack-prod_club_idx"
+--     ON "Player-Snapshots-backtrack-prod" ("team_abbrev", "date");

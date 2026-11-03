@@ -173,8 +173,8 @@ touched. The job succeeded, which also proves the repo secret
 no missing secrets, no token needed (`SUPABASE_ACCESS_TOKEN` only matters
 for the optional `supabase db push` variant, deploy.yml:200-209). The DML
 top-up (`topup_raw_game_cols.py`) runs over PostgREST with the
-service-role key (its client performs NO DDL, docs/backtrack_dev_deleted.md:47
-is why DDL needs psql), so it does not depend on `SUPABASE_DB_URL`.
+service-role key (its client performs NO DDL; docs/backtrack_dev_deleted.md
+"Remaining manual steps" + docs/ml-picks-runbook.md §11 is why DDL needs psql), so it does not depend on `SUPABASE_DB_URL`.
 
 **PATH A — merge-then-auto-apply (zero manual SQL).**
 1. Merge PR #146. The main-push `migrate` run re-applies every file
@@ -201,7 +201,8 @@ variants in the Supabase project's SQL editor / psql
 (`psql "$DATABASE_URL" < ...`, the URL from the project's Database
 settings — NOT the SUPABASE_SERVICE_ROLE_KEY: the service-role key is
 PostgREST-only and CANNOT run DDL; see proof that PostgREST cannot
-DROP/ALTER in docs/backtrack_dev_deleted.md:47):
+DROP/ALTER in docs/backtrack_dev_deleted.md "Remaining manual steps" and
+the DROP runbook §11 below):
 
 DEV variant (only if re-scoping to dev):
 ```sql
@@ -637,8 +638,14 @@ suffix applies ONLY to the LIVE `Player-Snapshots-{env}` table and the
 `Picks-{env}` table. The dev backtrack tables were deleted — see
 `docs/backtrack_dev_deleted.md` (per-table verification: prod was verified
 to supersede dev — identical key sets over the full dev range, value equality,
-and prod's extra rows are exactly the 2026-27 season — before the 617k/34k/36k
-player/team/goalie dev rows were removed).
+and prod's extra rows are exactly the 2026-27 season — before the
+617k/34k/36k player/team/goalie dev rows were removed on 2026-10-24). The
+empty dev Postgres shells were tracked separately for the OWNER to DROP
+(PostgREST cannot DDL): final `DROP TABLE` SQL + VACUUM/size notes live in
+**section 11, "Deleting the -dev backtrack table shells"** of this runbook
+(added 2026-11-03; shells re-verified 0 rows on 2026-11-03). The migrate job
+cannot recreate them (backtrack migrations are prod-pinned:
+`BACKTRACK-PROD-PINNED` per file + deploy.yml guard).
 
 * **Who does what now:** the nightly publish and the one-shot top-ups publish
   to the `-prod` backtrack tables (the bootstrap when the shared ledger is
@@ -668,3 +675,76 @@ player/team/goalie dev rows were removed).
   `run_daily_picks.py` (the deleted-shell guard for any script that still
   resolves a `-dev` backtrack name stays available:
   `smartscore/scripts/backtrack/deleted_env_tables.py`).
+
+## 11. Deleting the -dev backtrack table shells (rows deleted 2026-10-24; shells pending owner DROP)
+
+The three dev backtracking tables were ROW-deleted on **2026-10-24** after
+`-prod` was verified to supersede them (same key sets over the full dev range
+2013-10-01..2026-06-14, value equality on spot-checks, prod's extra rows are
+exactly the 2026-27 season — full evidence in
+`docs/backtrack_dev_deleted.md`). Their empty Postgres shells still exist:
+PostgREST cannot DDL (proof: docs/backtrack_dev_deleted.md), so the final
+`DROP TABLE` goes to the OWNER, in the Supabase dashboard SQL editor or
+`psql "$SUPABASE_DB_URL"`.
+
+**Do NOT put these DROPs in `supabase/migrations/`** — the standing `migrate`
+CI job re-applies every file in `supabase/migrations/` on every run
+(deploy.yml "Apply migrations"), and on a `main` push it runs with `ENV=prod`,
+aiming DDL straight at the prod tables. The migrate job can also never
+re-create the dev shells again: every backtrack migration file in
+`supabase/migrations/` is now hard-pinned to the `-prod` literal suffix
+(`BACKTRACK-PROD-PINNED` header in each file; enforced by the "Guard
+migration files" step in deploy.yml, which fails any migration that scopes a
+backtrack table through `__ENV__` or hardcodes a `-dev`/`-prod` suffix
+outside the pinned marker).
+
+### 11.1 Owner DROP SQL (Supabase dashboard SQL editor / psql via SUPABASE_DB_URL)
+
+Run verbatim (schema `public`; the shells are verified 0 rows — re-checked
+2026-11-03):
+
+```sql
+DROP TABLE IF EXISTS "Player-Snapshots-backtrack-dev";
+DROP TABLE IF EXISTS "Team-Stats-backtrack-dev";
+DROP TABLE IF EXISTS "Goalie-Snapshots-backtrack-dev";
+```
+
+Then verify and reclaim space:
+
+* Verify: a `SELECT COUNT(*)` against each name now fails with `relation
+  ... does not exist`; simply confirm the three names disappear from the
+  dashboard's Table editor list. PostgREST HEAD on the same path returns a
+  404 (instead of the earlier `Content-Range: */0` on the empty shell).
+* Size note: `DROP TABLE` unlinks the heap/index files, so the dev shells'
+  disk is released by the drop itself, unlike the earlier (2026-10-24)
+  row-delete pass, which left dead tuples inside the still-alive shells.
+* After the drop, run `VACUUM FULL "Player-Snapshots-backtrack-prod";` (and
+  likewise for `Team-Stats-backtrack-prod` /
+  `Goalie-Snapshots-backtrack-prod`) once, off-peak, to compact the shared
+  history ledgers and settle the dashboard's reported project size —
+  `VACUUM FULL` takes an ACCESS EXCLUSIVE lock on each, so schedule the
+  brief window (a pause/restore also reclaims disk but logs an outage).
+* No backup is required for this step by the owner-run: the shells are
+  verified 0 rows, and full pre-delete backups of the row content already
+  exist (§11.2).
+
+### 11.2 Backup / restore paths (r-deldev worktree)
+
+The pre-delete row content was exported and hashed before the 2026-10-24
+deletion, in the `r-deldev` worktree (branch `feat/delete-backtrack-dev`;
+local path `SmartScore-deldev`):
+
+* `data/backups/backtrack-dev-*.csv.gz` — one gzip per table
+  (`Player-Snapshots-backtrack-dev`, `Team-Stats-backtrack-dev`,
+  `Goalie-Snapshots-backtrack-dev`), row counts + SHA256 recorded in
+  `data/backups/MANIFEST.md` in the same worktree.
+* Restore: per table, stream the gzip and re-upsert the CSV batches with
+  `on_conflict` = the table's primary key (`date,player_id` for players;
+  `season,team_abbrev,game_id` for team stats; `season,player_id,date` for
+  goalies), via the `SUPABASE_DB_URL` psql path (PostgREST batch upserts
+  work for the small tables; a full 617k-row player restore is safer psql/
+  COPY).
+* Everything the dev tables were derived from also lives in
+  `data/raw_nhl.sqlite` (the one-row-per-player-game audit trail), so a
+  full re-derivation is possible with `local_store.py --build --derive
+  --publish` (all publishes now target `-prod`).

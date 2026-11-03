@@ -1,3 +1,15 @@
+-- (deploy.yml 'Guard migration files' allowlist marker.)
+-- BACKTRACK-PROD-PINNED. The -dev backtracking tables were deleted Oct 2026:
+-- their rows were removed on 2026-10-24 and the owner issued the final
+-- DROP TABLE for the three empty shells that same month
+-- (docs/backtrack_dev_deleted.md; DROP SQL in docs/ml-picks-runbook.md,
+-- section "Deleting the -dev backtrack table shells").
+-- The standing migrate job re-applies every file in supabase/migrations/ on
+-- every run, so ALL statements in this file target the '-prod' tables
+-- LITERALLY. Do not re-introduce the __ENV__ token here: a PR deploy with
+-- ENV=dev would otherwise revive the retired '-dev' shell. These statements
+-- are idempotent no-ops against an environment that never had dev backtrack
+-- tables.
 -- Player-Snapshots-backtrack: the RAW per-game layer, in-column (stage 2 -
 -- exact same-day rolling/career features at picks time).
 --
@@ -36,7 +48,7 @@
 -- appeared); (date, player_id) is the PK.
 --
 -- APPLIED BY: deploy.yml's standing `migrate` job (lint + test, then psql
--- --single-transaction over supabase/migrations/ with __ENV__ substituted):
+-- --single-transaction over supabase/migrations/ with prod substituted):
 -- ENV=prod on a push to main, ENV=dev on a PR carrying the `deploy` label.
 -- Nothing else auto-applies migrations; idempotency (ADD COLUMN IF NOT
 -- EXISTS) is what makes the every-run re-apply safe. The stage-2 exactness
@@ -44,7 +56,7 @@
 -- untouched - these per-game columns are the raw layer a later stage
 -- recomputes them from.
 
-ALTER TABLE "Player-Snapshots-backtrack-__ENV__"
+ALTER TABLE "Player-Snapshots-backtrack-prod"
     ADD COLUMN IF NOT EXISTS "game_shots"   INTEGER,
     ADD COLUMN IF NOT EXISTS "game_goals"   INTEGER,
     ADD COLUMN IF NOT EXISTS "game_points"  INTEGER,
@@ -65,17 +77,17 @@ ALTER TABLE "Player-Snapshots-backtrack-__ENV__"
 -- TEXT date: the whole backtrack family keys dates as TEXT
 -- (20261008_add_player_snapshots_backtrack.sql); the marker keys must stringed
 -- compare the same way.
-CREATE TABLE IF NOT EXISTS "Player-Game-Raw-Markers-__ENV__" (
+CREATE TABLE IF NOT EXISTS "Player-Game-Raw-Markers-prod" (
     "date" TEXT NOT NULL,
     "games" INTEGER NOT NULL,
     "player_games" INTEGER NOT NULL,
     "backfilled_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT "Player-Game-Raw-Markers-__ENV___pkey" PRIMARY KEY ("date")
+    CONSTRAINT "Player-Game-Raw-Markers-prod_pkey" PRIMARY KEY ("date")
 );
 
 -- Same exposure stance as the backtrack family: service role only (the pick
 -- run's client), no anon reads.
-ALTER TABLE "Player-Game-Raw-Markers-__ENV__" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "Player-Game-Raw-Markers-prod" ENABLE ROW LEVEL SECURITY;
 
 -- NO retroactive data backfill of this migration itself: the crawl that built
 -- the backtrack family already landed every historical date it covered, and

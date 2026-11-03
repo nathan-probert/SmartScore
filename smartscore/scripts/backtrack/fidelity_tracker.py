@@ -4,7 +4,9 @@
 WHY THIS EXISTS
 ---------------
 `V16- collect` (snapshot_projected.py) now accumulates projected lineups WITH
-units into `Player-Snapshots-prod` / `Player-Snapshots-backtrack-dev`, and the
+units into `Player-Snapshots-prod` (the dev daily-build table,
+`Player-Snapshots-backtrack-dev`, was deleted Oct 2026 — one shared history
+ledger: MODEL_NOTES.md + docs/backtrack_dev_deleted.md), and the
 model notes' adoption gate is explicit: adopt a lineup-aware model only when
 the feed reaches >= 90% unit fidelity AND paired McNemar tests beat the
 no-lineup ensemble on both seeds (MODEL_NOTES.md, FINAL RESULT + V16- collect;
@@ -82,7 +84,7 @@ Usage::
     uv run python smartscore/scripts/backtrack/fidelity_tracker.py --env prod
     uv run python smartscore/scripts/backtrack/fidelity_tracker.py --env prod --date 2026-10-22
     uv run python smartscore/scripts/backtrack/fidelity_tracker.py --env both
-    uv run python smartscore/scripts/backtrack/fidelity_tracker.py --env dev --log-path /tmp/fid.csv
+    uv run python smartscore/scripts/backtrack/fidelity_tracker.py --env prod --log-path /tmp/fid.csv
 """
 
 import argparse
@@ -97,6 +99,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from deleted_env_tables import guard_backtrack_table  # noqa: E402
 from team_map import to_place  # noqa: E402
 
 ET = ZoneInfo("America/Toronto")
@@ -105,6 +108,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 RAW_DB = REPO_ROOT / "data" / "raw_nhl.sqlite"
 LOG_PATH = REPO_ROOT / "data" / "ml" / "fidelity_log.csv"
 
+# prod's daily build lives in the LIVE archive snapshot. The dev daily-build
+# table (Player-Snapshots-backtrack-dev) is DELETED: rows removed 2026-10-24,
+# shell dropped Oct 2026 (docs/backtrack_dev_deleted.md). So `dev` has no
+# mapping here: load_daily_build resolves any other env name through
+# guard_backtrack_table, which fails loud with the prod pointer for --env dev
+# / --env both. (Fidelity is measured against prod daily builds only.)
 DAILY_BUILD_TABLES = {
     "dev": "Player-Snapshots-backtrack-dev",
     "prod": "Player-Snapshots-prod",
@@ -179,7 +188,7 @@ def load_daily_build(env, date_str, supabase=None):
     lazy client `reconstruct.config()` uses (same .env credentials, service
     role for read reach into prod).
     """
-    table = DAILY_BUILD_TABLES[env]
+    table = guard_backtrack_table(DAILY_BUILD_TABLES.get(env, f"Player-Snapshots-{env}"))
     if supabase is None:
         from reconstruct import config  # noqa: PLC0415 - lazy, like reconstruct
 

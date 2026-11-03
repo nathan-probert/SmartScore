@@ -42,14 +42,24 @@ fails loudly via `smartscore/scripts/backtrack/deleted_env_tables.py`.
   re-checked stable (34,636 / 37,044). Pre-delete gzip backups live in
   `data/backups/` with SHA256s in `MANIFEST.md`.
 
-## Remaining manual steps
+## Remaining manual steps (shell DROP — owner-side, PostgREST cannot DDL)
 
 PostgREST cannot DROP TABLE, so the three empty shells still exist in the
-Supabase project. In the dashboard SQL editor:
+Supabase project (re-verified 0 rows on 2026-11-03). In the dashboard SQL
+editor (or psql via SUPABASE_DB_URL) run the DROP SQL verbatim from
+**docs/ml-picks-runbook.md, section 11, "Deleting the -dev backtrack table
+shells"** (added 2026-11-03):
 
-1. `DROP TABLE "Player-Snapshots-backtrack-dev";`
-2. `DROP TABLE "Team-Stats-backtrack-dev";`
-3. `DROP TABLE "Goalie-Snapshots-backtrack-dev";`
+1. `DROP TABLE IF EXISTS "Player-Snapshots-backtrack-dev";`
+2. `DROP TABLE IF EXISTS "Team-Stats-backtrack-dev";`
+3. `DROP TABLE IF EXISTS "Goalie-Snapshots-backtrack-dev";`
+
+The standing `migrate` CI job can no longer recreate them: every backtrack
+migration in `supabase/migrations/` is hard-pinned to the `-prod` literal
+suffix (`BACKTRACK-PROD-PINNED` marker per file), and the deploy.yml
+"Guard migration files" step fails any migration that scopes a backtrack
+table through `__ENV__` (a PR-deploy `ENV=dev` run used to re-CREATE the
+retired `-dev` shells — that is the trap these edits close).
 
 Then, to also reclaim the disk, run `VACUUM FULL` on the (now smaller)
 remaining backtrack prod tables, or pause/restore the project (a brief

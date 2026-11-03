@@ -5,10 +5,14 @@ raw store (data/raw_nhl.sqlite ``player_games``).
 The stage-2 exactness companion of
 supabase/migrations/20261027_add_per_game_raw_columns_player_snapshots_backtrack.sql,
 modeled on the 20261024 16-column pattern: an idempotent ALTER TABLE of
-``Player-Snapshots-backtrack-__ENV__`` applied by deploy.yml's standing
-``migrate`` job (ENV=dev on a PR carrying the ``deploy`` label, ENV=prod on a
-push to main; psql re-applies every file in supabase/migrations/ every run,
-idempotency being the correctness guarantee).
+``Player-Snapshots-backtrack-prod`` (prod-pinned: the -dev backtracking
+tables were deleted Oct 2026, docs/backtrack_dev_deleted.md, and the
+backtrack migrations carry the BACKTRACK-PROD-PINNED marker instead of
+``__ENV__`` so the standing ``migrate`` job can never revive them) applied by
+deploy.yml's standing
+``migrate`` job (ENV=prod on a push to main); psql re-applies every file in
+supabase/migrations/ every run,
+idempotency being the correctness guarantee.
 
 WHAT IT DOES (publish_shot_cols' batch conventions, verbatim)
 --------

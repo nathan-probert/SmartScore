@@ -1,6 +1,10 @@
 """Names of the dev backtracking tables that were deleted, with a fail-loud guard.
 
-All three dev backtrack snapshots are now gone (row-deleted, table shells remain):
+All three dev backtrack snapshots are gone (rows deleted 2026-10-24; the empty
+shells were DROPped by the owner the same month — the DROP SQL lives in
+docs/ml-picks-runbook.md, section "Deleting the -dev backtrack table shells").
+This guard is name-based: it fires on the resolved NAME regardless of whether
+the table still exists in Supabase, so it keeps failing loudly after the DROP.
 
 - ``Player-Snapshots-backtrack-dev`` (617,310 rows) on 2026-10-24 — superseded by
   ``Player-Snapshots-backtrack-prod`` (identical (date, player_id) key sets over
@@ -36,11 +40,12 @@ def guard_backtrack_table(table: str) -> str:
     """
     if table in DELETED_BACKTRACK_TABLES:
         raise RuntimeError(
-            f"{table} no longer exists: the dev backtracking snapshot was deleted"
+            f"{table} no longer exists: the dev backtracking table was deleted"
             " after the matching -prod table was verified to supersede it (same"
             " key set over the full dev range 2013-10-01..2026-06-14; prod's extra"
-            " rows are exactly the 2026-27 season). Re-run with ENV=prod /"
-            " --env prod. Historical dev backups live in data/backups/"
-            " (see MANIFEST.md); see docs/backtrack_dev_deleted.md."
+            " rows are exactly the 2026-27 season), and the empty shell was"
+            " dropped Oct 2026. Re-run with ENV=prod / --env prod. Historical"
+            " dev backups live in data/backups/ (see MANIFEST.md); see"
+            " docs/backtrack_dev_deleted.md."
         )
     return table

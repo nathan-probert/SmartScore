@@ -190,8 +190,28 @@ jobs:
             # that hardcodes one environment's tables and would silently hit
             # prod during a dev deploy. Quote the table name for the suffix to
             # match, e.g. "Picks-<env>", or use the __ENV__ placeholder.
-            if grep -nE '"[^"]*-(dev|prod)"' "$file"; then
-              echo "::error file=$file::Hardcoded dev/prod table-name suffix. Write the suffix as the __ENV__ placeholder so CI scopes the migration to $ENV."
+            #
+            # Exception: a file carrying the BACKTRACK-PROD-PINNED marker. The
+            # dev backtracking tables were deleted Oct 2026 (rows removed
+            # 2026-10-24; docs/backtrack_dev_deleted.md) and the standing
+            # migrate job must never recreate them, so their migrations target
+            # the '-prod' tables literally instead of via __ENV__ - otherwise a
+            # PR deploy with ENV=dev would re-CREATE the retired -dev shells.
+            if grep -q 'BACKTRACK-PROD-PINNED' "$file"; then
+              pinned=1
+            else
+              pinned=0
+            fi
+            if grep -nE '"[^"]*-dev"' "$file"; then
+              echo "::error file=$file::Hardcoded dev table-name suffix. Write the suffix as the __ENV__ placeholder so CI scopes the migration to $ENV (dev backtracking tables are deleted and must never be recreated)."
+              status=1
+            fi
+            if grep -nE '"[^"]*backtrack-__ENV__' "$file"; then
+              echo "::error file=$file::A backtrack table is scoped via __ENV__: a PR deploy (ENV=dev) would recreate the deleted -dev backtracking shell. Pin the statement to the -prod table literally and mark the file BACKTRACK-PROD-PINNED (see docs/backtrack_dev_deleted.md)."
+              status=1
+            fi
+            if [ "$pinned" -eq 0 ] && grep -nE '"[^"]*-prod"' "$file"; then
+              echo "::error file=$file::Hardcoded dev/prod table-name suffix. Write the suffix as the __ENV__ placeholder so CI scopes the migration to $ENV (only BACKTRACK-PROD-PINNED files may hardcode -prod: dev backtracking is deleted)."
               status=1
             fi
           done

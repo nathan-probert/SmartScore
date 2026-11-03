@@ -939,3 +939,24 @@ def test_publish_goalies_without_features_writes_nothing(tmp_path, monkeypatch):
 
     assert written == 0
     assert client.table_names == []
+
+
+def test_publish_team_env_dev_fails_loud(tmp_path, monkeypatch):
+    """A stale ENV=dev publish fails loud: no PostgREST 404, no silent write.
+
+    Team-Stats-backtrack-dev was deleted (rows 2026-10-24; empty shell
+    dropped Oct 2026, docs/backtrack_dev_deleted.md), so a dev-resolved
+    publish must raise via guard_backtrack_table BEFORE any Supabase
+    request is attempted.
+    """
+    conn = local_store.connect(tmp_path / "store.sqlite")
+    conn.execute(
+        "INSERT INTO derived_team_stats (season, team_abbrev, game_date, game_id, tgpg, otga, otshga)"
+        " VALUES ('20232024', 'BOS', '2023-10-05', 20001, '', '', '')"
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(local_store, "config", lambda: ("dev", None))
+    with pytest.raises(RuntimeError, match="no longer exists"):
+        local_store.publish_team("20232024", db_path=tmp_path / "store.sqlite")

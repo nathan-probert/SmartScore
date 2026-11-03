@@ -1,3 +1,15 @@
+-- (deploy.yml 'Guard migration files' allowlist marker.)
+-- BACKTRACK-PROD-PINNED. The -dev backtracking tables were deleted Oct 2026:
+-- their rows were removed on 2026-10-24 and the owner issued the final
+-- DROP TABLE for the three empty shells that same month
+-- (docs/backtrack_dev_deleted.md; DROP SQL in docs/ml-picks-runbook.md,
+-- section "Deleting the -dev backtrack table shells").
+-- The standing migrate job re-applies every file in supabase/migrations/ on
+-- every run, so ALL statements in this file target the '-prod' tables
+-- LITERALLY. Do not re-introduce the __ENV__ token here: a PR deploy with
+-- ENV=dev would otherwise revive the retired '-dev' shell. These statements
+-- are idempotent no-ops against an environment that never had dev backtrack
+-- tables.
 -- Team-Stats-backtrack: team-level rates per team per game.
 --
 -- WHY A SEPARATE TABLE
@@ -54,7 +66,7 @@
 -- Idempotent because .github/workflows/deploy.yml pipes every file in this directory
 -- through psql on every deploy with no migration history.
 
-CREATE TABLE IF NOT EXISTS "Team-Stats-backtrack-__ENV__" (
+CREATE TABLE IF NOT EXISTS "Team-Stats-backtrack-prod" (
     "season" TEXT NOT NULL,
     "team_abbrev" TEXT NOT NULL,
     "team_name" TEXT,
@@ -63,12 +75,12 @@ CREATE TABLE IF NOT EXISTS "Team-Stats-backtrack-__ENV__" (
     "tgpg" DOUBLE PRECISION,
     "otga" DOUBLE PRECISION,
     "otshga" DOUBLE PRECISION,
-    CONSTRAINT "Team-Stats-backtrack-__ENV___pkey" PRIMARY KEY ("season", "team_abbrev", "game_id")
+    CONSTRAINT "Team-Stats-backtrack-prod_pkey" PRIMARY KEY ("season", "team_abbrev", "game_id")
 );
 
 -- The PK leads with season/team. This serves the per-date read that joins against
 -- Player-Snapshots-backtrack-{ENV}, which filters on date.
-CREATE INDEX IF NOT EXISTS "Team-Stats-backtrack-__ENV___date_idx"
-    ON "Team-Stats-backtrack-__ENV__" ("date");
+CREATE INDEX IF NOT EXISTS "Team-Stats-backtrack-prod_date_idx"
+    ON "Team-Stats-backtrack-prod" ("date");
 
-ALTER TABLE "Team-Stats-backtrack-__ENV__" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "Team-Stats-backtrack-prod" ENABLE ROW LEVEL SECURITY;
