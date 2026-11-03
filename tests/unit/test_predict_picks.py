@@ -426,14 +426,6 @@ def fake_s3(monkeypatch, bundle):
     return s3
 
 
-def fake_save(monkeypatch, calls):
-    def _fake(rows, _date):
-        calls.extend(rows)
-        return rows
-
-    monkeypatch.setattr("run_daily_picks.save_picks_db", _fake)
-
-
 class FakePicksTable:
     """The Picks-{ENV} builder chain the stat_update writer uses:
     select(.eq date) / update(.eq id).execute().
@@ -632,12 +624,10 @@ def test_normalise_bundle_missing_key_clear_error():
 
 def test_handler_runs_on_contract_design_artifact(env_vars, prediction_tables, monkeypatch):
     """The sibling's artifact design drives the full path end to end."""
-    calls: list = []
-    fake_save(monkeypatch, calls)
     s3 = fake_s3(monkeypatch, make_contract_bundle())
-    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
-    assert len(calls) == 3
-    assert {row["tims"] for row in calls} == {1, 2, 3}
+    result = mod.handler({"date": ON_DATE}, None)
+    assert result["statusCode"] == 200 and not result["dry"]
+    assert result["stat_update"] == {"slate_rows": 4, "filled": 4, "no_frame": 0, "not_on_slate": 0, "skipped": False}
     assert result["artifact"]["seed"] == 0
     assert result["artifact"]["through"] == ON_DATE
     assert not s3.get_object.call_args_list[0].args  # reads the lexically latest key
@@ -754,13 +744,11 @@ def test_no_live_rows_exits_cleanly(env_vars, prediction_tables, monkeypatch, ca
     monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"prod": True})
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
 
-    calls: list = []
-    fake_save(monkeypatch, calls)
     result = mod.handler({"date": ON_DATE}, None)  # must NOT raise
     assert result["statusCode"] == 200
     assert result["picks"] == []
     assert "no live snapshot rows" in result["message"]
-    assert calls == []  # no Picks write
+    assert prediction_tables.picks_table.patches == []  # no Picks write
     out = capsys.readouterr().out
     assert "no picks computed: no live snapshot rows for 2026-06-14" in out
     assert "Traceback" not in out
@@ -796,12 +784,10 @@ def test_missing_history_day_warns_but_still_picks(env_vars, prediction_tables, 
     monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"prod": True})
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
 
-    calls: list = []
-    fake_save(monkeypatch, calls)
     result = mod.handler({"date": ON_DATE, "dry": True}, None)
     assert result["statusCode"] == 200
     assert len(result["picks"]) == 3  # assembled anyway (dry: no write)
-    assert calls == []
+    assert prediction_tables.picks_table.patches == []
     out = capsys.readouterr().out
     assert "WARNING: 1 published game day(s) inside the lookback window carry no per-game raw stat(s)" in out
     assert HISTORY_DATE in out
@@ -1127,25 +1113,10 @@ def test_pick_payload_whitelist():
 # ------------------------------------------------------ handler end-to-end
 
 
-def test_handler_publishes_three_picks(env_vars, prediction_tables, monkeypatch):
-    """LEGACY write mode: the 3 challenge picks ARE the Picks write (pinned so
-    the demoted wipe-then-publish path keeps working behind --write-mode
-    legacy; the DEFAULT write mode is stat_update - see the tests below)."""
-    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls = []
-    fake_save(monkeypatch, calls)
-    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
-    assert result["statusCode"] == 200 and not result["dry"]
-    assert len(calls) == 3 and sorted(r["tims"] for r in calls) == [1, 2, 3]
-    assert all(r["date"] == ON_DATE and r["stat"] is not None for r in calls)
-
-
 def test_handler_dry_skips_write(env_vars, prediction_tables, monkeypatch):
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls = []
-    fake_save(monkeypatch, calls)
     result = mod.handler({"date": ON_DATE, "dry": True}, None)
-    assert result["dry"] and calls == []
+    assert result["dry"] and prediction_tables.picks_table.patches == []
 
 
 def test_handler_first_step_backfill_invoked_once_when_not_dry(env_vars, prediction_tables, monkeypatch):
@@ -1168,9 +1139,7 @@ def test_handler_first_step_backfill_invoked_once_when_not_dry(env_vars, predict
 
     monkeypatch.setattr("run_daily_picks.backfill_missing_days.backfill", _record)
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls = []
-    fake_save(monkeypatch, calls)
-    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
+    result = mod.handler({"date": ON_DATE}, None)
     assert result["statusCode"] == 200
     assert invocations == [("prod", "2026-06-13")]  # exactly once, yesterday ET of the pick date
 
@@ -1188,10 +1157,8 @@ def test_handler_dry_skips_the_backfill_entirely(env_vars, prediction_tables, mo
     # the read-only witness: latest published date well behind the pick date
     monkeypatch.setattr("run_daily_picks.backfill_missing_days.latest_published_date", lambda env: "2026-06-01")
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls = []
-    fake_save(monkeypatch, calls)
     result = mod.handler({"date": ON_DATE, "dry": True}, None)
-    assert result["dry"] and calls == [] and invocations == []
+    assert result["dry"] and invocations == []
     out = capsys.readouterr().out
     assert "WARNING (dry)" in out and "not backfilled" in out
 
@@ -1205,10 +1172,9 @@ def test_handler_backfill_failure_still_picks(env_vars, prediction_tables, monke
 
     monkeypatch.setattr("run_daily_picks.backfill_missing_days.backfill", _boom)
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls = []
-    fake_save(monkeypatch, calls)
-    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
-    assert result["statusCode"] == 200 and len(calls) == 3
+    result = mod.handler({"date": ON_DATE}, None)
+    assert result["statusCode"] == 200
+    assert [row_id for row_id, _payload, _pre in prediction_tables.picks_table.patches] == [1, 2, 3, 4]
     assert "gap-fill backfill failed outright" in capsys.readouterr().out
 
 
@@ -1216,7 +1182,7 @@ def test_handler_carry_forward_fallback_only_when_exact_fails(env_vars, predicti
     """The stage-1 carry-forward attach survives ONLY as the clearly-marked
     last-resort fallback: when the exact recompute raises, the run attaches
     the last published row's precomputed rolling columns and STILL picks -
-    with a LOUD warning naming the fallback."""
+    and still stat-fills the slate - with a LOUD warning naming the fallback."""
     monkeypatch.setattr(
         "run_daily_picks.shot_block_from_history",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("core exploded")),
@@ -1227,10 +1193,9 @@ def test_handler_carry_forward_fallback_only_when_exact_fails(env_vars, predicti
         latest[col] = 0.5
     monkeypatch.setattr(mod, "_latest_shot_columns", lambda env, ids: latest)
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls = []
-    fake_save(monkeypatch, calls)
-    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
-    assert result["statusCode"] == 200 and len(calls) == 3
+    result = mod.handler({"date": ON_DATE}, None)
+    assert result["statusCode"] == 200
+    assert [row_id for row_id, _payload, _pre in prediction_tables.picks_table.patches] == [1, 2, 3, 4]
     out = capsys.readouterr().out
     assert "STAGE-1 carry-forward attach" in out
 
@@ -1239,28 +1204,25 @@ def test_handler_missing_columns_fails_instead_of_publishing(env_vars, predictio
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     today = fake_live_rows().drop(columns=["opp_goalie_team", "hgpg"])
     monkeypatch.setattr("run_daily_picks.today_live_rows", lambda _env, _d: today)
-    calls = []
-    fake_save(monkeypatch, calls)
     with pytest.raises(RuntimeError, match="opp_goalie_team"):
         mod.handler({"date": ON_DATE}, None)
-    assert calls == []
+    assert prediction_tables.picks_table.patches == []
 
 
-def test_handler_ambiguous_slate_fails(env_vars, prediction_tables, monkeypatch):
+def test_handler_ambiguous_slate_malformed_picks_output_fails(env_vars, prediction_tables, monkeypatch):
+    """A malformed picks shape still aborts the run LOUD (validate_picks),
+    but only AFTER the stat fill landed - the fill is the write path's
+    primary output and deliberately runs first."""
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls = []
-    fake_save(monkeypatch, calls)
 
     def _only_one_group(sim, col):
         return sim[sim["tims"] == 1].head(1)
 
     monkeypatch.setattr("run_daily_picks.model.daily_picks", _only_one_group)
     with pytest.raises(RuntimeError, match="3 picks"):
-        mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
-    assert calls == []
-
-
-# ---------------------------------------------------- artifact v2 / v1 frag
+        mod.handler({"date": ON_DATE}, None)
+    # the stat fill DID land before the output shape failed
+    assert [row_id for row_id, _payload, _pre in prediction_tables.picks_table.patches] == [1, 2, 3, 4]
 
 
 def _real_logreg_pipeline():
@@ -1344,51 +1306,62 @@ def test_artifact_v1_fallback_warns_loud_and_still_picks(capsys):
     assert len(picks) == 1
 
 
-# ------------------------------------------------------ explicit ENV resolution
-# The ml-picks.yml safety contract: the workflow resolves ENV explicitly
-# (scheduled = the job-level env: ENV: prod ONLY; manual dispatch = the
-# `environment` input override at the "Resolve the picks ENV" step) and binds
-# the resolved value as a step-level ENV on both script steps - GitHub Actions
-# puts it in the PROCESS environment before `python` starts, so config.py's
-# import-time read (config.py:12, ENV = os.environ.get("ENV", "dev")) is the
-# single, final resolution. These tests pin the import math of that contract:
-# a FRESH config + run_daily_picks import sees exactly the os.environ value
-# present before import, and save_picks_db routes every surface (schema probe,
-# prior read, wipe, upsert, verify) to Picks-{ENV} - so a workflow run cannot
-# silently write the wrong Picks table.
+# --------------------------------------- write-env + --env (import-time) resolution
+# The ml-picks.yml safety contract: the workflow resolves the WRITE env
+# explicitly (scheduled = the job-level env: ENV: prod ONLY; manual dispatch =
+# the `environment` input override at the "Resolve the picks ENV" step) and
+# binds the resolved value as a step-level ENV on both script steps - GitHub
+# Actions puts it in the PROCESS environment before `python` starts, so
+# config.py's import-time read (config.py:12, ENV = os.environ.get("ENV",
+# "dev")) IS the default target resolution, and the script's --env knob
+# rebinds the SAME module global. These tests pin both entry points of that
+# contract against the ONLY write surface left (stat_update_picks_db): a
+# fresh config + run_daily_picks import sees exactly the os.environ value
+# present before import, and the stat fill routes every surface (the slate
+# read, every PATCH) to Picks-{ENV} - so a run cannot silently write the
+# wrong Picks table.
 
 
 class _EnvProbeTable:
-    """Minimal supabase-py builder-chain fake for save_picks_db's five
-    surfaces: the schema probe (select(col-csv).limit(1) MUST succeed =
-    prove-before-delete), the prior-row read (select '*'), the wipe
-    (delete().neq), the upsert, and the post-write id verify."""
+    """Minimal supabase-py builder-chain fake for stat_update's two
+    surfaces: the slate read (select(...).eq("date", ...)) and the per-row
+    PATCH (update(payload).eq("id", row_id)).execute()."""
 
     def __init__(self, state):
         self._state = state
+        self._eq = None
+        self._pending = None
 
     def select(self, *_columns):
-        self._state["result"] = list(self._state["rows"])
         return self
 
-    def limit(self, _n):
+    def update(self, payload):
+        self._pending = dict(payload)
         return self
 
-    def delete(self):
-        return self
-
-    def neq(self, _col, _value):
-        self._state["rows"] = []
-        return self
-
-    def upsert(self, rows):
-        self._history_upserted = [dict(row) for row in rows]
-        self._state.setdefault("upserts", []).extend(self._history_upserted)
-        self._state["rows"] = [dict(row) for row in rows]
+    def eq(self, col, value):
+        self._eq = (col, value)
         return self
 
     def execute(self):
-        return types.SimpleNamespace(data=list(self._state.get("result", [])))
+        rows = self._state["rows"]
+        if self._pending is not None:
+            col, value = self._eq or (None, None)
+            matched = [row for row in rows if str(row.get(col)) == str(value)]
+            for row in matched:
+                row.update(self._pending)
+            self._state.setdefault("patches", []).append((self._eq, dict(self._pending), len(matched)))
+            self._pending = None
+            self._eq = None
+            return types.SimpleNamespace(data=[dict(row) for row in rows])
+        # the slate read filters by date (the eq before execute)
+        col, value = self._eq or (None, None)
+        if col is None:
+            data = [dict(row) for row in rows]
+        else:
+            data = [dict(row) for row in rows if str(row.get(col)) == str(value)]
+        self._eq = None
+        return types.SimpleNamespace(data=data)
 
 
 class _EnvProbeClient:
@@ -1399,8 +1372,7 @@ class _EnvProbeClient:
         self.tables = {}
 
     def table(self, name):
-        self._state = self.tables.setdefault(name, {"rows": [], "result": [], "upserts": []})
-        return _EnvProbeTable(self._state)
+        return _EnvProbeTable(self.tables.setdefault(name, {"rows": [], "patches": []}))
 
 
 def _fresh_import_with_env(monkeypatch, env_value=None):
@@ -1438,43 +1410,60 @@ def _fresh_import_with_env(monkeypatch, env_value=None):
 @pytest.mark.parametrize("env_value", [None, "dev", "prod"])
 def test_env_resolved_at_import_routes_the_picks_write(monkeypatch, env_value):
     """The ENV import math: unset -> config's 'dev' default; ENV=prod preset ->
-    'prod'. Each fresh module then runs the SAvE path (save_picks_db) and
-    every surface - schema probe, prior read, wipe, upsert, verify - must
-    resolve to Picks-{env}. The env_vars fixture's module-global monkeypatch
-    path (mod.ENV rebind after import) remains covered by the tests above."""
+    'prod'. Each fresh module then runs the ONE write surface (stat_update):
+    every surface - the slate read and every stat PATCH - must resolve to
+    Picks-{env} and touch nothing else, and the hard pins (source prod /
+    history the shared ledger) are read-only constants on the fresh module."""
     fresh = _fresh_import_with_env(monkeypatch, env_value)
     expected_env = env_value or "dev"
 
-    # the workflow res ENV is visible module-side exactly as the runner set it
+    # the workflow-resolved ENV is visible module-side exactly as the runner set it
     assert fresh.ENV == expected_env
+    # the HARD PINS are constants on the module, not resolvable knobs
+    assert fresh.SOURCE_ENV == "prod"
+    assert fresh.HISTORY_ENV == "prod"
 
     client = _EnvProbeClient()
     monkeypatch.setattr(fresh, "SUPABASE_ADMIN_CLIENT", client)
     table = f"Picks-{expected_env}"
-    rows = [{"player_id": 123, "tims": 2, "stat": 51.0, "date": "2026-06-15"}]
+    client.table(table)._state["rows"].append(
+        {
+            "id": 1,
+            "date": "2026-06-15",
+            "player_id": 123,
+            "name": "a",
+            "team_name": "T",
+            "stat": None,
+            "tims": 2,
+        }
+    )
+    sim = pd.DataFrame({"player_id": [123], "ensemble": [0.51]})
 
-    fresh.save_picks_db(rows, "2026-06-15")
+    fresh.stat_update_picks_db(sim, "2026-06-15")
 
-    # ALL surfaces (probe/prior/wipe/upsert/verify) targeted the SAME table
-    assert set(client.tables) == {table}, f"save path touched {set(client.tables)}, not purely {table}"
-    payload = client.tables[table]["upserts"]
-    assert [row["id"] for row in payload] == [1]
-    assert payload[0]["player_id"] == 123
+    # ALL surfaces (the slate read + the PATCH) targeted the SAME, ONLY table
+    assert set(client.tables) == {table}, f"write surface touched {set(client.tables)}, not purely {table}"
+    (_eq, payload, matched) = client.tables[table]["patches"][0]
+    assert _eq == ("id", 1) and payload == {"stat": 51.0} and matched == 1
+    # stat-only: every other column of the EXISTING row is identical
+    row = client.table(table)._state["rows"][0]
+    assert row["player_id"] == 123 and row["name"] == "a" and row["tims"] == 2
+    assert len(client.tables[table]["rows"]) == 1  # nothing inserted
 
 
-# ------------------------------------------------- hybrid mode (source/write)
-# The hybrid axes (run_daily_picks.run + --source-env/--history-env):
-#   WRITE env -> module-global ENV (config.ENV) - Picks-{ENV};
-#   SOURCE env -> --source-env / SOURCE_ENV var -> ENV (today_live_rows);
-#   HISTORY env -> --history-env (default 'prod' pinned) -> the ONE shared
-#   -prod ledger REGARDLESS (027ef47). The owner's pre-deployment
-#   validation profile: ENV=dev + --source-env prod (prod live slate,
-#   shared history, writes ONLY Picks-dev).
+# ------------------------------------------------------- pinned axes (CLI knobs)
+# The three-knob CLI contract: --date / --dry / --env are the WHOLE surface;
+# source = Player-Snapshots-prod PINNED, history = the ONE shared -prod
+# ledger PINNED, mode = stat_update ONLY (test_predict_picks has no
+# write_mode/source/history event keys anymore). The pre-deployment
+# validation profile is unchanged in effect: ENV=dev (Picks-dev stat fill)
+# with reads all against prod (the real prod live slate + the shared
+# history) - Picks-prod untouched.
 
 
 def record_table_names(fake_client):
     """Wrap a fake client's table() side_effect to record every table name
-    a run resolves (the routing witness for the env-axis tests)."""
+    a run resolves (the routing witness for the pin tests)."""
     names = []
     real = fake_client.table.side_effect
 
@@ -1486,228 +1475,152 @@ def record_table_names(fake_client):
     return names
 
 
-def test_hybrid_env_dev_source_prod_reads_prod_snapshot(env_vars, prediction_tables, monkeypatch, capsys):
-    """(a)+(b) THE HYBRID: ENV=dev (write side) + event source_env=prod -
-    today's rows are read from Player-Snapshots-prod (the REAL prod slate),
-    every history read still routes to the SHARED -prod ledger, and
-    Picks-dev is never read (the Picks write is a write-only surface and
-    this is a dry pass). Default-unset behavior is asserted separately."""
-    monkeypatch.setattr(mod, "ENV", "dev")  # the WRITE side of the hybrid
-    monkeypatch.delenv("SOURCE_ENV", raising=False)
+def test_pins_printed_in_the_run_header(env_vars, prediction_tables, monkeypatch, capsys):
+    """The run's identity line names the three hard pins loudly (no axes,
+    no mode: stat_update / prod / shared ledger)."""
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls: list = []
-    fake_save(monkeypatch, calls)
+    assert mod.handler({"date": ON_DATE, "dry": True}, None)["statusCode"] == 200
+    out = capsys.readouterr().out
+    assert (
+        "mode: stat_update (hard-pinned); source: prod (Player-Snapshots-prod); "
+        "history: shared ledger (Player-Snapshots-backtrack-prod)" in out
+    )
+    payload = picks_log_line(out)
+    # the SMARTSCORE_ML_PICKS log line: the axis keys are GONE
+    assert "write_mode" not in payload and "source_env" not in payload and "history_env" not in payload
+    assert "date" in payload and "n_picks" in payload and "picks" in payload
+    assert "mean_max_prob" in payload and "artifact" in payload
+
+
+def test_pinned_source_reads_prod_from_any_write_env(env_vars, prediction_tables, monkeypatch, capsys):
+    """Source is a HARD PIN: even a Picks-dev (ENV=dev) run reads TODAY's
+    rows from the REAL prod live table Player-Snapshots-prod (and the
+    shared -prod history); Picks-dev is never read, and a picks log line
+    carries no source_env/history_env axis keys."""
+    monkeypatch.setattr(mod, "ENV", "dev")  # a Picks-dev (write-side) run
+    monkeypatch.delenv("SOURCE_ENV", raising=False)
+    monkeypatch.delenv("HISTORY_ENV", raising=False)
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     names = record_table_names(prediction_tables)
 
-    result = mod.handler({"date": ON_DATE, "dry": True, "source_env": "prod", "write_mode": "legacy"}, None)
+    result = mod.handler({"date": ON_DATE, "dry": True}, None)  # NO source/history keys
 
-    assert result["statusCode"] == 200
-    assert len(result["picks"]) == 3 and calls == []  # dry: assembled, no write
-    assert "Player-Snapshots-prod" in names  # the LIVE read IS source-resolved
-    assert "Player-Snapshots-dev" not in names  # the dev live table never touched
-    history_tables = [n for n in names if n != "Player-Snapshots-prod"]
-    assert not [n for n in history_tables if "Picks-" in n]
-    # (b) EVERY history read routes to the shared -prod ledger (027ef47)
+    assert result["statusCode"] == 200 and len(result["picks"]) == 3
+    assert "Player-Snapshots-prod" in names  # the live read IS pinned to prod
+    assert "Player-Snapshots-dev" not in names  # the dev live shell is never touched
+    history_tables = [n for n in names if "backtrack" in n]
+    assert not [n for n in history_tables if "-dev" in n]  # the shared ledger only (-prod)
     for shared in (
         "Player-Snapshots-backtrack-prod",
         "Team-Stats-backtrack-prod",
         "Goalie-Snapshots-backtrack-prod",
     ):
         assert shared in names
-    assert all(n.endswith("-prod") for n in names)  # one data plane, unchanged
-    assert "Player-Snapshots-backtrack-dev" not in names
+    assert not [n for n in names if n.startswith("Picks-")]  # dry: no picks read/write at all
     out = capsys.readouterr().out
-    assert "env axes: write=Picks-dev write_mode=legacy | live read=Player-Snapshots-prod" in out
-    picks_line = [line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0]
-    payload = json.loads(picks_line)
-    assert payload["write_env"] == "dev" and payload["source_env"] == "prod"
+    assert "source: prod (Player-Snapshots-prod)" in out
 
 
-def test_hybrid_source_env_env_var_axis_wins_over_fallback(env_vars, prediction_tables, monkeypatch, capsys):
-    """(a) The SOURCE_ENV env var is honored without an event/CLI value - the
-    workflow passes the resolved source both ways (step env + CLI flag);
-    either alone drives the live read."""
-    monkeypatch.setattr(mod, "ENV", "dev")
-    monkeypatch.setenv("SOURCE_ENV", "prod")
-    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls: list = []
-    fake_save(monkeypatch, calls)
-    names = record_table_names(prediction_tables)
-
-    result = mod.handler({"date": ON_DATE, "dry": True}, None)  # NO source_env key
-
-    assert result["statusCode"] == 200 and len(result["picks"]) == 3
-    assert "Player-Snapshots-prod" in names
-    assert "Player-Snapshots-dev" not in names
-    out = capsys.readouterr().out
-    assert "live read=Player-Snapshots-prod" in out
-
-
-def test_hybrid_default_unset_source_resolves_prod(env_vars, prediction_tables, monkeypatch, capsys):
-    """(c) Unset source + a PROD write-side env resolves exactly as before:
-    no --source-env, no SOURCE_ENV var, ENV=prod -> the live read is
-    Player-Snapshots-prod (the source-of-truth default) and nothing else
-    changes."""
-    monkeypatch.delenv("SOURCE_ENV", raising=False)
-    monkeypatch.delenv("HISTORY_ENV", raising=False)
-    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls: list = []
-    fake_save(monkeypatch, calls)
-    names = record_table_names(prediction_tables)
-
-    result = mod.handler({"date": ON_DATE, "dry": True}, None)
-
-    assert result["statusCode"] == 200 and len(result["picks"]) == 3
-    assert "Player-Snapshots-prod" in names  # the source-of-truth default
-    out = capsys.readouterr().out
-    picks_line = [line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0]
-    payload = json.loads(picks_line)
-    assert payload["write_env"] == "prod" and payload["source_env"] == "prod" and payload["history_env"] == "prod"
-
-
-def test_dispatch_matrix_unset_source_with_dev_write_resolves_prod(env_vars, prediction_tables, monkeypatch, capsys):
-    """(a) THE OWNER'S CASE (behavior change): an environment=dev dispatch
-    with an UNSET source runs EXACTLY the pre-hybrid-safe dispatch path the
-    workflow's resolve step passes (no source_env key, no SOURCE_ENV var,
-    ENV=dev) - and the live read resolves to PROD. The OLD fallback (source
-    follows the write env) silently read the EMPTY Player-Snapshots-dev
-    shell here and clean-skipped; now: Player-Snapshots-prod is the live
-    read, Picks-dev is the (dry) write side, and Picks-prod stays PROD-prod
-    untouched."""
-    monkeypatch.setattr(mod, "ENV", "dev")  # environment=dev (WRITE side only)
-    monkeypatch.delenv("SOURCE_ENV", raising=False)
-    monkeypatch.delenv("HISTORY_ENV", raising=False)
-    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"dev": True, "prod": True})
-    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls: list = []
-    fake_save(monkeypatch, calls)
-    names = record_table_names(prediction_tables)
-
-    result = mod.handler({"date": ON_DATE, "dry": True}, None)  # NO source_env key
-
-    assert result["statusCode"] == 200 and len(result["picks"]) == 3
-    assert "Player-Snapshots-prod" in names  # the live read IS prod...
-    assert "Player-Snapshots-dev" not in names  # ...never the empty dev shell
-    out = capsys.readouterr().out
-    picks_line = [line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0]
-    payload = json.loads(picks_line)
-    assert payload["write_env"] == "dev" and payload["source_env"] == "prod" and payload["history_env"] == "prod"
-    assert "live read=Player-Snapshots-prod" in out
-
-
-def test_dispatch_matrix_explicit_source_dev_overrides(env_vars, prediction_tables, monkeypatch, capsys):
-    """(b) The legacy override: an EXPLICIT source=dev (event source_env on
-    the resolved-axes contract, i.e. the workflow's explicitly-set
-    source=dev input) still resolves the live read to
-    Player-Snapshots-dev (the empty shell in real life - this is the
-    dev-side testing profile)."""
+def test_env_dev_stat_fills_picks_dev_with_pinned_prod_reads(env_vars, prediction_tables, monkeypatch, capsys):
+    """--env dev (write side): the stat fill PATCHes ONLY the rows of
+    Picks-dev, while every read stays on the PINNED prod surfaces."""
     monkeypatch.setattr(mod, "ENV", "dev")
     monkeypatch.delenv("SOURCE_ENV", raising=False)
-    monkeypatch.setattr("run_daily_picks._RAW_PROBE", {"dev": True, "prod": True})
+    monkeypatch.delenv("HISTORY_ENV", raising=False)
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls: list = []
-    fake_save(monkeypatch, calls)
     names = record_table_names(prediction_tables)
 
-    result = mod.handler({"date": ON_DATE, "dry": True, "source_env": "dev"}, None)
+    result = mod.handler({"date": ON_DATE}, None)
 
-    assert result["statusCode"] == 200 and len(result["picks"]) == 3
-    assert "Player-Snapshots-dev" in names  # the explicit override won
+    assert result["statusCode"] == 200 and result["stat_update"]["filled"] == 4
+    assert "Picks-dev" in names  # the write target per --env
+    assert not [n for n in names if n == "Picks-prod"]  # Picks-prod untouched
+    assert "Player-Snapshots-prod" in names  # the live read is still the PIN
+    assert all(n.endswith("-prod") for n in names if "backtrack" in n)  # shared history
+    picks = prediction_tables.picks_table
+    assert [row_id for row_id, _payload, _pre in picks.patches] == [1, 2, 3, 4]
+    assert all(set(payload) == {"stat"} for _i, payload, _p in picks.patches)
     out = capsys.readouterr().out
-    picks_line = [line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0]
-    payload = json.loads(picks_line)
-    assert payload["write_env"] == "dev" and payload["source_env"] == "dev" and payload["history_env"] == "prod"
-    assert "live read=Player-Snapshots-dev" in out
+    assert "write: Picks-dev" in out
 
 
-def test_resolve_env_axis_resolution_order(monkeypatch):
-    """The documented CLI->env-var->fallback order, whitelisted fail-closed:
-    a bad axis value aborts BEFORE any read (ValueError), like the workflow's
-    resolve step."""
-    monkeypatch.delenv("SOURCE_ENV", raising=False)
-    monkeypatch.delenv("HISTORY_ENV", raising=False)
-    # fallback = SOURCE_ENV_DEFAULT 'prod' unconditionally (the source-of-
-    # truth rule: run() passes SOURCE_ENV_DEFAULT, NEVER the write env -
-    # the pre-20261103 caller passed ENV and re-created the silent
-    # Player-Snapshots-dev clean-skip on an environment=dev run)
-    assert mod.resolve_env_axis(None, "SOURCE_ENV", mod.SOURCE_ENV_DEFAULT) == "prod"
-    # env var beats the fallback, CLI beats the env var (the legacy dev
-    # live-read override)
-    monkeypatch.setenv("SOURCE_ENV", "dev")
-    assert mod.resolve_env_axis(None, "SOURCE_ENV", mod.SOURCE_ENV_DEFAULT) == "dev"
-    assert mod.resolve_env_axis("prod", "SOURCE_ENV", "dev") == "prod"
-    # history axis: the 'prod' default is what run() passes (pinned)
-    assert mod.resolve_env_axis(None, "HISTORY_ENV", mod.HISTORY_ENV_DEFAULT) == "prod"
-    monkeypatch.setenv("HISTORY_ENV", "dev")  # accepted value (routing still shared)
-    assert mod.resolve_env_axis(None, "HISTORY_ENV", "prod") == "dev"
-    # fail-closed whitelist (delete the env var so the fallback is consulted)
-    with pytest.raises(ValueError, match="axis: SOURCE_ENV"):
-        mod.resolve_env_axis("staging", "SOURCE_ENV", "prod")
-    monkeypatch.delenv("SOURCE_ENV", raising=False)
-    monkeypatch.setenv("SOURCE_ENV", "")
-    with pytest.raises(ValueError):
-        mod.resolve_env_axis(None, "SOURCE_ENV", "staging")
+def test_env_prod_stat_fills_picks_prod(env_vars, prediction_tables, monkeypatch, capsys):
+    """--env prod (the nightly default): Picks-prod stat fill, prod reads."""
+    monkeypatch.setattr(mod, "ENV", "prod")
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    names = record_table_names(prediction_tables)
+
+    result = mod.handler({"date": ON_DATE}, None)
+
+    assert result["statusCode"] == 200 and result["stat_update"]["filled"] == 4
+    assert "Picks-prod" in names
+    out = capsys.readouterr().out
+    assert "write: Picks-prod" in out
 
 
-def test_cli_source_and_history_flags_map_into_the_event(monkeypatch):
-    """The CLI wiring: --source-env/--history-env ride the event; unset flags
-    add NO key (the run() fallbacks then apply)."""
+def test_cli_has_exactly_three_knobs(monkeypatch):
+    """(c) The CLI accepted surface is EXACTLY --date / --dry / --env: a
+    removed knob (--write-mode, --source-env, --history-env, --artifact, the
+    --s3-*/--storage-* overrides) is REJECTED by argparse (SystemExit), and
+    an accepted invocation carries only the date/dry keys (the env rides the
+    module global)."""
     events = []
     monkeypatch.setattr(mod, "run", lambda event, context=None: (events.append(event), {"statusCode": 200})[1])
 
-    mod.main(["--date", "2026-10-23", "--source-env", "prod", "--dry"])
-    assert events[0]["source_env"] == "prod"
-    assert "history_env" not in events[0]  # default: no flag, no key
+    mod.main(["--date", "2026-10-23", "--dry"])
+    assert events[0] == {"date": "2026-10-23", "dry": True}
+    assert "write_mode" not in events[0] and "source_env" not in events[0] and "history_env" not in events[0]
 
-    mod.main(["--date", "2026-10-23", "--history-env", "dev"])
-    assert events[1]["history_env"] == "dev"
-    assert "source_env" not in events[1]
-
-    with pytest.raises(SystemExit):
-        mod.main(["--source-env", "staging"])
-
-
-def test_hybrid_run_writes_picks_dev_with_prod_source(monkeypatch, capsys):
-    """(c) On the fresh-import surface (the workflow's exact import math): a
-    hybrid event (source_env=prod) resolves the READ axis to prod while the
-    WRITE global stays config.ENV ('dev') - and the real save path
-    (save_picks_db) targets Picks-dev on every surface."""
-    fresh = _fresh_import_with_env(monkeypatch, "dev")
-    # the resolution order on the fresh module: READ axis -> prod (explicit),
-    # WRITE env -> untouched 'dev' global (no CLI re-bind by design).
-    assert fresh.ENV == "dev"
-    assert fresh.resolve_env_axis("prod", "SOURCE_ENV", fresh.ENV) == "prod"
-
-    client = _EnvProbeClient()
-    monkeypatch.setattr(fresh, "SUPABASE_ADMIN_CLIENT", client)
-    rows = [{"player_id": 123, "tims": 2, "stat": 51.0, "date": "2026-06-15"}]
-    fresh.save_picks_db(rows, "2026-06-15")
-    assert set(client.tables) == {"Picks-dev"}, f"hybrid write touched {set(client.tables)}"
-    assert [row["id"] for row in client.tables["Picks-dev"]["upserts"]] == [1]
+    for removed in (
+        ["--write-mode", "legacy"],
+        ["--write-mode", "stat_update"],
+        ["--source-env", "prod"],
+        ["--history-env", "prod"],
+        ["--artifact", "data/ml/x.joblib"],
+        ["--s3-bucket", "b"],
+        ["--storage-prefix", "predict/ml"],
+        ["--env", "staging"],  # whitelist: dev|prod ONLY
+    ):
+        with pytest.raises(SystemExit):
+            mod.main(removed)
 
 
-# -------------------------------------------------- stat_update (DEFAULT) mode
+def test_cli_env_knob_rebinds_the_write_env(monkeypatch):
+    """--env dev|prod: the knob rebinds the module-global write env before
+    run() starts (the manual override of the SAME value the workflow binds
+    through the process env); an unset --env leaves the import-time value."""
+    events = []
+    monkeypatch.setattr(mod, "run", lambda event, context=None: (events.append(event), {"statusCode": 200})[1])
+    original_env = mod.ENV
+    try:
+        monkeypatch.setattr(mod, "ENV", "prod")
+        mod.main(["--date", "2026-10-23", "--env", "dev"])
+        assert mod.ENV == "dev"
+        mod.main(["--date", "2026-10-23"])  # no --env: the import-time value wins
+        assert mod.ENV == "dev"
+    finally:
+        mod.ENV = original_env
+
+
+# -------------------------------------------------- stat_update (ONLY) write
 
 
 def picks_log_line(out):
     return json.loads([line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0])
 
 
-def test_default_write_mode_is_stat_update_and_fills_only_stat(env_vars, prediction_tables, monkeypatch, capsys):
-    """The owner-corrected contract: the DEFAULT write mode PATCHes ONLY the
-    stat column on the EXISTING Picks-{ENV} slate rows - row count, ids and
-    every other column identical before/after, no save_picks_db call, and
+def test_stat_update_is_the_only_write_mode(env_vars, prediction_tables, monkeypatch, capsys):
+    """The owner-corrected contract: the ONLY mode PATCHes ONLY the stat
+    column on the EXISTING Picks-{ENV} slate rows - row count, ids and
+    every other column identical before/after (no delete, no insert), and
     the top-3 challenge picks emitted as log output only."""
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     picks = prediction_tables.picks_table
     before = [dict(row) for row in picks.rows]  # the pre-run slate, including stat=None
 
-    calls: list = []
-    fake_save(monkeypatch, calls)
     result = mod.handler({"date": ON_DATE}, None)
 
     assert result["statusCode"] == 200
-    assert result["write_mode"] == "stat_update"
     assert result["stat_update"] == {"slate_rows": 4, "filled": 4, "no_frame": 0, "not_on_slate": 0, "skipped": False}
     # (a) ONLY the stat column moved, on the EXISTING rows (no insert, no wipe)
     assert len(picks.rows) == len(before) == 4
@@ -1724,12 +1637,10 @@ def test_default_write_mode_is_stat_update_and_fills_only_stat(env_vars, predict
     # the ensemble mean-of-rank-pct -> percent, 1 decimal convention
     sim_pct = round(int(picks.patches[0][1]["stat"]), 1)
     assert sim_pct == picks.patches[0][1]["stat"]
-    # (e) the top-3 challenge picks are an OUTPUT: logged, never written
-    assert calls == []  # save_picks_db (the legacy publication) never fired
+    # the top-3 challenge picks are an OUTPUT: logged, never written (the
+    # Picks table saw ONLY stat PATCHes - no delete/insert surface exists)
     payload = picks_log_line(capsys.readouterr().out)
-    assert payload["write_mode"] == "stat_update"
     assert payload["stat_column"]["stat_filled"] == 4
-    assert payload["stat_column"]["legacy_wipe_replace"] is False
     assert len(payload["picks"]) == 3 and {row["tims"] for row in payload["picks"]} == {1, 2, 3}
     assert all(row["stat"] is not None for row in payload["picks"])
 
@@ -1741,14 +1652,12 @@ def test_stat_update_missing_slate_skips_cleanly_no_insert(env_vars, prediction_
     invented rows). The top-3 picks remain a log output of the frame."""
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     prediction_tables.picks_table.rows.clear()
-    calls: list = []
-    fake_save(monkeypatch, calls)
 
     result = mod.handler({"date": ON_DATE}, None)  # must NOT raise
 
     assert result["statusCode"] == 200
     assert result["stat_update"] == {"slate_rows": 0, "filled": 0, "no_frame": 0, "not_on_slate": 0, "skipped": True}
-    assert calls == [] and prediction_tables.picks_table.patches == []
+    assert prediction_tables.picks_table.patches == []
     out = capsys.readouterr().out
     assert "no rows for 2026-06-14" in out and "SKIPPED cleanly" in out
     assert "never inserting our own rows" in out
@@ -1775,9 +1684,6 @@ def test_stat_update_warns_slate_rows_without_a_prediction(env_vars, prediction_
             "hgpg": 0.0,
         }
     )
-    calls: list = []
-    fake_save(monkeypatch, calls)
-
     result = mod.handler({"date": ON_DATE}, None)
 
     assert result["statusCode"] == 200
@@ -1788,7 +1694,6 @@ def test_stat_update_warns_slate_rows_without_a_prediction(env_vars, prediction_
     untouched = [row for row in prediction_tables.picks_table.rows if row["id"] == 5][0]
     assert untouched["stat"] is None  # stat left UNTOUCHED
     assert len(prediction_tables.picks_table.rows) == 5  # no insert happened
-    assert calls == []
 
 
 def test_stat_update_warns_frame_players_absent_from_the_slate(env_vars, prediction_tables, monkeypatch, capsys):
@@ -1798,8 +1703,6 @@ def test_stat_update_warns_frame_players_absent_from_the_slate(env_vars, predict
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     picks = prediction_tables.picks_table
     picks.rows = [row for row in picks.rows if row["player_id"] != 2]  # the site dropped player 2
-    calls: list = []
-    fake_save(monkeypatch, calls)
 
     result = mod.handler({"date": ON_DATE}, None)
 
@@ -1810,7 +1713,6 @@ def test_stat_update_warns_frame_players_absent_from_the_slate(env_vars, predict
     assert "no stat write for them" in out
     assert len(picks.rows) == 3 and [row["id"] for row in picks.rows] == [1, 3, 4]  # no row inserted
     assert {row_id for row_id, _pl, _p in picks.patches} == {1, 3, 4}
-    assert calls == []
 
 
 def test_stat_update_dry_is_read_only(env_vars, prediction_tables, monkeypatch, capsys):
@@ -1819,96 +1721,35 @@ def test_stat_update_dry_is_read_only(env_vars, prediction_tables, monkeypatch, 
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     picks = prediction_tables.picks_table
     before = [dict(row) for row in picks.rows]
-    calls: list = []
-    fake_save(monkeypatch, calls)
 
     result = mod.handler({"date": ON_DATE, "dry": True}, None)
 
     assert result["statusCode"] == 200 and result["dry"]
     assert "stat_update" not in result  # nothing computed toward a write
     assert picks.rows == before and picks.patches == []
-    assert calls == []
     out = capsys.readouterr().out
     assert "dry: stat update skipped (read-only)" in out
     payload = picks_log_line(out)
     assert payload["stat_column"]["stat_fill_skipped"] is True
 
 
-def test_invalid_write_mode_fails_closed(env_vars, prediction_tables, monkeypatch):
-    """(d) The write-mode axis is whitelisted: a typo aborts the run BEFORE
-    any read or write - the same fail-closed form resolve_env_axis has."""
-
-    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    with pytest.raises(ValueError, match="invalid write mode"):
-        mod.handler({"date": ON_DATE, "write_mode": "nope"}, None)
-
-
-def test_legacy_write_mode_flag_still_wipes_and_publishes(env_vars, prediction_tables, monkeypatch, capsys):
-    """(d) The legacy wipe+3 publication survives behind the explicit flag -
-    exactly the pre-stat_update behavior (3 rows via save_picks_db)."""
-    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls: list = []
-    fake_save(monkeypatch, calls)
-
-    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
-
-    assert result["statusCode"] == 200 and result["write_mode"] == "legacy"
-    assert len(calls) == 3 and sorted(r["tims"] for r in calls) == [1, 2, 3]
-    assert "stat_update" not in result
-    payload = picks_log_line(capsys.readouterr().out)
-    assert payload["write_mode"] == "legacy" and payload["stat_column"]["legacy_wipe_replace"] is True
-
-
 def test_stat_update_top3_only_in_job_summary(env_vars, prediction_tables, monkeypatch, tmp_path):
-    """(e) The job summary in the DEFAULT mode lists the top-3 picks table +
-    the stat-fill headline; the picks themselves reach the summary ONLY as
-    text output - the table mutation is stat-only on the site's rows."""
+    """The job summary lists the pin line, the top-3 picks table + the
+    stat-fill headline; the picks themselves reach the summary ONLY as text
+    output - the table mutation is stat-only on the site's rows."""
     summary = tmp_path / "step-summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
-    calls: list = []
-    fake_save(monkeypatch, calls)
 
     mod.handler({"date": ON_DATE}, None)
 
     text = summary.read_text(encoding="utf-8")
-    assert "write_mode stat_update" in text
+    assert "- mode: stat_update (hard-pinned); source: prod; history: shared ledger" in text
     assert "top-3 challenge picks (OUTPUT ONLY" in text
     assert "stat column updated on ALL players of the current Picks-{ENV} slate (no wipe" in text
     assert "stat fill: 4 of 4 slate row(s) patched" in text
-    # (e) the top-3 rows appear ONLY as this summary table (the picks were
-    # never written to the Picks table - save_picks_db never fired)
+    # the top-3 rows appear ONLY as this summary table (the picks were
+    # never written to the Picks table - the write is a stat-only PATCH)
     table_rows = [line for line in text.splitlines() if re.match(r"^\| \d+ \| ", line)]
     assert len(table_rows) == 3
     assert any("| stat |" in line for line in text.splitlines())  # the table's header
-    assert calls == []
-
-
-def test_write_mode_cli_flag_maps_into_the_event(monkeypatch, capsys):
-    """The CLI wiring: --write-mode rides the event; an unset flag adds NO
-    key (the run() fallbacks then apply)."""
-    events = []
-    monkeypatch.setattr(mod, "run", lambda event, context=None: (events.append(event), {"statusCode": 200})[1])
-
-    mod.main(["--date", "2026-10-23", "--write-mode", "legacy"])
-    assert events[0]["write_mode"] == "legacy"
-
-    mod.main(["--date", "2026-10-23"])
-    assert "write_mode" not in events[1]  # default: no flag, no key
-
-    with pytest.raises(SystemExit):
-        mod.main(["--write-mode", "nope"])
-
-
-def test_write_mode_resolution_order(monkeypatch):
-    """The write-mode axis resolves CLI -> event -> WRITE_MODE var ->
-    DEFAULT, and fails closed on anything else (the same form
-    resolve_env_axis uses for the env axes)."""
-    monkeypatch.delenv("WRITE_MODE", raising=False)
-    assert mod.resolve_write_mode() == "stat_update"  # WRITE_MODE_DEFAULT
-    monkeypatch.setenv("WRITE_MODE", "legacy")
-    assert mod.resolve_write_mode() == "legacy"  # the env var beats the default
-    assert mod.resolve_write_mode("stat_update") == "stat_update"  # the event beats the env var
-    assert mod.resolve_write_mode("legacy", cli_value="stat_update") == "stat_update"  # CLI beats the event
-    with pytest.raises(ValueError, match="invalid write mode"):
-        mod.resolve_write_mode("nope")

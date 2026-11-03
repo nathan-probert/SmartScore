@@ -1,24 +1,26 @@
-"""Unit tests for the schema-safe Picks-{ENV} write (run_daily_picks.save_picks_db).
+"""Unit tests for the stat-only Picks write (run_daily_picks.stat_update_picks_db).
 
 No AWS, no Supabase: the Picks table is an in-memory fake shaped like the
 supabase-py builder chain, with an explicit column set (a live Picks table
 carries exactly id/date/player_id/name/team_name/stat/tims/gpg/hgpg - it has
-NO `ppg`, which is the smoke-run hazard these tests pin: the legacy
-wipe-then-insert shipped `ppg`, the wipe succeeded, the insert failed
-PGRST204, and Picks-dev was left at 0 rows while Picks-prod stayed 494).
-Asserted:
+NO `ppg`, which a stat-only PATCH can never touch anyway; the whitelist
+comment lives in run_daily_picks.REMOVE_KEYS). Asserted:
 
-(a) the payload sent to the Picks table NEVER contains REMOVE_KEYS (`ppg`);
-(b) the wipe-then-insert convention (delete-neq then reinsert, ids from 1)
-    lands exactly the run's rows, and a repeat run overwrites, not duplicates;
-(c) an insert failure AFTER the wipe restores the captured pre-wipe rows and
-    raises loud - the realized end state is the OLD table, never 0 (and a
-    restore that itself fails reports both errors in one raise);
-(d) an unknown payload key raises BEFORE any delete - the table is untouched.
+(a) the SMARTSCORE_ML_PICKS output rows never carry REMOVE_KEYS (`ppg`);
+(b) the stat fill is a per-row, id-scoped PATCH that moves ONLY the stat
+    column - NO delete, no insert, no upsert, row count/ids unchanged - on a
+    3-row dev slate AND on a mocked full 495-row Picks-prod slate
+    (the live-verified full-slate shape, mocked);
+(c) a non-finite prediction PATCHes stat=None; a missing slate is a clean
+    zero-write skip; call-ups are WARNed; a failing PATCH is LOUD and an
+    all-patches-failed run raises.
 
-The site's own pipeline keeps utility.save_to_db; the ML picks pass writes
-through save_picks_db so a failed run cannot empty a table. Import bootstrap
-mirrors tests/unit/test_predict_picks.py.
+The site's own pipeline keeps utility.save_to_db (its OWN full-slate wipe +
+reinsert path, untouched); the ML path writes through stat_update only, so
+the moment run_daily_picks' legacy wipe-then-3-row mode was removed, the
+probe/wipe/restore scaffolding (save_picks_db) went with it - these tests
+no longer cover it (git history retains the deleted tests).
+Import bootstrap mirrors tests/unit/test_predict_picks.py.
 """
 
 import copy
@@ -134,10 +136,6 @@ class FakeQueryBuilder:
         self._columns = [col.strip() for col in joined.split(",") if col.strip()]
         return self
 
-    def delete(self):
-        self._mode = "delete"
-        return self
-
     def update(self, payload):
         """The stat_update PATCH shape: update({...}).eq(col, val).execute()."""
         self._mode = "update"
@@ -150,13 +148,7 @@ class FakeQueryBuilder:
         return self
 
     def eq(self, col, val):
-        # Recorded (not just chainability) purely for the stat_update PATCHes;
-        # the legacy wipe-then-insert flow never filters, so recording changes
-        # nothing for it.
         self._eq = (col, val)
-        return self
-
-    def neq(self, _col, _val):
         return self
 
     def limit(self, _n):
@@ -169,12 +161,6 @@ class FakeQueryBuilder:
             return self._execute_select(fake, rows)
         if self._mode == "update":
             return self._execute_update(fake, rows)
-        if self._mode == "delete":
-            fake.log.append(("delete", len(rows)))
-            fake.tables[self._table] = []
-            return FakeResult([])
-        if self._mode == "upsert":
-            return self._execute_upsert(fake, rows)
         raise AssertionError(f"unexpected builder mode {self._mode}")
 
     def _execute_select(self, fake, rows):
@@ -202,28 +188,14 @@ class FakeQueryBuilder:
         fake.log.append(("update", (col, val, dict(self._payload), len(matched))))
         return FakeResult([dict(row) for row in rows])
 
-    def _execute_upsert(self, fake, rows):
-        if fake.fail_upserts:  # scripted failure(s), consumed in call order
-            raise fake.fail_upserts.pop(0)
-        unknown = {key for row in self._payload for key in row} - fake.columns
-        if unknown:
-            raise FakePostgrestError("PGRST204", f"column {self._table}.{sorted(unknown)[0]} does not exist")
-        fake.log.append(("insert", len(self._payload)))
-        by_id = {row.get("id"): dict(row) for row in rows}
-        for row in self._payload:
-            by_id[row.get("id")] = dict(row)
-        fake.tables[self._table] = sorted(by_id.values(), key=lambda r: str(r.get("id")))
-        return FakeResult(self._payload)
-
 
 class FakeSupabase:
     """One-table client with a fixed column set + an order-revealing call log."""
 
-    def __init__(self, table, columns, rows=None, fail_upserts=None, fail_updates=None):
+    def __init__(self, table, columns, rows=None, fail_updates=None):
         self.columns = set(columns)
         self.tables = {table: [dict(r) for r in (rows or [])]}
         self.log = []
-        self.fail_upserts = list(fail_upserts or [])
         self.fail_updates = list(fail_updates or [])
 
     def table(self, name):
@@ -232,7 +204,8 @@ class FakeSupabase:
 
 
 def make_picks():
-    """Three whitelisted pick rows (ppg dropped by pick_rows_to_picks_db)."""
+    """Three whitelisted output rows (ppg dropped by pick_rows_to_picks_db -
+    the run's top-3 log/summary projection)."""
     picks = pd.DataFrame(
         {
             "date": [ON_DATE] * 3,
@@ -262,7 +235,8 @@ def rows_of(fake, table="Picks-dev"):
 
 
 def test_payload_never_carries_remove_keys():
-    """The Picks payload is exactly the live table's columns - `ppg` is gone."""
+    """The SMARTSCORE_ML_PICKS output rows are exactly the live table's
+    column keys - `ppg` is gone."""
     rows = make_picks()
     assert len(rows) == 3
     for row in rows:
@@ -273,134 +247,7 @@ def test_payload_never_carries_remove_keys():
     assert "ppg" in mod.PICK_DB_COLUMNS and mod.REMOVE_KEYS == ["ppg"]
 
 
-# ------------------------------------------------- (b) wipe-then-insert happy
-
-
-def test_wipe_then_insert_preserves_convention_and_ids(monkeypatch):
-    fake = FakeSupabase("Picks-dev", PICKS_COLUMNS, rows=PRIOR_ROWS)
-    wire_env(monkeypatch, fake)
-
-    rows = make_picks()
-    mod.save_picks_db(rows, ON_DATE)
-
-    kinds = [entry[0] for entry in fake.log]
-    # KEY ORDER assert: probe select + pre-wipe capture BEFORE the one delete,
-    # the insert after the delete, and the post-write verify select last.
-    assert kinds == ["select", "select", "delete", "insert", "select"]
-    # the delete saw exactly the 2 pre-wipe rows
-    assert fake.log[kinds.index("delete")] == ("delete", 2)
-    assert [entry[1] for entry in fake.log if entry[0] == "insert"] == [3]
-
-    table = rows_of(fake)
-    assert len(table) == 3
-    assert sorted(row["id"] for row in table) == [1, 2, 3]  # ids restarted at 1
-    assert all(row["date"] == ON_DATE and "ppg" not in row for row in table)
-    by_name = {row["name"]: row for row in table}
-    assert by_name["kadri"]["stat"] == 97.8  # ensemble ranked-pct -> percent
-    assert by_name["raddysh"]["tims"] == 3
-
-
-def test_second_run_rewrites_the_same_rows_not_duplicates(monkeypatch):
-    """The per-game-kick idempotency contract: same date rerun = overwrite."""
-    fake = FakeSupabase("Picks-dev", PICKS_COLUMNS, rows=PRIOR_ROWS)
-    wire_env(monkeypatch, fake)
-
-    rows = make_picks()
-    mod.save_picks_db(rows, ON_DATE)
-    mod.save_picks_db(rows, ON_DATE)
-
-    assert len(rows_of(fake)) == 3
-    assert len([e for e in fake.log if e[0] == "delete"]) == 2
-    assert sorted(r["name"] for r in rows_of(fake)) == ["kadri", "mack", "raddysh"]
-
-
-# ------------------------------------------------ (c) insert failure + restore
-
-
-def test_insert_failure_restores_prior_rows_and_raises(monkeypatch):
-    """Insert 400s AFTER the wipe -> the OLD rows come back and the run raises."""
-    fake = FakeSupabase(
-        "Picks-dev",
-        PICKS_COLUMNS,
-        rows=PRIOR_ROWS,
-        fail_upserts=[FakePostgrestError("PGRST204", "column Picks-dev.bogus does not exist")],
-    )
-    wire_env(monkeypatch, fake)
-
-    with pytest.raises(RuntimeError, match="insert FAILED.*OLD state.*original error"):
-        mod.save_picks_db(make_picks(), ON_DATE)
-
-    table = rows_of(fake)
-    # realized end state = the OLD table, with its original ids, not 0
-    assert len(table) == len(PRIOR_ROWS)
-    assert sorted(row["name"] for row in table) == ["old pick", "old pick 2"]
-    assert sorted(int(row["id"]) for row in table) == [1, 2]
-    assert all(row["date"] == "2026-10-11" for row in table)
-    # failed insert logs nothing (raise precedes the log); the restore logs one
-    assert [(e[0], e[1]) for e in fake.log if e[0] == "insert"] == [("insert", 2)]
-    assert any(e[0] == "delete" for e in fake.log)  # the wipe did happen
-
-
-def test_restore_failure_reports_both_errors_loudly(monkeypatch):
-    """Best-effort restore: when IT also 400s, ONE raise names both failures."""
-    fake = FakeSupabase(
-        "Picks-dev",
-        PICKS_COLUMNS,
-        rows=PRIOR_ROWS,
-        fail_upserts=[
-            FakePostgrestError("PGRST204", "insert 400"),
-            FakePostgrestError("42506", "restore 400"),
-        ],
-    )
-    wire_env(monkeypatch, fake)
-
-    with pytest.raises(RuntimeError, match="RESTORE ALSO failed.*WIPE-EMPTY.*original error.*restore error"):
-        mod.save_picks_db(make_picks(), ON_DATE)
-    # and the wipe still happened - no third upsert attempt
-    assert any(e[0] == "delete" for e in fake.log)
-
-
-# --------------------------------------------- (d) unknown column fails first
-
-
-def test_unknown_column_raises_before_any_delete(monkeypatch):
-    fake = FakeSupabase("Picks-dev", PICKS_COLUMNS, rows=PRIOR_ROWS)
-    wire_env(monkeypatch, fake)
-
-    rows = make_picks()
-    rows[0]["five_gpg"] = 0.25  # a training-frame key no Picks table has
-
-    with pytest.raises(RuntimeError, match="aborted BEFORE any delete"):
-        mod.save_picks_db(rows, ON_DATE)
-
-    kinds = [entry[0] for entry in fake.log]
-    assert "delete" not in kinds and "insert" not in kinds
-    assert rows_of(fake) == [dict(r) for r in PRIOR_ROWS]  # table untouched
-
-
-def test_unknown_column_on_last_row_is_caught_by_the_probe(monkeypatch):
-    """The probe ranges over EVERY pick row's keys, not just the first."""
-    fake = FakeSupabase("Picks-dev", PICKS_COLUMNS, rows=PRIOR_ROWS)
-    wire_env(monkeypatch, fake)
-
-    rows = make_picks()
-    rows[2]["hppg"] = 0.4
-
-    with pytest.raises(RuntimeError, match="hppg"):
-        mod.save_picks_db(rows, ON_DATE)
-    assert [e for e in fake.log if e[0] == "delete"] == []
-
-
-def test_empty_payload_writes_nothing(monkeypatch):
-    fake = FakeSupabase("Picks-dev", PICKS_COLUMNS, rows=PRIOR_ROWS)
-    wire_env(monkeypatch, fake)
-
-    mod.save_picks_db([], ON_DATE)
-    assert fake.log == []  # no probe, no wipe, no insert
-    assert rows_of(fake) == [dict(r) for r in PRIOR_ROWS]
-
-
-# ---------------------------------------------------- stat_update (stat PATCH)
+# ------------------------------- stat_update (the ONLY write: stat-only PATCH)
 
 
 def make_sim():
@@ -530,3 +377,47 @@ def test_stat_update_total_write_failure_raises(monkeypatch):
 
     with pytest.raises(RuntimeError, match="wrote zero stat columns"):
         mod.stat_update_picks_db(sim, ON_DATE)
+
+
+def test_stat_update_full_prod_like_slate_495_rows(monkeypatch):
+    """The 495-row Picks-prod full-slate shape, mocked (the live-verified
+    prod run's setup): every slate row gets exactly ONE id-scoped PATCH
+    carrying ONLY {"stat"}; row count, ids and every other column are
+    unchanged; NO delete/insert/upsert happens anywhere."""
+    slate = [
+        {
+            "id": row_id,
+            "date": ON_DATE,
+            "player_id": 1_000_000 + row_id,
+            "name": f"player-{row_id}",
+            "team_name": "T",
+            "stat": 0.2 + (row_id % 10) * 0.01,  # the site's raw fractions
+            "tims": (row_id % 3) + 1,
+        }
+        for row_id in range(1, 496)
+    ]
+    sim = pd.DataFrame(
+        {
+            "date": [ON_DATE] * 495,
+            "player_id": [1_000_000 + row_id for row_id in range(1, 496)],
+            "tims": [(row_id % 3) + 1 for row_id in range(1, 496)],
+            "ensemble": [0.5 + (row_id % 50) / 100 for row_id in range(1, 496)],
+        }
+    )
+    fake = FakeSupabase("Picks-prod", PICKS_COLUMNS, rows=slate)
+    monkeypatch.setattr(mod, "ENV", "prod")
+    monkeypatch.setattr(mod, "SUPABASE_ADMIN_CLIENT", fake)
+
+    result = mod.stat_update_picks_db(sim, ON_DATE)
+
+    assert result == {"slate_rows": 495, "filled": 495, "no_frame": 0, "not_on_slate": 0, "skipped": False}
+    kinds = [entry[0] for entry in fake.log]
+    assert kinds == ["select"] + ["update"] * 495  # one read + 495 PATCHes: NO delete / no insert / no upsert
+    assert len({(e[1][0], e[1][1]) for e in fake.log if e[0] == "update"}) == 495  # every id unique
+    before = {r["id"]: dict(r) for r in slate}
+    after = {r["id"]: dict(r) for r in fake.tables["Picks-prod"]}
+    assert set(after) == set(before) and len(after) == 495  # ids/count unchanged
+    for row_id, old in before.items():
+        assert old["stat"] != after[row_id]["stat"]  # the stat column moved...
+        old.pop("stat"), after[row_id].pop("stat")
+        assert old == after[row_id]  # ...and ONLY it did

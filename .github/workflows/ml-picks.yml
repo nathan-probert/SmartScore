@@ -3,12 +3,14 @@ name: ML Daily Picks
 # Predict-only daily ML picks (Picks-{ENV}) - the replacement for the retired
 # MLPicks Lambda/image surface. SAME inference path (the artifact -> Supabase
 # read -> build_frame/add_derived -> ensemble rank-mean -> daily_picks) with
-# the DEFAULT write mode stat_update in
+# the ONE write mode stat_update in
 # smartscore/scripts/backtrack/run_daily_picks.py: fill ONLY the stat column
 # on the site's OWN full-slate Picks-{ENV} rows (no wipe, no insert; the
-# top-3 challenge picks are log/summary output). The legacy wipe-then-publish
-# the-3-picks REPLACE survives behind --write-mode legacy (save_picks_db);
-# $0.00 infra. docs/ml-picks-runbook.md.
+# top-3 challenge picks are log/summary output). The script's CLI is exactly
+# three knobs - --date, --dry, --env (dev|prod; unset = the step-level ENV
+# below): source is HARD-PINNED to prod and history is the ONE shared
+# -prod ledger (the Picks table is NEVER wiped by the ML path); $0.00 infra.
+# docs/ml-picks-runbook.md.
 
 on:
   schedule:
@@ -36,37 +38,10 @@ on:
       # ONLY the job-level ENV: prod (the "Resolve the picks ENV" step), so a
       # cron run can never drift to dev. docs/ml-picks-runbook.md §1 (env matrix).
       environment:
-        description: 'Picks table to write (dev|prod). Does NOT decide the LIVE-read source (that is `source`, default prod)'
+        description: 'Picks table to stat-fill (dev|prod). Source (prod) and the shared history ledger are hard-pinned, not knobs'
         type: string
         required: false
         default: prod
-      # The HYBRID axis: source splits the LIVE-read side from the write side.
-      # `environment` keeps deciding the WRITE side (Picks-{environment});
-      # `source` decides ONLY which LIVE snapshot TODAY's rows are read from
-      # (Player-Snapshots-{source}, run_daily_picks --source-env). The default
-      # is UNCONDITIONAL prod - even on an environment=dev write-mode run
-      # (owner rule: prod is the source of truth for feature reads;
-      # source=dev is the legacy override for dev-side testing). The nightly
-      # cron and repository_dispatch runs resolve prod for BOTH axes (no
-      # inputs read).
-      # docs/ml-picks-runbook.md §1 (env matrix) + §10 (shared ledger).
-      source:
-        description: 'LIVE snapshot source env for TODAYS rows (dev|prod; default prod)'
-        type: string
-        required: false
-        default: prod
-      # The WRITE MODE: 'stat_update' (the DEFAULT and the workflow-pinned
-      # value) fills ONLY the stat column on the site's OWN full-slate
-      # Picks-{ENV} rows - no wipe, never inserting rows; the top-3 challenge
-      # picks are log/summary OUTPUT. 'legacy' restores the old wipe-then-
-      # publish-the-3-picks REPLACE. The script fails closed on anything else.
-      # Scheduled and repository_dispatch runs do not read this input; they
-      # get the pinned stat_update in the picks step's ARGS.
-      write_mode:
-        description: 'stat_update (default; stat column fill on the full slate) | legacy (wipe + 3 picks)'
-        type: string
-        required: false
-        default: stat_update
   # Per-game kicks (race-fixed): each TriggerStateMachineAt_* rule
   # (utility.py schedule_run, game_start + PIPELINE_RESTART_OFFSET_MIN)
   # restarts the pipeline state machine, whose final KickMLPicks state
@@ -98,16 +73,17 @@ jobs:
       # Scheduled + repository_dispatch runs resolve ONLY this job-level
       # default (schedule has no `inputs` path): prod, i.e. Picks-prod /
       # Player-Snapshots-prod / *-backtrack-prod. Manual workflow_dispatch
-      # overrides it per-run via the `environment` input (WRITE side) and the
-      # `source` input (LIVE-READ side) at the "Resolve the picks ENV +
-      # SOURCE env" step (ENV: steps.picks_env.outputs.picks_env and
-      # SOURCE_ENV: steps.picks_env.outputs.source_env on the picks step).
-      # GitHub Actions sets job/step env in the PROCESS env before `python`
-      # starts, so config.py's import-time read (config.ENV =
+      # overrides it per-run via the `environment` input (WRITE side only)
+      # at the "Resolve the picks ENV" step (ENV:
+      # steps.picks_env.outputs.picks_env on the script steps). The
+      # LIVE-READ source and the history are NOT env knobs at all: the
+      # script hard-pins source=prod and reads the ONE shared -prod ledger
+      # (run_daily_picks' SOURCE_ENV/HISTORY_ENV constants + the
+      # shared-ledger routing, 027ef47). GitHub Actions sets job/step env
+      # in the PROCESS env before `python` starts, so config.py's
+      # import-time read (config.ENV =
       # os.environ.get("ENV", "dev"), config.py:12) resolves it
-      # unambiguously - no import-ordering hazard, no --env flag needed on
-      # run_daily_picks (the LIVE-read side DOES take --source-env; the two
-      # axes default to prod each, so the nightly is unchanged).
+      # unambiguously - the step-level ENV IS the bind point.
       # docs/ml-picks-runbook.md §1.
       ENV: prod
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -178,38 +154,25 @@ jobs:
       #    ONLY the job-level env: ENV: prod -> Picks-prod; no silent env
       #    default can land them on the wrong Picks table;
       #  * workflow_dispatch overrides via the `environment` input (default
-      #    prod; set dev to write Picks-dev). The WRITE env never decides the
-      #    LIVE-READ source ANYMORE: source defaults to 'prod'
-      #    unconditionally even on a dev write-mode run (owner rule 2026-11-03:
-      #    the -dev backtrack/live shells are empty and prod is the source of
-      #    truth for feature reads - the old follow-the-write-env default
-      #    silently read the empty Player-Snapshots-dev and clean-skipped).
-      #    Only an EXPLICITLY set source input = 'dev' overrides (legacy
-      #    dev-side live read for dev testing).
+      #    prod; set dev to stat-fill Picks-dev). The WRITE env decides
+      #    NOTHING else: the LIVE read is PLAYER-Snapshots-prod (hard-pinned,
+      #    source=prod: prod is the source of truth for feature reads; the
+      #    -dev backtrack/live shells are gone as tables-of-record) and the
+      #    history is the ONE shared -prod ledger.
       #    `inputs.environment` is NOT referenced unconditionally: on a
       #    schedule event it resolves EMPTY, and an empty step-level ENV
       #    would override the job-level prod -> config.ENV's 'dev' fallback.
       #    Gated the other way round (empty -> job ENV), that cannot happen.
-      #  * the resolved value is whitelisted dev|prod and echoed so the
-      #    resolved write target is visible in the job log ("env: prod").
-      #  * the SOURCE axis (inputs.source, default prod): which LIVE
-      #    snapshot TODAY's rows are read from (Player-Snapshots-{source}).
-      #    The in-step fallback is UNCONDITIONAL prod - `${DISPATCH_SOURCE:-prod}`
-      #    never consults the write env (the owner's source-of-truth rule);
-      #    an explicit source=dev input is the ONLY dev-live-read override.
-      #    Scheduled + repository_dispatch resolve NO source input at all ->
-      #    prod (nightly unchanged: BOTH axes prod). Whitelisted dev|prod,
-      #    hard-failed otherwise, the same fail-closed form.
+      #  * the resolved value is whitelisted dev|prod (uncommented, this is
+      #    the ONLY whitelist left) and echoed so the resolved write target
+      #    is visible in the job log ("env: prod") - hard-fail otherwise.
       # The step-level ENV below binds the SAME resolved value to both script
       # steps (GitHub Actions puts it in the process env before python
-      # starts, so config.py's import-time read is unambiguous); SOURCE_ENV
-      # rides only the picks step (the live-read side; the backfill step is
-      # env-independent by the shared-ledger rule 027ef47).
-      - name: 'Resolve the picks ENV (write side) + SOURCE env (live-read side)'
+      # starts, so config.py's import-time read is unambiguous).
+      - name: 'Resolve the picks ENV (write side)'
         id: picks_env
         env:
           DISPATCH_ENV: ${{ inputs.environment }}
-          DISPATCH_SOURCE: ${{ inputs.source || github.event.client_payload.source }}
         run: |
           RESOLVED="${DISPATCH_ENV}"
           if [ -z "${RESOLVED}" ]; then
@@ -221,24 +184,8 @@ jobs:
               echo "::error::environment must be dev or prod (got '${RESOLVED}')"
               exit 1 ;;
           esac
-          # SOURCE axis: ${DISPATCH_SOURCE:-prod} - the fallback is
-          # UNCONDITIONAL 'prod' (the write env NEVER decides the live read;
-          # owner rule: prod is the source of truth for feature reads -
-          # 2026-11-03, after the -dev backtrack/live shells were removed as
-          # tables-of-record). An explicitly set source=dev dispatch input is
-          # the only dev-live-read override. Schedule/kick runs dispatch no
-          # source at all -> prod (nightly: BOTH axes prod, unchanged).
-          SOURCE_RESOLVED="${DISPATCH_SOURCE:-prod}"
-          case "${SOURCE_RESOLVED}" in
-            dev|prod) ;;
-            *)
-              echo "::error::source must be dev or prod (got '${SOURCE_RESOLVED}')"
-              exit 1 ;;
-          esac
           echo "env: ${RESOLVED}"
-          echo "source: ${SOURCE_RESOLVED}"
           echo "picks_env=${RESOLVED}" >> "$GITHUB_OUTPUT"
-          echo "source_env=${SOURCE_RESOLVED}" >> "$GITHUB_OUTPUT"
       - name: Backfill the last published date's missing completed game days (NHL API, bounded)
         env:
           DISPATCH_DRY: ${{ inputs.dry || github.event.client_payload.dry }}
@@ -275,7 +222,7 @@ jobs:
       # run falls through to Storage automatically.
       # Steps 3+4: run_daily_picks fetches the artifact (Storage dated-prefix
       # latest by default) then performs inference via model.py + its
-      # schema-safe Picks write (save_picks_db) - the same inference path the
+      # stat-only Picks PATCH (stat_update) - the same inference path the
       # handler ran.
 
       # Trigger-source resolution, workflow_dispatch semantics preserved:
@@ -284,45 +231,27 @@ jobs:
       # supplies client_payload {date, dry, context: 'post-game-start'}.
       # Multiple kicks per date are fine and expected (one per state-machine
       # run): each is one extra idempotent pass - the write is stat_update
-      # (the DEFAULT): a read-modify-write per-row PATCH of ONLY the stat
+      # (the ONLY mode): a read-modify-write per-row PATCH of ONLY the stat
       # column, so a repeat pass for a date re-fills the CURRENT slate
-      # (never wipes, never inserts; --write-mode legacy restores the old
-      # wipe-then-republish REPLACE).
+      # (never wipes, never inserts). The live read is Player-Snapshots-prod
+      # and the history is the shared -prod ledger regardless of ENV
+      # (hard-pinned in run_daily_picks).
       # docs/ml-picks-runbook.md ("Per-game kick").
       - name: Run the daily ML picks pass
         env:
           DISPATCH_DATE: ${{ inputs.date || github.event.client_payload.date }}
           DISPATCH_DRY: ${{ inputs.dry || github.event.client_payload.dry }}
-          # The WRITE MODE of the Picks step: the dispatch input (default
-          # stat_update); scheduled/kicked runs resolve the default here.
-          DISPATCH_WRITE_MODE: ${{ inputs.write_mode || 'stat_update' }}
           # WRITE side: the resolved picks env -> Picks-{ENV} (config.ENV).
           ENV: ${{ steps.picks_env.outputs.picks_env }}
-          # LIVE-READ side: the resolved source env -> Player-Snapshots-
-          # {source_env} via run_daily_picks' --source-env. The backfill
-          # (above) and the history reads are NOT source-resolved: the shared
-          # -prod ledger is read/written regardless (027ef47).
-          SOURCE_ENV: ${{ steps.picks_env.outputs.source_env }}
         run: |
           echo "env: ${ENV}"
-          echo "source: ${SOURCE_ENV}"
-          # The write env stays ENV (no CLI re-bind: an --env flag would
-          # rebind the module-global config.ENV read at import - the hazard
-          # the ENV fixture bug warned about); the step-level env IS the
-          # bind. --source-env is passed explicitly so the live-read axis is
-          # visible in the script's own argv/log; history reads follow the
-          # pinned default 'prod'.
-          ARGS="--source-env ${SOURCE_ENV} --write-mode ${DISPATCH_WRITE_MODE}"
-          # --write-mode stat_update is pinned EXPLICITLY (it is also the
-          # script's default) so the argv/log always shows the mode: fill
-          # ONLY the stat column on the site's OWN full-slate Picks-{ENV}
-          # rows - the site's SaveToDb owns the slate (a full wipe +
-          # full-slate reinsert) and this run never wipes or inserts rows;
-          # the top-3 challenge picks are log/summary OUTPUT. Legacy
-          # (--write-mode legacy) is a manual/local escape hatch only - the
-          # site's own flows (NotifyUsers' choose_picks, UpdateHistory) read
-          # the FULL slate rows, so a 3-row wipe publication fights them.
-          # The script whitelists the value (fail-closed ValueError).
+          # The write env stays ENV (unset --env = config.ENV's process-env
+          # import read; the step-level env IS the bind); --env is passed
+          # explicitly only to keep the target visible - it carries the SAME
+          # resolved value. NO --write-mode/--source-env/--history-env:
+          # those CLI knobs are removed - the mode is stat_update and the
+          # source/history are hard pins inside the script.
+          ARGS="--env ${ENV}"
           if [ -n "${DISPATCH_DATE}" ]; then
             ARGS="${ARGS} --date ${DISPATCH_DATE}"
           fi

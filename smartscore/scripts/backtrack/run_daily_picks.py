@@ -8,10 +8,10 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
     versioned joblib artifact that the owner's train_export.py --upload run
     pushed from the local machine;
   * TODAY's prediction rows come from the LIVE snapshot table
-    Player-Snapshots-{source_env} - the HYBRID-able read side
-    (--source-env, default: 'prod' - INDEPENDENT of the write env; the
-    resolution order is documented below). The BACKTRACK history is the ONE
-    shared ledger
+    Player-Snapshots-prod - the LIVE-read side is HARD-PINNED to prod (the
+    owner's source-of-truth rule: the dev live snapshot shell is empty, so
+    prod is the only real read; there is no --source-env knob). The
+    BACKTRACK history is the ONE shared ledger
     (Player-Snapshots-backtrack-prod): the history reads (players, teams,
     goalies) always go to the -prod backtrack tables whatever the env axes
     are, because the dev backtrack tables were DELETED after prod was
@@ -50,80 +50,64 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
     goalie/rate fields - REQUIRED_LIVE_COLUMNS) with a hard fail naming
     exactly what is missing, and asserts the built frame has the artifact's
     exact ordered feature columns;
-  * WRITE MODE (the owner-corrected contract, 2026-11-03): Picks-{ENV} is the
-    FULL PLAYER SLATE for the current day - the site's own pipeline
+  * WRITE contract (the owner-corrected contract, 2026-11-03): Picks-{ENV} is
+    the FULL PLAYER SLATE for the current day - the site's own pipeline
     publishes it (SaveToDb -> publish_public_db -> utility.save_to_db: all
     players, their stats, wiped and reinserted by the SITE with fresh ids).
-    The DEFAULT ml-picks write mode is therefore ``stat_update``
+    THIS run's one and only write mode is ``stat_update``
     (stat_update_picks_db below): compute predictions for EVERY player on
     today's slate and PATCH ONLY the ``stat`` column on the existing rows
     (update().eq('id', row_id) - a PostgREST PATCH can never insert, so the
     row count, the ids and every other column are untouched; there is NO
-    delete anywhere). The top-3-per-group challenge picks become an OUTPUT
-    (the structured SMARTSCORE_ML_PICKS log + the job summary), never a
-    table mutation. Rows the site's publish has not written yet (the slate
-    does not exist in Picks-{ENV} for the date) are a WARN + CLEAN SKIP -
-    we never insert our own minimal rows; the site's pipeline always
-    eventually publishes the slate, and the next idempotent kick re-fills
-    (the stat PATCHes are read-modify-write, so a repeated run for a date
-    just re-fills the CURRENT slate). The legacy wipe-then-publish-the-3
-    mode survives behind ``--write-mode legacy`` for explicit use; the
-    site's own flows NEVER needed the 3-row Picks publication (evidence:
+    delete anywhere - the Picks table is NEVER wiped by this ML path; the
+    table's steady state = the full slate + the model's stat column). The top-3-per-group
+    challenge picks become an OUTPUT (the structured SMARTSCORE_ML_PICKS
+    log + the job summary), never a table mutation. Rows the site's publish
+    has not written yet (the slate does not exist in Picks-{ENV} for the
+    date) are a WARN + CLEAN SKIP - we never insert our own minimal rows;
+    the site's pipeline always eventually publishes the slate, and the next
+    idempotent kick re-fills (the stat PATCHes are read-modify-write, so a
+    repeated run for a date just re-fills the CURRENT slate). The legacy
+    wipe-then-publish-the-3 mode is REMOVED ENTIRELY (its save_picks_db
+    full-replace path no longer exists in this file): the site's own flows
+    never needed the 3-row Picks publication (evidence:
     handle_save_historic_db derives the calendar picks via choose_picks
     from its OWN state payload, and NotifyUsers' handle_emails derives the
     email picks via choose_picks from the PUBLISHED FULL slate rows - so
     the 3-row wipe publication actively worked against both).
   * it picks one player per tims group (model.daily_picks' rule, applied by
-    the ensemble's mean within-group rank percentile) for the top-3 OUTPUT
-    in every mode. In ``legacy`` mode ONLY, those 3 rows are published
-    through the schema-safe wrapper (save_picks_db below) that probes the
-    table's live columns BEFORE the delete and restores the pre-wipe rows
-    if the insert fails - no manual Supabase writes.
+    the ensemble's mean within-group rank percentile) for the top-3 OUTPUT.
 
 Manual trigger: the workflow's ``date`` input (or ``--date YYYY-MM-DD``)
 overrides ET-today; ``dry``/``--dry`` skips the Picks write (smoke run).
 
-THE THREE ENV AXES (HYBRID mode) and their EXACT resolution order:
+THE THREE CLI KNOBS - the module's ENTIRE accepted surface (main() below
+rejects anything else) - and what is hard-pinned instead:
 
-  * WRITE env - which Picks table this run REPLACES: the module-global
-    ``ENV`` (config.ENV, the import-time read ``os.environ.get("ENV", "dev")``
-    at config.py:12). NO CLI flag by design: a ``--env`` flag would need the
-    same module-global rebind care the earlier ENV fixture bug warned about
-    (the writer, live-table helper and gap-fill all capture ``from config
-    import ENV`` at import), and the workflow already binds the job/step
-    ``ENV`` in the process environment before ``python`` starts - that IS
-    the single, unambiguous re-bind point. Resolution: process env ENV ->
-    config default 'dev'.
-  * SOURCE env - which LIVE snapshot TODAY's rows are read from
-    (Player-Snapshots-{source_env}, today_live_rows): CLI ``--source-env``
-    -> ``event["source_env"]`` -> env var ``SOURCE_ENV`` -> 'prod' DEFAULT
-    (SOURCE_ENV_DEFAULT). DEFAULT: 'prod' UNCONDITIONALLY - prod is the
-    source of truth for feature reads regardless of the write env (owner
-    rule 2026-11-03: the dev live snapshot shell is empty, and the old
-    follow-the-write-env default made an ENV=dev run clean-skip on it -
-    the exact silent green-but-empty confusion; pass ``--source-env dev``
-    explicitly for the legacy dev-side live read).
-  * HISTORY env - CLI ``--history-env`` (default: 'prod' PINNED; explicit
-    flag only, ``event["history_env"]`` -> env var ``HISTORY_ENV`` ->
-    'prod'): whatever its value, the reads route to the ONE shared
-    ``-prod`` ledger REGARDLESS (027ef47's shared-ledger rule: the dev
-    backtrack tables are deleted). 'dev' is an accepted choice so the flag
-    is honest about the axis, and a dev request prints a loud note that it
-    routes to the shared ledger anyway.
+  * ``--date YYYY-MM-DD`` (default: ET-today) - the slate date;
+  * ``--dry`` - smoke run: assemble + log the top-3 picks and the run is
+    read-only end to end (no stat PATCHes, the backfill step LISTS the
+    missing days without writes);
+  * ``--env dev|prod`` - WHICH Picks table the stat fill targets. DEFAULT:
+    the process env's ``ENV`` at import time (config.ENV,
+    ``os.environ.get("ENV", "dev")``): the workflow binds the job/step
+    ``ENV`` in the process environment before ``python`` starts, so an
+    unset flag follows exactly the import-time semantics; an explicit
+    ``--env`` rebinds the module global before run() starts (the manual/
+    local override of the SAME value).
 
-  Supported combos, precisely:
-    - ENV=prod + source-env=prod (the nightly/defaults: prod tables, the
-      unchanged behavior);
-    - ENV=dev  + source-env=prod  - THE HYBRID: real prod live slate,
-      history is always shared - only Picks-dev is written, so the owner
-      validates end-to-end picks against live prod data without touching
-      Picks-prod;
-    - ENV=dev  + source-env=dev   - plain dev mode (unchanged legacy).
-  The single-day convention under LEGACY mode only: Picks-{write_env} is
-  a full REPLACE (the last written date's 3 picks wiped and re-inserted
-  with ids restarting at 1, save_picks_db below). Under the DEFAULT
-  ``stat_update`` mode the table is NEVER wiped: the site's own pipeline
-  owns the slate rows; this run only PATCHes the stat column on them.
+  HARD-PINS (not knobs; no flag exists for any of them):
+  * write mode: ``stat_update`` ALWAYS - the single write mode; the legacy
+    wipe+3-picks REPLACE is removed entirely;
+  * source: ``prod`` ALWAYS (the SOURCE_ENV constant; today's rows are
+    read from Player-Snapshots-prod whatever the write env);
+  * history: ALWAYS the ONE shared ledger (Player-Snapshots-backtrack-prod
+    + Team-Stats-backtrack-prod + Goalie-Snapshots-backtrack-prod; the
+    HISTORY_ENV constant and 027ef47's shared-ledger routing - the dev
+    backtrack tables were DELETED, docs/backtrack_dev_deleted.md). The
+    history tables gain a date's rows after that day's games end and the
+    publish runs, so a missing recent day is NORMAL: the run prints ONE
+    warning and continues;
 
 Artifact source (the artifact-fact convention), in this documented order:
 (1) ``--artifact PATH`` (a local file, e.g. one committed under data/ml/) -
@@ -174,10 +158,10 @@ SHARED_HISTORY_TABLE = backfill_missing_days.SHARED_HISTORY_LEDGER
 SHARED_TEAM_TABLE = "Team-Stats-backtrack-prod"
 SHARED_GOALIE_TABLE = "Goalie-Snapshots-backtrack-prod"
 
-# The existing Picks-{ENV} conventions (save_to_db, utility.py) are kept as
-# documentation-of-record; the write itself goes through save_picks_db below
-# (schema-probe -> wipe -> insert -> restore-on-failure) because save_to_db's
-# unscoped POST wipes the table before the insert can fail.
+# The Picks-{ENV} conventions (save_to_db, utility.py) are kept as
+# documentation-of-record; the write itself is the STAT-ONLY PATCH of
+# stat_update_picks_db below: this run never wipes or inserts anything (the
+# site's own save_to_db owns the full-slate publish).
 
 # The HISTORY fetch is deliberately FULL (every published backtrack row
 # strictly before the pick date): career_games / career_goals_pg /
@@ -280,85 +264,33 @@ EXPECTED_PICKS = 3
 
 # Whitelist keys that NO Picks-{ENV} table has (dev spot-checked 2026-10-27:
 # PostgREST 42703 "column Picks-{ENV}.ppg does not exist" on both envs). The
-# legacy write helper WIPES the table before it inserts (utility.py:409), so
-# one unsupported key in the payload = wipe succeeds, insert fails PGRST204,
-# table left empty. The whitelist keeps the training-frame keys for the
-# record; REMOVE_KEYS decides what is actually serialized.
+# picks rows here are LOG/summary output only (the table write is the
+# stat-only PATCH, which serializes just {"stat"}), so the whitelist keeps
+# the training-frame keys for the record; REMOVE_KEYS decides what is
+# actually serialized in the SMARTSCORE_ML_PICKS picks array.
 REMOVE_KEYS = ["ppg"]
 
-# ---------------------------------------------------------------- env axes
-# Resolution order (the module docstring documents it precisely):
+# ---------------------------------------------------------------- env knobs
+# The CLI's EXACTLY-three knobs are --date / --dry / --env (main() below);
+# everything this module used to expose as an axis is now a hard pin:
 #   write   -> module-global ENV (config.ENV; the process env the workflow
-#              binds). NO CLI re-bind: re-binding a `from config import ENV`
-#              global after import is the exact hazard the ENV fixture bug
-#              warned about, and the import-time read happens once per
-#              process anyway - the workflow's step-level ENV IS the bind.
-#   source  -> CLI --source-env -> event["source_env"] -> SOURCE_ENV var
-#              -> 'prod' (SOURCE_ENV_DEFAULT, INDEPENDENT of the write env;
-#              prod is the source of truth for feature reads - owner rule -
-#              since the dev live shell is empty; --source-env dev is the
-#              legacy override).
-#   history -> CLI --history-env -> event["history_env"] -> HISTORY_ENV var
-#              -> "prod" PINNED; the reads route to the shared -prod ledger
-#              regardless of the value (027ef47's shared-ledger rule).
-#   mode    -> CLI --write-mode -> event["write_mode"] -> WRITE_MODE var ->
-#              'stat_update' (WRITE_MODE_DEFAULT; see the module docstring's
-#              WRITE MODE bullet - the owner-corrected contract).
+#              binds), overridable ONLY by --env dev|prod: an explicit --env
+#              rebinds the module global before run() starts. The unset-flag
+#              default IS the import-time read (os.environ.get("ENV",
+#              "dev")) - the workflow binds the step-level ENV in the
+#              process environment before python starts.
+#   source  -> SOURCE_ENV = 'prod' PINNED (the owner's source-of-truth
+#              rule: prod is the source of truth for the live-read side;
+#              the dev snapshot shell is empty).
+#   history -> HISTORY_ENV = 'prod' PINNED plus the shared-ledger constants
+#              above: every history read routes to the ONE -prod ledger
+#              whatever the picks env (027ef47; the dev backtrack tables
+#              are deleted).
+#   mode    -> stat_update ALWAYS (the module docstring's WRITE contract
+#              bullet; the legacy wipe+3-picks mode is removed entirely).
 ENV_CHOICES = ("dev", "prod")
-HISTORY_ENV_DEFAULT = "prod"
-# The SOURCE axis's fallback: NOT the write env - 'prod' unconditionally
-# (owner rule: prod is the source of truth for the live-read side; the dev
-# snapshot shell is empty and the old follow-the-write-env default is what
-# made an environment=dev run clean-skip on an empty table).
-SOURCE_ENV_DEFAULT = "prod"
-
-# The Picks write modes (the module docstring's WRITE MODE bullet):
-#
-#   * stat_update (DEFAULT) - read today's Picks-{ENV} slate rows, compute a
-#     prediction for EVERY player of the frame, and PATCH ONLY the stat
-#     column on the matching rows. The table's rows and every other column
-#     are untouched; there is NO delete. Call-ups without history, or frame
-#     players the site left off the slate, are WARNed by name and never
-#     written. A missing slate (the site's SaveToDb has not written the
-#     date's rows yet) is a WARN + CLEAN SKIP - never our own rows.
-#   * legacy - the former full REPLACE: wipe Picks-{ENV} and publish exactly
-#     the 3 challenge picks (one per tims group). Demoted behind
-#     --write-mode legacy because the site's OWN flows read the full-slate
-#     rows (NotifyUsers' choose_picks picks the email picks from them) - the
-#     wipe publication replaced the slate the emails are derived from.
-WRITE_MODES = ("stat_update", "legacy")
-WRITE_MODE_DEFAULT = "stat_update"
-
-
-def resolve_write_mode(event_value=None, cli_value=None):
-    """THE write-mode axis: CLI --write-mode -> event["write_mode"] ->
-    WRITE_MODE var -> WRITE_MODE_DEFAULT.
-
-    Whitelisted (stat_update|legacy) and fail-closed naming the axis - the
-    same form resolve_env_axis above uses for the env axes: a typo must
-    abort the run BEFORE any read or write, never guess a mode.
-    """
-    resolved = cli_value or event_value or os.environ.get("WRITE_MODE") or WRITE_MODE_DEFAULT
-    if resolved not in WRITE_MODES:
-        raise ValueError(
-            f"invalid write mode {resolved!r}: must be one of {list(WRITE_MODES)} "
-            "(--write-mode / event write_mode / WRITE_MODE env)"
-        )
-    return resolved
-
-
-def resolve_env_axis(cli_value, env_var, fallback):
-    """One env axis: CLI/event value -> process env var -> fallback.
-
-    Whitelists dev|prod and raises naming the axis (fail-closed, the same
-    form the workflow's resolve step hard-fails with) - a typo like
-    'staging' must abort the run BEFORE any read, never string-suffix a
-    table guess into PostgREST.
-    """
-    resolved = cli_value or os.environ.get(env_var) or fallback
-    if resolved not in ENV_CHOICES:
-        raise ValueError(f"invalid env value {resolved!r}: must be one of {list(ENV_CHOICES)} (axis: {env_var})")
-    return resolved
+SOURCE_ENV = "prod"
+HISTORY_ENV = "prod"
 
 
 # ---------------------------------------------------------------- artifact
@@ -607,9 +539,9 @@ def require_live_columns(today, on_date, source_env=None):
     and naming exactly what is missing - the shape the 16-column check had.
 
     ``source_env`` names the LIVE-read axis (Player-Snapshots-{source_env});
-    it falls back to 'prod' (SOURCE_ENV_DEFAULT - the source-of-truth rule,
-    NOT the write env) so unset callers read the real snapshot."""
-    source_env = source_env or SOURCE_ENV_DEFAULT
+    it falls back to the SOURCE_ENV hard pin ('prod') so unset callers read
+    the real snapshot."""
+    source_env = source_env or SOURCE_ENV
     missing = [col for col in REQUIRED_LIVE_COLUMNS if col not in today.columns]
     if missing:
         raise RuntimeError(
@@ -663,7 +595,7 @@ def history_team_rows(env, before_date):
     (tgpg/otga/otshga) at the training grain AND the game-day
     schedule add_derived computes rest days from.
 
-    ``env`` carries the explicit --history-env value; SHARED-LEDGER RULE
+    ``env`` carries the HISTORY_ENV pin value; SHARED-LEDGER RULE
     (027ef47, kept verbatim): the routing below is always the -prod
     backtrack table whatever that value is -
     Team-Stats-backtrack-dev was deleted
@@ -1129,14 +1061,13 @@ def _inject_today_context(teams, goalies, today, on_date):
     return teams, goalies
 
 
-def load_prediction_tables(source_env, on_date, history_env=HISTORY_ENV_DEFAULT):
+def load_prediction_tables(source_env, on_date, history_env=HISTORY_ENV):
     """The run's data assembly - every read READ-ONLY.
 
     ``source_env`` is the LIVE-read axis: ``today`` is read from
-    Player-Snapshots-{source_env} (the --source-env flag; defaults to the
-    write env at the caller). ``history_env`` is DOCUMENTATION-IN-CODE only:
-    the history reads route to the ONE shared -prod ledger whatever it says
-    (027ef47; the flag makes the rule explicit, the routing stays pinned).
+    Player-Snapshots-{source_env} - the run passes the SOURCE_ENV hard pin
+    ('prod'). ``history_env`` is DOCUMENTATION-IN-CODE only: the history
+    reads route to the ONE shared -prod ledger whatever it says (027ef47).
 
     Returns (today, players, teams, goalies, history); ``today`` is None when
     the LIVE snapshot has no rows for the pick date (the caller exits cleanly:
@@ -1217,11 +1148,11 @@ def validate_picks(picks, on_date):
 
 
 def stat_value(ensemble):
-    """The Picks `stat` convention, shared by BOTH write modes (the legacy
-    3-row publish at pick_rows_to_picks_db below and the stat_update PATCHes
-    at stat_update_picks_db): the ensemble's within-(date,tims) rank
-    percentile scaled to percent, 1 decimal - None when the prediction is
-    not finite (a NaN must never PATCH a number into the column)."""
+    """The Picks `stat` convention, shared by the stat_update PATCHes and the
+    SMARTSCORE_ML_PICKS top-3 output (pick_rows_to_picks_db's stat cell):
+    the ensemble's within-(date,tims) rank percentile scaled to percent,
+    1 decimal - None when the prediction is not finite (a NaN must never
+    PATCH a number into the column)."""
     stat = float(ensemble)
     if not np.isfinite(stat):
         return None
@@ -1229,12 +1160,15 @@ def stat_value(ensemble):
 
 
 def pick_rows_to_picks_db(picks):
-    """Whitelist into the Picks-{ENV} write shape (PICK_DB_COLUMNS).
+    """Whitelist the top-3 picks into the shared output shape
+    (PICK_DB_COLUMNS) - the picks array of the structured SMARTSCORE_ML_PICKS
+    log and the job-summary table (NOT a table write: the run's only write is
+    the stat-only PATCH of stat_update_picks_db).
 
-    REMOVE_KEYS are dropped here, before anything reaches the write helper:
-    the serialization is exactly the Picks table's live columns (see
-    pick_daily_bundle's sibling note in the module docstring - a table schema
-    change updates the whitelist AND a migration, or REMOVE_KEYS).
+    REMOVE_KEYS are dropped here, before anything is serialized: the output
+    rows use exactly the Picks table's live column keys (see the module
+    docstring - a table schema change updates the whitelist AND a migration,
+    or REMOVE_KEYS).
     """
     write_keys = [key for key in PICK_DB_COLUMNS if key not in REMOVE_KEYS]
     rows = []
@@ -1254,118 +1188,6 @@ def pick_rows_to_picks_db(picks):
                 values.append(value)
         rows.append(dict(zip(write_keys, values)))
     return rows
-
-
-# ------------------------------------------------------------ schema-safe write
-
-
-def _unsupported_picks_keys(table, keys):
-    """Payload keys that are NOT columns of ``table`` (a fail-safe pre-delete check).
-
-    The codebase's cheapest stable schema probe (the same select-a-column
-    pattern ``publish_shot_cols.columns_landed`` uses at
-    publish_shot_cols.py:292): PostgREST 400s ANY request naming an unknown
-    column, so one select naming ALL the payload keys can only succeed when
-    every key is a real column - and, unlike reading a first row, the probe
-    also proves the columns exist on an EMPTY table (the exact state the
-    smoke-run wipe left Picks-dev in). Falls back to per-key probes so the
-    caller's raise names exactly which keys the table rejects; any probe
-    error means "unreachable or unknown column", and an unreachable table is
-    the safe direction (the write aborts before ANY delete).
-    """
-    keys = sorted(keys)
-    try:
-        SUPABASE_ADMIN_CLIENT.table(table).select(",".join(keys)).limit(1).execute()
-    except Exception:  # noqa: BLE001 - probe failure is only the fast path; classify per key
-        unsupported = []
-        for key in keys:
-            try:
-                SUPABASE_ADMIN_CLIENT.table(table).select(key).limit(1).execute()
-            except Exception:  # noqa: BLE001 - any failure means the key is not a real column
-                unsupported.append(key)
-        return unsupported
-    return []
-
-
-def _picks_table_rows(table):
-    """Every row of ``table`` (the restore material for save_picks_db)."""
-    return SUPABASE_ADMIN_CLIENT.table(table).select("*").execute().data or []
-
-
-def save_picks_db(rows, date):
-    """Replace the ENTIRE Picks-{ENV} table with the run's picks - but only
-    when the insert is safe.
-
-    The legacy write helper's unscoped POST (save_to_db -> utility.py:409/411,
-    reached by run_daily_picks until this wrapper) wipes the table BEFORE it
-    inserts, so an insert failure leaves the table EMPTY. The smoke run did
-    exactly that to Picks-dev: the payload shipped a `ppg` key, the wipe
-    succeeded, the insert failed PGRST204. This wrapper keeps the existing
-    wipe-then-insert order (the published single-day convention:
-    delete-all then reinsert, ids restarted at 1 like save_to_db) but makes
-    it fail-safe:
-
-      1. BEFORE ANY delete: schema-probe every payload key against the live
-         Picks-{ENV} table (_unsupported_picks_keys). One unsupported key
-         raises and the table is untouched - the old state survives, and the
-         failure names the offending keys.
-      2. The full pre-wipe rows are read into memory (``prior``), the same
-         capture-before-wipe move _prior_goalie_values makes for its own
-         wipe (utility.py:74-77).
-      3. Wipe (the same ``delete().neq("id", 0)`` the legacy helper uses),
-         then insert the new rows with ``id = 1 + i`` (save_to_db's id
-         convention, utility.py:117).
-      4. If the insert (or the post-write count verify) fails: a best-effort
-         re-insert of ``prior`` (its keys are the table's own columns by
-         construction) and RAISE - so a failed run leaves the realized end
-         state as the OLD table, never 0.
-
-    NOT a Postgres transaction: if the process dies between the delete and
-    the insert the table stays empty until the next successful run, and if
-    the restore insert itself fails BOTH errors are reported in one raise
-    (the wipe is then the realized end state, stated loudly). A failed
-    DELETE needs no restore: PostgREST's delete is atomic, so its exception
-    leaves the old rows in place.
-    """
-    if not rows:
-        print(
-            f"save_picks_db: no pick rows for {date}; NO write (wipe skipped - the Picks table is untouched)",
-            flush=True,
-        )
-        return
-    table = f"Picks-{ENV}"
-    unsupported = _unsupported_picks_keys(table, {key for row in rows for key in row})
-    if unsupported:
-        raise RuntimeError(
-            f"picks write aborted BEFORE any delete: {table} has no column(s) {unsupported} "
-            "(payload keys must be a subset of the live table columns - fix REMOVE_KEYS "
-            "or add the columns; the legacy wipe-then-insert would have emptied the table)"
-        )
-    prior = _picks_table_rows(table)
-    try:
-        # Wipe, then insert: identical semantics to the legacy unscoped POST
-        # (utility.py:409/411), keeping the ids-restart-at-1 convention.
-        SUPABASE_ADMIN_CLIENT.table(table).delete().neq("id", 0).execute()
-        payload = [dict(row, id=i + 1) for i, row in enumerate(rows)]
-        SUPABASE_ADMIN_CLIENT.table(table).upsert(payload).execute()
-        persisted = SUPABASE_ADMIN_CLIENT.table(table).select("id").execute().data or []
-        if len(persisted) != len(payload):
-            raise RuntimeError(f"post-write verify mismatch: {len(persisted)} rows published, expected {len(payload)}")
-    except Exception as insert_error:  # noqa: BLE001 - restored below, then re-raised chained
-        try:
-            if prior:
-                SUPABASE_ADMIN_CLIENT.table(table).upsert(prior).execute()
-            report = (
-                f"picks insert FAILED; the pre-wipe rows were re-inserted, so {table} "
-                f"holds its OLD state. original error: {insert_error!r}"
-            )
-        except Exception as restore_error:  # noqa: BLE001 - the restore report must still name both failures
-            report = (
-                f"picks insert FAILED and the best-effort RESTORE ALSO failed - {table} "
-                f"stays WIPE-EMPTY. original error: {insert_error!r}; restore error: {restore_error!r}"
-            )
-        print(f"save_picks_db: {report}", flush=True)
-        raise RuntimeError(report) from insert_error
 
 
 # ------------------------------------------------------------- stat update
@@ -1415,9 +1237,10 @@ def picks_slate_rows(on_date, env=None):
 
 
 def stat_update_picks_db(sim, on_date, env=None):
-    """stat_update mode: PATCH ONLY the `stat` column on today's Picks-{ENV} slate.
+    """stat_update - THE one and only write: PATCH ONLY the `stat` column on
+    today's Picks-{ENV} slate.
 
-    The owner-corrected contract (module docstring, WRITE MODE): the table
+    The owner-corrected contract (module docstring, WRITE contract): the table
     is the FULL PLAYER SLATE the site's own pipeline publishes; this run
     fills the stat column on EVERY player of the slate the model could
     score, and touches NOTHING else:
@@ -1425,13 +1248,13 @@ def stat_update_picks_db(sim, on_date, env=None):
       1. read the existing rows (picks_slate_rows above - a missing slate is
          a WARN + clean skip, never a write);
       2. compute every slate row's stat from ``sim`` (stat_value, the same
-         convention the legacy 3-row publication uses) and PATCH it:
+         convention the top-3 output row serialization uses) and PATCH it:
          ``update({'stat': v}).eq('id', row_id)``. A PostgREST PATCH
          filtered by an existing id can never insert and never touches
          another column - so the row count, the ids and every other column
          are identical before/after by construction (test-pinned); the
-         per-player PATCH keeps the row's OWN id (no renumbering, opposite
-         of the legacy wipe-then-reinsert);
+         per-player PATCH keeps the row's OWN id (never renumbered - the
+         ML path NEVER wipes this table);
       3. WARN by name for slate rows the model frame could not score
          (call-ups without history) and leave their stat UNTOUCHED - no
          invented values, no inserted rows;
@@ -1446,8 +1269,8 @@ def stat_update_picks_db(sim, on_date, env=None):
     A failed PATCH is LOUD (one line with the failing id) and the loop
     continues, so one bad row cannot withhold the rest of the fill; when
     EVERY patch fails the run raises - a green run with zero writes can
-    only be the slate-missing skip above. This is the same fail-loud spirit
-    as save_picks_db above, minus the scaffolding a PATCH never needs.
+    only be the slate-missing skip above; the PATCH needs no wipe/restore
+    scaffolding - it can never delete or insert anything.
 
     Returns the counts: {"slate_rows", "filled", "no_frame", "not_on_slate", "skipped"}.
     """
@@ -1558,7 +1381,6 @@ def job_summary(
     mean_max_prob,
     dry,
     *,
-    write_mode=WRITE_MODE_DEFAULT,
     stat_result=None,
     pick_rows=None,
 ):
@@ -1570,39 +1392,32 @@ def job_summary(
     lines = [
         f"## ML picks run: {on_date}",
         "",
+        "- mode: stat_update (hard-pinned); source: prod; history: shared ledger",
         f"- artifact: `{key}` (train_through {meta.get('train_through')}, seed {meta.get('seed')})",
-        f"- picks published: {n_picks}{'' if not dry else ' (DRY - no Picks write)'}",
+        f"- top-3 challenge picks (OUTPUT ONLY - not written to the Picks table): {n_picks}",
+        "- stat column updated on ALL players of the current Picks-{ENV} slate (no wipe; "
+        "the site's SaveToDb owns the slate rows)",
         f"- mean ensemble percentile: {mean_max_prob}",
     ]
-    if write_mode == "stat_update":
-        lines = [
-            f"## ML picks run: {on_date} (write_mode stat_update)",
-            "",
-            f"- artifact: `{key}` (train_through {meta.get('train_through')}, seed {meta.get('seed')})",
-            f"- top-3 challenge picks (OUTPUT ONLY - not written to the Picks table): {n_picks}",
-            "- stat column updated on ALL players of the current Picks-{ENV} slate (no wipe; "
-            "the site's SaveToDb owns the slate rows)",
-            f"- mean ensemble percentile: {mean_max_prob}",
-        ]
-        if dry:
-            lines.append("- DRY run: no stat PATCHes (read-only)")
-        elif stat_result is not None:
-            if stat_result["skipped"]:
-                fill_line = "- stat fill: SKIPPED cleanly (the slate has not been published yet)"
-            else:
-                fill_line = (
-                    f"- stat fill: {stat_result['filled']} of {stat_result['slate_rows']} slate row(s) patched; "
-                    f"{stat_result['no_frame']} slate row(s) left untouched (no prediction); "
-                    f"{stat_result['not_on_slate']} frame player(s) not on the slate (no write)"
-                )
-            lines.append(fill_line)
-        lines += [
-            "",
-            "| tims | name | team | stat |",
-            "| --- | --- | --- | --- |",
-        ]
-        for row in pick_rows or []:
-            lines.append(f"| {row.get('tims')} | {row.get('name')} | {row.get('team_name')} | {row.get('stat')} |")
+    if dry:
+        lines.append("- DRY run: no stat PATCHes (read-only)")
+    elif stat_result is not None:
+        if stat_result["skipped"]:
+            fill_line = "- stat fill: SKIPPED cleanly (the slate has not been published yet)"
+        else:
+            fill_line = (
+                f"- stat fill: {stat_result['filled']} of {stat_result['slate_rows']} slate row(s) patched; "
+                f"{stat_result['no_frame']} slate row(s) left untouched (no prediction); "
+                f"{stat_result['not_on_slate']} frame player(s) not on the slate (no write)"
+            )
+        lines.append(fill_line)
+    lines += [
+        "",
+        "| tims | name | team | stat |",
+        "| --- | --- | --- | --- |",
+    ]
+    for row in pick_rows or []:
+        lines.append(f"| {row.get('tims')} | {row.get('name')} | {row.get('team_name')} | {row.get('stat')} |")
     with open(path, "a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
 
@@ -1637,7 +1452,8 @@ def load_artifact_storage(client, bucket, prefix):
 def pick_daily_bundle(bucket, prefix, artifact_path, storage_bucket=None, storage_prefix=None):
     """Resolve the artifact, in strict documented order:
 
-    1. ``--artifact PATH`` (local file) - always wins;
+    1. a local artifact path (``ML_ARTIFACT_PATH``, or the event's
+       ``artifact_path`` for programmatic callers) - always wins;
     2. S3 ``bucket/prefix`` with credentials (the historical default);
     3. Supabase Storage ``storage_bucket/storage_prefix`` - the
        no-AWS-credentials path (same SUPABASE_* secrets inference needs).
@@ -1662,48 +1478,28 @@ def pick_daily_bundle(bucket, prefix, artifact_path, storage_bucket=None, storag
     if storage_bucket:
         return load_artifact_storage(SUPABASE_ADMIN_CLIENT, storage_bucket, storage_prefix or prefix or "predict/ml")
     raise RuntimeError(
-        "no artifact source: set ML_STORAGE_BUCKET (or pass --storage-bucket) for the "
-        "default Supabase Storage read, set ML_S3_BUCKET (or pass --s3-bucket) for the "
-        "S3 read, or pass --artifact PATH for the local fallback"
+        "no artifact source: set ML_STORAGE_BUCKET for the "
+        "default Supabase Storage read, set ML_S3_BUCKET for the "
+        "S3 read, or set ML_ARTIFACT_PATH (the local fallback)"
     )
 
 
 def run(event=None, context=None):
-    """The former Lambda handler, unchanged in behaviour. `event` carries
-    optional date / dry / artifact_path / s3_bucket / s3_prefix - plus the
-    HYBRID axes: `source_env` (the LIVE-read side; which Player-Snapshots-
-    {source_env} today's rows come from) and `history_env` (default
-    'prod' pinned: the shared-ledger reads are unchanged whatever it says).
-    The WRITE side stays the module-global ENV: Picks-{ENV} is replaced.
-    `context` is kept in the signature so the lifted test surface stays
-    drop-in."""
+    """The former Lambda handler, same shape. `event` carries optional
+    date / dry / artifact_path / s3_bucket / s3_prefix (+ s3/storage
+    storage_prefix overrides). There are NO mode/source/history keys: stat
+    is the only write mode, source and history are hard-pinned (SOURCE_ENV
+    'prod', the ONE shared -prod ledger). The WRITE target is the module
+    global ENV (config.ENV; the CLI's --env rebinds it). `context` is kept
+    in the signature so the lifted test surface stays drop-in."""
     event = event or {}
     on_date = str(event.get("date") or today_et())
     dry = bool(event.get("dry"))
-    # THE TWO HYBRID AXES (resolution order in the module docstring):
-    #   source:  CLI --source-env / event source_env -> SOURCE_ENV var ->
-    #            'prod' (SOURCE_ENV_DEFAULT - the write env does NOT decide
-    #            the live read; 'dev' must be passed explicitly)
-    #   history: CLI --history-env / event history_env -> HISTORY_ENV var ->
-    #            'prod' (pinned default; routed to the shared ledger anyway)
-    source_env = resolve_env_axis(event.get("source_env"), "SOURCE_ENV", SOURCE_ENV_DEFAULT)
-    history_env = resolve_env_axis(event.get("history_env"), "HISTORY_ENV", HISTORY_ENV_DEFAULT)
-    # THE WRITE MODE axis (CLI --write-mode -> event["write_mode"] -> WRITE_MODE
-    # var -> 'stat_update' via resolve_write_mode above): the default fills
-    # ONLY the stat column on the site's OWN full-slate Picks rows (never
-    # wiping, never inserting); 'legacy' restores the historical
-    # wipe-then-publish-the-3-picks REPLACE behind the explicit flag.
-    write_mode = resolve_write_mode(event.get("write_mode"))
-    if history_env != HISTORY_ENV_DEFAULT:
-        print(
-            f"NOTE: --history-env {history_env} is accepted but the reads still route to the "
-            f"ONE shared ledger ({SHARED_HISTORY_TABLE} et al., 027ef47) - the dev backtrack "
-            "tables are deleted",
-            flush=True,
-        )
+    # NO AXES, NO MODE RESOLUTION: every former axis is a hard pin
+    # (module docstring, HARD-PINS). One loud identity line greets the log:
     print(
-        f"env axes: write=Picks-{ENV} write_mode={write_mode} | live read=Player-Snapshots-{source_env} "
-        f"| history=shared {SHARED_HISTORY_TABLE} (history_env={history_env})",
+        f"mode: stat_update (hard-pinned); source: prod (Player-Snapshots-{SOURCE_ENV}); "
+        f"history: shared ledger ({SHARED_HISTORY_TABLE}); write: Picks-{ENV}",
         flush=True,
     )
 
@@ -1711,8 +1507,12 @@ def run(event=None, context=None):
     prefix = event.get("s3_prefix") or os.environ.get("ML_ARTIFACT_PREFIX", "predict/ml")
     storage_bucket = event.get("storage_bucket") or os.environ.get("ML_STORAGE_BUCKET")
     storage_prefix = event.get("storage_prefix") or os.environ.get("ML_ARTIFACT_STORAGE_PREFIX", "predict/ml")
+    # The local-file overlay keeps its env-var source (the --artifact flag is
+    # gone with the rest of the removed surface): ML_ARTIFACT_PATH - or an
+    # event artifact_path for programmatic callers - always wins.
+    artifact_path = event.get("artifact_path") or os.environ.get("ML_ARTIFACT_PATH")
 
-    key, bundle = pick_daily_bundle(bucket, prefix, event.get("artifact_path"), storage_bucket, storage_prefix)
+    key, bundle = pick_daily_bundle(bucket, prefix, artifact_path, storage_bucket, storage_prefix)
     meta = bundle["metadata"]
     stale = staleness_note(bundle)
     print(
@@ -1736,9 +1536,9 @@ def run(event=None, context=None):
     yesterday = (datetime.date.fromisoformat(on_date) - datetime.timedelta(days=1)).isoformat()
     if not dry:
         # UNCHANGED shared-ledger behavior (027ef47): the gap-fill targets
-        # Player-Snapshots-backtrack-prod REGARDLESS of the picks env or the
-        # --history-env value (the helper's routing is env-independent; the
-        # arg is compatibility surface only).
+        # Player-Snapshots-backtrack-prod REGARDLESS of the picks env (the
+        # helper's routing is env-independent; the arg is compatibility
+        # surface only).
         try:
             summary = backfill_missing_days.backfill(ENV, through_date=yesterday)
             if summary.get("failed_days"):
@@ -1759,10 +1559,11 @@ def run(event=None, context=None):
     else:
         warn_missing_backfill_days(ENV, yesterday)
 
-    # The LIVE read: Player-Snapshots-{source_env} (the HYBRID axis).
-    # source_env defaults to 'prod' regardless of the write env (the
-    # owner's source-of-truth rule).
-    loaded = load_prediction_tables(source_env, on_date, history_env)
+    # The LIVE read: Player-Snapshots-prod, HARD-PINNED (SOURCE_ENV); the
+    # history reads route to the ONE shared -prod ledger (HISTORY_ENV +
+    # 027ef47's shared-ledger rule). The backfill keeps its own --env-arg
+    # call shape, but targets the shared ledger either way.
+    loaded = load_prediction_tables(SOURCE_ENV, on_date, HISTORY_ENV)
     if loaded is None:
         # CLEAN EXIT (owner rule): no LIVE snapshot rows for the pick date =
         # the morning snapshot build has not run yet and there is nothing to
@@ -1817,30 +1618,22 @@ def run(event=None, context=None):
 
     sim = ensemble_scores(bundle, frame)
 
-    # THE WRITE BRANCH (module docstring, WRITE MODE). stat_update (DEFAULT)
-    # runs BEFORE the top-3 assembly so a malformed picks shape can never
-    # withhold the stat fill (the fill is the mode's primary output; the
-    # top-3 computation then fails/validates exactly as it always did).
+    # THE WRITE (no mode branch: stat_update is the ONLY mode - the module
+    # docstring's WRITE contract). It runs BEFORE the top-3 assembly so a
+    # malformed picks shape can never withhold the stat fill (the fill is
+    # the run's primary output; the top-3 computation then fails/validates
+    # exactly as it always did).
     stat_result = None
-    if write_mode == "stat_update":
-        if dry:
-            print(
-                f"dry: stat update skipped (read-only) - the Picks-{ENV} slate would have been stat-filled", flush=True
-            )
-        else:
-            stat_result = stat_update_picks_db(sim, on_date)
+    if dry:
+        print(f"dry: stat update skipped (read-only) - the Picks-{ENV} slate would have been stat-filled", flush=True)
+    else:
+        stat_result = stat_update_picks_db(sim, on_date)
 
     picks = model.daily_picks(sim, "ensemble")
     validate_picks(picks, on_date)
     rows = pick_rows_to_picks_db(picks)
-    if write_mode == "legacy":
-        if not dry:
-            # schema-safe full replace: the wipe commits only when the insert is
-            # safe (probe before delete + restore-on-insert-failure); on failure
-            # the run raises instead of leaving Picks-{ENV} empty.
-            save_picks_db(rows, on_date)
     mean_max_prob = round(float(pd.to_numeric(picks["ensemble"], errors="coerce").mean()), 4) if len(picks) else None
-    stat_payload = {"legacy_wipe_replace": write_mode == "legacy"}
+    stat_payload = {}
     if stat_result is not None:
         stat_payload |= {
             "slate_rows": stat_result["slate_rows"],
@@ -1856,7 +1649,6 @@ def run(event=None, context=None):
             {
                 "log": "SMARTSCORE_ML_PICKS",
                 "date": on_date,
-                "write_mode": write_mode,
                 "n_picks": len(rows),
                 "picks": [
                     {
@@ -1872,8 +1664,6 @@ def run(event=None, context=None):
                 "mean_max_prob": mean_max_prob,
                 "ensemble_scale": "within-(date,tims) rank percentile",
                 "write_env": ENV,
-                "source_env": source_env,
-                "history_env": history_env,
                 "artifact": {
                     "key": key,
                     "train_through": meta.get("train_through"),
@@ -1886,11 +1676,7 @@ def run(event=None, context=None):
         flush=True,
     )
     if dry:
-        dry_note = (
-            f"assembled {len(rows)} ML picks for {on_date}"
-            if write_mode == "legacy"
-            else f"assembled {len(rows)} ML picks (top-3 output) for {on_date} (stat fill deferred to a live pass)"
-        )
+        dry_note = f"assembled {len(rows)} ML picks (top-3 output) for {on_date} (stat fill deferred to a live pass)"
         print(f"dry: {dry_note}", flush=True)
     job_summary(
         on_date,
@@ -1899,7 +1685,6 @@ def run(event=None, context=None):
         len(rows),
         mean_max_prob,
         dry,
-        write_mode=write_mode,
         stat_result=stat_result,
         pick_rows=rows,
     )
@@ -1907,7 +1692,6 @@ def run(event=None, context=None):
     result = {
         "statusCode": 200,
         "date": on_date,
-        "write_mode": write_mode,
         "artifact": {
             "bucket": bucket or "(local file)",
             "key": key,
@@ -1928,55 +1712,21 @@ handler = run
 
 
 def main(argv=None):
+    """The CLI: EXACTLY three knobs (module docstring, THE THREE CLI KNOBS) -
+    --date, --dry, --env. Nothing else is accepted (argparse exits 2 on any
+    other flag, e.g. the removed --write-mode/--source-env/--history-env).
+    Source (prod) and history (the shared ledger) are hard pins, not knobs."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--date", default=None, help="slate date YYYY-MM-DD (default: ET-today)")
     parser.add_argument("--dry", action="store_true", help="smoke run: assemble picks, skip the Picks write")
     parser.add_argument(
-        "--artifact",
-        default=os.environ.get("ML_ARTIFACT_PATH"),
-        help="local .joblib path (fallback when AWS credentials or ML_S3_BUCKET are not configured)",
-    )
-    parser.add_argument("--s3-bucket", default=None, help="override the ML_S3_BUCKET env (default S3 source)")
-    parser.add_argument("--s3-prefix", default=None, help="override the ML_ARTIFACT_PREFIX env (default predict/ml)")
-    parser.add_argument(
-        "--storage-bucket",
-        default=None,
-        help="Supabase Storage bucket override (default the ML_STORAGE_BUCKET env, e.g. ml-artifacts) - "
-        "the no-AWS-credentials artifact source",
-    )
-    parser.add_argument(
-        "--storage-prefix",
-        default=None,
-        help="Supabase Storage path override (default the ML_ARTIFACT_STORAGE_PREFIX env, predict/ml)",
-    )
-    parser.add_argument(
-        "--write-mode",
-        choices=WRITE_MODES,
-        default=None,
-        help="what the run writes to Picks-{ENV}. DEFAULT 'stat_update': fill ONLY the stat column on "
-        "the site's OWN full-slate rows (no wipe, no insert; the top-3 challenge picks become log/summary "
-        "output). 'legacy' restores the historical full REPLACE - wipe the table and publish exactly the "
-        "3 challenge picks. Resolution: this flag -> event write_mode -> WRITE_MODE env var -> 'stat_update'",
-    )
-    parser.add_argument(
-        "--source-env",
+        "--env",
         choices=ENV_CHOICES,
         default=None,
-        help="which LIVE snapshot table to read TODAY's rows from: Player-Snapshots-{source-env}. "
-        "DEFAULT: 'prod' - prod is the source of truth for feature reads regardless of the picks env "
-        "(the dev live snapshot shell is empty; pass --source-env dev explicitly for the legacy "
-        "dev-side live read). Resolution: this flag -> SOURCE_ENV env var -> 'prod'. "
-        "THE HYBRID is ENV=dev + --source-env prod: reads the real prod live slate (and the "
-        "always-shared history) but writes ONLY Picks-dev - Picks-prod is untouched",
-    )
-    parser.add_argument(
-        "--history-env",
-        choices=ENV_CHOICES,
-        default=None,
-        help="the explicit history-axis flag; DEFAULT 'prod' is PINNED: Player-Snapshots-"
-        "backtrack-prod + Team-Stats-backtrack-prod + Goalie-Snapshots-backtrack-prod are read "
-        "REGARDLESS (027ef47's shared-ledger rule - the dev backtrack tables are deleted), so a "
-        "'dev' value is accepted but routed to the same shared ledger (loud note printed)",
+        help="WHICH Picks table the stat fill targets (dev|prod). DEFAULT: the process env's ENV at "
+        "import time (config.ENV, os.environ.get('ENV', 'dev') - the workflow binds the job/step env "
+        "before python starts); an explicit --env rebinds that same module value before run() starts. "
+        "SOURCE (prod) and HISTORY (the shared ledger) are hard-pinned - not knobs",
     )
     args = parser.parse_args(argv)
 
@@ -1985,22 +1735,13 @@ def main(argv=None):
         event["date"] = args.date
     if args.dry:
         event["dry"] = True
-    if args.write_mode:
-        event["write_mode"] = args.write_mode
-    if args.source_env:
-        event["source_env"] = args.source_env
-    if args.history_env:
-        event["history_env"] = args.history_env
-    if args.artifact:
-        event["artifact_path"] = args.artifact
-    if args.s3_bucket:
-        event["s3_bucket"] = args.s3_bucket
-    if args.s3_prefix:
-        event["s3_prefix"] = args.s3_prefix
-    if args.storage_bucket:
-        event["storage_bucket"] = args.storage_bucket
-    if args.storage_prefix:
-        event["storage_prefix"] = args.storage_prefix
+    if args.env:
+        # The --env override rebinds the module-global write env the writer,
+        # the gap-fill and the live-table helpers all capture - a single,
+        # unambiguous, process-local rebind before run() starts (the unset
+        # default stays config.ENV's import-time read).
+        global ENV  # noqa: PLW0603  (the same module-global rebind validate.py --env does)
+        ENV = args.env
     return run(event)
 
 
