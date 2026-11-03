@@ -297,8 +297,8 @@ def test_stat_update_patches_only_stat_and_never_inserts(monkeypatch):
     assert len(table) == 2  # row count unchanged (99 was never inserted)
     assert sorted(row["id"] for row in table) == [1, 2]  # ids untouched
     by_id = {row["id"]: row for row in table}
-    assert by_id[1] == {**prior[0], "stat": 99.9}
-    assert by_id[2] == {**prior[1], "stat": 11.1}
+    assert by_id[1] == {**prior[0], "stat": 99.9 / 100}  # 0.999 - the 0-1 decimal write form
+    assert by_id[2] == {**prior[1], "stat": 11.1 / 100}  # 0.111
     assert result["filled"] == 2 and result["slate_rows"] == 2 and result["not_on_slate"] == 1
 
 
@@ -314,6 +314,19 @@ def test_stat_update_nan_prediction_patches_none(monkeypatch):
 
     assert result["filled"] == 1
     assert rows_of(fake)[0]["stat"] is None
+
+
+def test_stat_update_100th_percentile_writes_exactly_one(monkeypatch):
+    """Micro-assert of the 0-1 decimal write boundary: a player at the
+    100th percentile (stat_value -> 100) PATCHes stat == 1.0 EXACTLY."""
+    sim = pd.DataFrame({"player_id": [55], "ensemble": [1.0]})
+    fake = FakeSupabase("Picks-dev", PICKS_COLUMNS, rows=copy.deepcopy(PRIOR_ROWS))
+    wire_env(monkeypatch, fake)
+
+    result = mod.stat_update_picks_db(sim, ON_DATE)
+
+    assert result["filled"] == 1
+    assert rows_of(fake)[0]["stat"] == 1.0
 
 
 def test_stat_update_missing_slate_is_a_clean_skip_with_zero_writes(monkeypatch):

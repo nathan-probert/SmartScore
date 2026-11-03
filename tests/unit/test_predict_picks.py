@@ -1444,7 +1444,7 @@ def test_env_resolved_at_import_routes_the_picks_write(monkeypatch, env_value):
     # ALL surfaces (the slate read + the PATCH) targeted the SAME, ONLY table
     assert set(client.tables) == {table}, f"write surface touched {set(client.tables)}, not purely {table}"
     (_eq, payload, matched) = client.tables[table]["patches"][0]
-    assert _eq == ("id", 1) and payload == {"stat": 51.0} and matched == 1
+    assert _eq == ("id", 1) and payload == {"stat": 0.51} and matched == 1  # 51.0/100: the 0-1 decimal write form
     # stat-only: every other column of the EXISTING row is identical
     row = client.table(table)._state["rows"][0]
     assert row["player_id"] == 123 and row["name"] == "a" and row["tims"] == 2
@@ -1628,15 +1628,17 @@ def test_stat_update_is_the_only_write_mode(env_vars, prediction_tables, monkeyp
     for after, pre in zip(picks.rows, before):
         for col, value in after.items():
             if col == "stat":
-                assert pre["stat"] is None and isinstance(value, float) and 0.0 <= value <= 100.0
+                assert pre["stat"] is None and isinstance(value, float) and 0.0 <= value <= 1.0
             else:
                 assert value == pre[col], f"column {col} mutated: {pre[col]!r} -> {value!r}"
     # four PATCHes, each carrying ONLY the stat key, one per existing id
     assert [row_id for row_id, _payload, _pre in picks.patches] == [1, 2, 3, 4]
     assert all(set(payload) == {"stat"} for _i, payload, _p in picks.patches)
-    # the ensemble mean-of-rank-pct -> percent, 1 decimal convention
-    sim_pct = round(int(picks.patches[0][1]["stat"]), 1)
-    assert sim_pct == picks.patches[0][1]["stat"]
+    # the 0-1 decimal write boundary: the PATCHed stat is the percent
+    # convention (stat_value: round(x*100, 1)) divided by 100, full precision
+    stat = picks.patches[0][1]["stat"]
+    assert 0.0 < stat <= 1.0
+    assert abs(stat * 100 - round(stat * 100, 1)) < 1e-9  # the percent form has exactly 1 decimal
     # the top-3 challenge picks are an OUTPUT: logged, never written (the
     # Picks table saw ONLY stat PATCHes - no delete/insert surface exists)
     payload = picks_log_line(capsys.readouterr().out)

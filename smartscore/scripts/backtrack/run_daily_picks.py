@@ -1148,11 +1148,14 @@ def validate_picks(picks, on_date):
 
 
 def stat_value(ensemble):
-    """The Picks `stat` convention, shared by the stat_update PATCHes and the
-    SMARTSCORE_ML_PICKS top-3 output (pick_rows_to_picks_db's stat cell):
-    the ensemble's within-(date,tims) rank percentile scaled to percent,
-    1 decimal - None when the prediction is not finite (a NaN must never
-    PATCH a number into the column)."""
+    """The Picks `stat` DISPLAY convention, shared by the SMARTSCORE_ML_PICKS
+    top-3 output (pick_rows_to_picks_db's stat cell) and the stat_update
+    computation stage: the ensemble's within-(date,tims) rank percentile
+    scaled to percent, 1 decimal - None when the prediction is not finite
+    (a NaN must never PATCH a number into the column). The DB WRITE boundary
+    only (stat_update_picks_db) carries the 0-1 decimal form: the PATCHed
+    value is stat_value(ensemble) / 100, full precision - the log/picks
+    display stays on the 0-100 scale."""
     stat = float(ensemble)
     if not np.isfinite(stat):
         return None
@@ -1248,8 +1251,12 @@ def stat_update_picks_db(sim, on_date, env=None):
       1. read the existing rows (picks_slate_rows above - a missing slate is
          a WARN + clean skip, never a write);
       2. compute every slate row's stat from ``sim`` (stat_value, the same
-         convention the top-3 output row serialization uses) and PATCH it:
-         ``update({'stat': v}).eq('id', row_id)``. A PostgREST PATCH
+         convention the top-3 output row serialization uses) and PATCH it,
+         divided by 100 at this write boundary - the column carries the
+         0-1 decimal form (a 100th-percentile player writes exactly 1.0;
+         full precision, no re-rounding), while the log/picks display stays
+         on the 0-100 scale: ``update({'stat': v}).eq('id', row_id)``. A
+         PostgREST PATCH
          filtered by an existing id can never insert and never touches
          another column - so the row count, the ids and every other column
          are identical before/after by construction (test-pinned); the
@@ -1281,7 +1288,7 @@ def stat_update_picks_db(sim, on_date, env=None):
         return {"slate_rows": 0, "filled": 0, "no_frame": 0, "not_on_slate": 0, "skipped": True}
 
     predictions = {
-        int(player_id): stat_value(ensemble)
+        int(player_id): (stat / 100 if (stat := stat_value(ensemble)) is not None else None)
         for player_id, ensemble in zip(sim["player_id"], sim["ensemble"])
         if pd.notna(player_id)
     }
