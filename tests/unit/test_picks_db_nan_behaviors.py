@@ -21,11 +21,13 @@ through save_picks_db so a failed run cannot empty a table. Import bootstrap
 mirrors tests/unit/test_predict_picks.py.
 """
 
+import copy
 import importlib.util
 import sys
 import types
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -113,6 +115,7 @@ class FakeQueryBuilder:
         self._mode = "select"
         self._columns = None
         self._payload = None
+        self._eq = None
 
     def select(self, *columns, **_kw):
         self._mode = "select"
@@ -124,12 +127,22 @@ class FakeQueryBuilder:
         self._mode = "delete"
         return self
 
+    def update(self, payload):
+        """The stat_update PATCH shape: update({...}).eq(col, val).execute()."""
+        self._mode = "update"
+        self._payload = dict(payload)
+        return self
+
     def upsert(self, payload):
         self._mode = "upsert"
         self._payload = payload
         return self
 
-    def eq(self, _col, _val):  # unused in these writes; chainability only
+    def eq(self, col, val):
+        # Recorded (not just chainability) purely for the stat_update PATCHes;
+        # the legacy wipe-then-insert flow never filters, so recording changes
+        # nothing for it.
+        self._eq = (col, val)
         return self
 
     def neq(self, _col, _val):
@@ -142,41 +155,65 @@ class FakeQueryBuilder:
         fake = self._fake
         rows = fake.tables[self._table]
         if self._mode == "select":
-            if self._columns:
-                fake.log.append(("select", tuple(self._columns)))
-            if self._columns == ["*"]:  # PostgREST select=* means all columns
-                return FakeResult([dict(row) for row in rows])
-            unknown = [col for col in self._columns or [] if col not in fake.columns]
-            if unknown:
-                raise FakePostgrestError("PGRST204", f"column {self._table}.{unknown[0]} does not exist")
-            return FakeResult([dict(row) for row in rows])
+            return self._execute_select(fake, rows)
+        if self._mode == "update":
+            return self._execute_update(fake, rows)
         if self._mode == "delete":
             fake.log.append(("delete", len(rows)))
             fake.tables[self._table] = []
             return FakeResult([])
         if self._mode == "upsert":
-            if fake.fail_upserts:  # scripted failure(s), consumed in call order
-                raise fake.fail_upserts.pop(0)
-            unknown = {key for row in self._payload for key in row} - fake.columns
-            if unknown:
-                raise FakePostgrestError("PGRST204", f"column {self._table}.{sorted(unknown)[0]} does not exist")
-            fake.log.append(("insert", len(self._payload)))
-            by_id = {row.get("id"): dict(row) for row in rows}
-            for row in self._payload:
-                by_id[row.get("id")] = dict(row)
-            fake.tables[self._table] = sorted(by_id.values(), key=lambda r: str(r.get("id")))
-            return FakeResult(self._payload)
+            return self._execute_upsert(fake, rows)
         raise AssertionError(f"unexpected builder mode {self._mode}")
+
+    def _execute_select(self, fake, rows):
+        if self._columns:
+            fake.log.append(("select", tuple(self._columns)))
+        if self._columns == ["*"]:  # PostgREST select=* means all columns
+            return FakeResult([dict(row) for row in rows])
+        unknown = [col for col in self._columns or [] if col not in fake.columns]
+        if unknown:
+            raise FakePostgrestError("PGRST204", f"column {self._table}.{unknown[0]} does not exist")
+        return FakeResult([dict(row) for row in rows])
+
+    def _execute_update(self, fake, rows):
+        if fake.fail_updates:  # scripted PATCH failure(s), consumed in call order
+            raise fake.fail_updates.pop(0)
+        unknown = set(self._payload) - fake.columns
+        if unknown:
+            raise FakePostgrestError("PGRST204", f"column {self._table}.{sorted(unknown)[0]} does not exist")
+        col, val = self._eq or (None, None)
+        if col is None:
+            raise AssertionError("unfiltered update (a stat fill must never be unscoped)")
+        matched = [row for row in rows if row.get(col) == val]
+        for row in matched:
+            row.update(self._payload)
+        fake.log.append(("update", (col, val, dict(self._payload), len(matched))))
+        return FakeResult([dict(row) for row in rows])
+
+    def _execute_upsert(self, fake, rows):
+        if fake.fail_upserts:  # scripted failure(s), consumed in call order
+            raise fake.fail_upserts.pop(0)
+        unknown = {key for row in self._payload for key in row} - fake.columns
+        if unknown:
+            raise FakePostgrestError("PGRST204", f"column {self._table}.{sorted(unknown)[0]} does not exist")
+        fake.log.append(("insert", len(self._payload)))
+        by_id = {row.get("id"): dict(row) for row in rows}
+        for row in self._payload:
+            by_id[row.get("id")] = dict(row)
+        fake.tables[self._table] = sorted(by_id.values(), key=lambda r: str(r.get("id")))
+        return FakeResult(self._payload)
 
 
 class FakeSupabase:
     """One-table client with a fixed column set + an order-revealing call log."""
 
-    def __init__(self, table, columns, rows=None, fail_upserts=None):
+    def __init__(self, table, columns, rows=None, fail_upserts=None, fail_updates=None):
         self.columns = set(columns)
         self.tables = {table: [dict(r) for r in (rows or [])]}
         self.log = []
         self.fail_upserts = list(fail_upserts or [])
+        self.fail_updates = list(fail_updates or [])
 
     def table(self, name):
         assert len(self.tables) == 1, f"client wired for one table, asked for {name}"
@@ -350,3 +387,135 @@ def test_empty_payload_writes_nothing(monkeypatch):
     mod.save_picks_db([], ON_DATE)
     assert fake.log == []  # no probe, no wipe, no insert
     assert rows_of(fake) == [dict(r) for r in PRIOR_ROWS]
+
+
+# ---------------------------------------------------- stat_update (stat PATCH)
+
+
+def make_sim():
+    """The scored sim, keyed to PRIOR_ROWS' player_ids (55/56) plus player
+    99 - which the slate does NOT carry (the scratched-frame case)."""
+    return pd.DataFrame(
+        {
+            "date": [ON_DATE] * 3,
+            "player_id": [55, 56, 99],
+            "tims": [1, 2, 1],
+            "ensemble": [0.999, 0.111, 0.5],
+        }
+    )
+
+
+def test_stat_value_convention_matches_the_legacy_percent():
+    """stat_value is the ONE shared stat convention (the legacy 3-row
+    publish and the stat_update PATCHes): percent, 1 decimal, None on a
+    non-finite prediction (a NaN must never patch a number into the
+    column)."""
+    assert mod.stat_value(0.12345) == 12.3
+    assert mod.stat_value(0.999) == 99.9
+    assert mod.stat_value(np.nan) is None
+    assert mod.stat_value(float("inf")) is None
+
+
+def test_stat_update_patches_only_stat_and_never_inserts(monkeypatch):
+    """THE no-wipe contract at the write surface: stat_update issues ONLY
+    per-row PATCHes (update().eq('id', ...)) - no delete, no insert, no
+    upsert - and each PATCH carries ONLY the stat key. The other columns
+    and the row count are untouched."""
+    prior = copy.deepcopy(PRIOR_ROWS)
+    fake = FakeSupabase("Picks-dev", PICKS_COLUMNS, rows=prior)
+    wire_env(monkeypatch, fake)
+
+    result = mod.stat_update_picks_db(make_sim(), ON_DATE)
+
+    kinds = [entry[0] for entry in fake.log]
+    assert kinds == ["select", "update", "update"]  # NO delete, NO insert, NO upsert
+    for entry in fake.log:
+        if entry[0] == "update":
+            _col, row_id, payload, matched = entry[1]
+            assert row_id in (1, 2)  # the PATCH is id-scoped
+            assert set(payload) == {"stat"}  # ONLY the stat column moves
+            assert matched == 1
+    table = rows_of(fake)
+    assert len(table) == 2  # row count unchanged (99 was never inserted)
+    assert sorted(row["id"] for row in table) == [1, 2]  # ids untouched
+    by_id = {row["id"]: row for row in table}
+    assert by_id[1] == {**prior[0], "stat": 99.9}
+    assert by_id[2] == {**prior[1], "stat": 11.1}
+    assert result["filled"] == 2 and result["slate_rows"] == 2 and result["not_on_slate"] == 1
+
+
+def test_stat_update_nan_prediction_patches_none(monkeypatch):
+    """A non-finite ensemble PATCHes stat=None (the column stays null) - it
+    never crashes the fill nor lies with a number. Same convention as
+    pick_rows_to_picks_db's stat cell (see mod.stat_value)."""
+    sim = pd.DataFrame({"player_id": [55], "ensemble": [np.nan]})
+    fake = FakeSupabase("Picks-dev", PICKS_COLUMNS, rows=PRIOR_ROWS)
+    wire_env(monkeypatch, fake)
+
+    result = mod.stat_update_picks_db(sim, ON_DATE)
+
+    assert result["filled"] == 1
+    assert rows_of(fake)[0]["stat"] is None
+
+
+def test_stat_update_missing_slate_is_a_clean_skip_with_zero_writes(monkeypatch):
+    """The TIMING dependency: when the site's own SaveToDb publish has not
+    written the date's slate yet, the mode returns skipped cleanly - exactly
+    ONE read, no PATCH, no insert (the site's pipeline owns the rows)."""
+    fake = FakeSupabase("Picks-dev", PICKS_COLUMNS, rows=[])
+    wire_env(monkeypatch, fake)
+
+    result = mod.stat_update_picks_db(make_sim(), ON_DATE)
+
+    assert result == {"slate_rows": 0, "filled": 0, "no_frame": 0, "not_on_slate": 0, "skipped": True}
+    assert [entry[0] for entry in fake.log] == ["select"]
+
+
+def test_stat_update_warns_callups_and_leaves_their_stat(monkeypatch, capsys):
+    """A slate row without a prediction (call-up without history) is WARNed
+    by name and its stat stays untouched - never an invented value."""
+    empty_stat_row = {**PRIOR_ROWS[0], "id": 3, "name": "callup", "player_id": 404, "stat": None}
+    fake = FakeSupabase("Picks-dev", PICKS_COLUMNS, rows=PRIOR_ROWS + [empty_stat_row])
+    wire_env(monkeypatch, fake)
+
+    result = mod.stat_update_picks_db(make_sim(), ON_DATE)
+
+    assert result["no_frame"] == 1 and result["filled"] == 2
+    out = capsys.readouterr().out
+    assert "callup' (player_id 404)" in out
+    assert "stat left UNTOUCHED" in out
+    assert rows_of(fake)[2]["stat"] is None
+
+
+def test_stat_update_write_failure_is_loud_and_continues(monkeypatch, capsys):
+    """One failing PATCH cannot withhold the fill: the failing row keeps the
+    site's stat, the rest land, and the failure is LOUD (the same spirit as
+    save_picks_db, minus the scaffolding a PATCH never needs)."""
+    sim = pd.DataFrame({"player_id": [55, 56], "ensemble": [0.5, 0.6]})
+    fake = FakeSupabase(
+        "Picks-dev", PICKS_COLUMNS, rows=PRIOR_ROWS, fail_updates=[FakePostgrestError("PGRST204", "boom")]
+    )
+    wire_env(monkeypatch, fake)
+
+    result = mod.stat_update_picks_db(sim, ON_DATE)
+
+    assert result["filled"] == 1
+    out = capsys.readouterr().out
+    assert "stat PATCH failed for Picks-dev row id=1" in out
+    assert "the next kick re-fills" in out
+
+
+def test_stat_update_total_write_failure_raises(monkeypatch):
+    """Every PATCH failing = the write path failed outright: raise (never a
+    green run that wrote zero stat columns while the slate stood full)."""
+    sim = pd.DataFrame({"player_id": [55, 56], "ensemble": [0.5, 0.6]})
+    fake = FakeSupabase(
+        "Picks-dev",
+        PICKS_COLUMNS,
+        rows=PRIOR_ROWS,
+        fail_updates=[FakePostgrestError("PGRST204", "boom"), FakePostgrestError("PGRST204", "boom")],
+    )
+    wire_env(monkeypatch, fake)
+
+    with pytest.raises(RuntimeError, match="wrote zero stat columns"):
+        mod.stat_update_picks_db(sim, ON_DATE)

@@ -20,6 +20,7 @@ import datetime
 import importlib.util
 import io
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -354,15 +355,22 @@ def prediction_tables(monkeypatch):
         "Default": fake_goalies(),
     }
 
+    # The Picks-{ENV} slate (stat_update's writable surface): a mutable
+    # FakePicksTable reachable from the tests via the fake client.
+    picks_table = FakePicksTable(fake_picks_slate())
+
     fake_client = MagicMock(name="supabase_admin")
 
     def _table(name):
+        if name.startswith("Picks-"):
+            return picks_table
         for prefix, frame in tables.items():
             if name.startswith(prefix):
                 return FakeTable(frame)
         return FakeTable(tables["Default"])
 
     fake_client.table.side_effect = _table
+    fake_client.picks_table = picks_table
     monkeypatch.setattr("run_daily_picks.SUPABASE_ADMIN_CLIENT", fake_client)
     # the gap-fill helper shares the admin client; patch it too so a run()'s
     # first-step invocation (and the dry witness) never leaves the fakes.
@@ -416,6 +424,70 @@ def fake_save(monkeypatch, calls):
         return rows
 
     monkeypatch.setattr("run_daily_picks.save_picks_db", _fake)
+
+
+class FakePicksTable:
+    """The Picks-{ENV} builder chain the stat_update writer uses:
+    select(.eq date) / update(.eq id).execute().
+
+    Records every PATCH in ``.patches`` as (row_id, payload, before-row
+    copy), so the tests can assert the write touched ONLY the stat column
+    of the EXISTING rows (mutation on the shared row dicts makes the
+    before/after compare trivial).
+    """
+
+    def __init__(self, rows):
+        self.rows = [dict(row) for row in rows]
+        self.patches = []
+        self._eq = None
+        self._pending = None
+
+    def select(self, *_cols, **_kw):
+        return self
+
+    def update(self, payload):
+        self._pending = dict(payload)
+        return self
+
+    def eq(self, col, value):
+        self._eq = (col, value)
+        return self
+
+    def execute(self):
+        if self._pending is not None:
+            col, value = self._eq or (None, None)
+            for row in self.rows:
+                if str(row.get(col)) == str(value):
+                    self.patches.append((row["id"], dict(self._pending), dict(row)))
+                    row.update(self._pending)
+        self._eq = None
+        self._pending = None
+        return FakeResult(pd.DataFrame(self.rows))
+
+
+# The live Picks-{ENV} column set (test_picks_db_nan_behaviors.PICKS_COLUMNS):
+# the site's OWN full-slate publish (utility.save_to_db) wrote these rows for
+# the pick date - the stat_update writer PATCHes only their stat.
+def fake_picks_slate():
+    return [
+        {
+            "id": row_id,
+            "date": ON_DATE,
+            "player_id": player_id,
+            "name": name,
+            "team_name": team,
+            "stat": None,
+            "tims": tims,
+            "gpg": gpg,
+            "hgpg": hgpg,
+        }
+        for row_id, player_id, name, team, tims, gpg, hgpg in (
+            (1, 1, "a", "Toronto", 1, 0.5, 0.1),
+            (2, 2, "b", "Toronto", 1, 0.2, 0.2),
+            (3, 9, "g", "Montréal", 2, 0.0, 0.0),
+            (4, 10, "h", "Montréal", 3, 0.0, 0.0),
+        )
+    ]
 
 
 # --------------------------------------------------------------- artifacts
@@ -555,7 +627,7 @@ def test_handler_runs_on_contract_design_artifact(env_vars, prediction_tables, m
     calls: list = []
     fake_save(monkeypatch, calls)
     s3 = fake_s3(monkeypatch, make_contract_bundle())
-    result = mod.handler({"date": ON_DATE}, None)
+    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
     assert len(calls) == 3
     assert {row["tims"] for row in calls} == {1, 2, 3}
     assert result["artifact"]["seed"] == 0
@@ -1048,10 +1120,13 @@ def test_pick_payload_whitelist():
 
 
 def test_handler_publishes_three_picks(env_vars, prediction_tables, monkeypatch):
+    """LEGACY write mode: the 3 challenge picks ARE the Picks write (pinned so
+    the demoted wipe-then-publish path keeps working behind --write-mode
+    legacy; the DEFAULT write mode is stat_update - see the tests below)."""
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     calls = []
     fake_save(monkeypatch, calls)
-    result = mod.handler({"date": ON_DATE}, None)
+    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
     assert result["statusCode"] == 200 and not result["dry"]
     assert len(calls) == 3 and sorted(r["tims"] for r in calls) == [1, 2, 3]
     assert all(r["date"] == ON_DATE and r["stat"] is not None for r in calls)
@@ -1087,7 +1162,7 @@ def test_handler_first_step_backfill_invoked_once_when_not_dry(env_vars, predict
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     calls = []
     fake_save(monkeypatch, calls)
-    result = mod.handler({"date": ON_DATE}, None)
+    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
     assert result["statusCode"] == 200
     assert invocations == [("prod", "2026-06-13")]  # exactly once, yesterday ET of the pick date
 
@@ -1124,7 +1199,7 @@ def test_handler_backfill_failure_still_picks(env_vars, prediction_tables, monke
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     calls = []
     fake_save(monkeypatch, calls)
-    result = mod.handler({"date": ON_DATE}, None)
+    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
     assert result["statusCode"] == 200 and len(calls) == 3
     assert "gap-fill backfill failed outright" in capsys.readouterr().out
 
@@ -1146,7 +1221,7 @@ def test_handler_carry_forward_fallback_only_when_exact_fails(env_vars, predicti
     fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
     calls = []
     fake_save(monkeypatch, calls)
-    result = mod.handler({"date": ON_DATE}, None)
+    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
     assert result["statusCode"] == 200 and len(calls) == 3
     out = capsys.readouterr().out
     assert "STAGE-1 carry-forward attach" in out
@@ -1173,7 +1248,7 @@ def test_handler_ambiguous_slate_fails(env_vars, prediction_tables, monkeypatch)
 
     monkeypatch.setattr("run_daily_picks.model.daily_picks", _only_one_group)
     with pytest.raises(RuntimeError, match="3 picks"):
-        mod.handler({"date": ON_DATE}, None)
+        mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
     assert calls == []
 
 
@@ -1416,7 +1491,7 @@ def test_hybrid_env_dev_source_prod_reads_prod_snapshot(env_vars, prediction_tab
     fake_save(monkeypatch, calls)
     names = record_table_names(prediction_tables)
 
-    result = mod.handler({"date": ON_DATE, "dry": True, "source_env": "prod"}, None)
+    result = mod.handler({"date": ON_DATE, "dry": True, "source_env": "prod", "write_mode": "legacy"}, None)
 
     assert result["statusCode"] == 200
     assert len(result["picks"]) == 3 and calls == []  # dry: assembled, no write
@@ -1434,7 +1509,7 @@ def test_hybrid_env_dev_source_prod_reads_prod_snapshot(env_vars, prediction_tab
     assert all(n.endswith("-prod") for n in names)  # one data plane, unchanged
     assert "Player-Snapshots-backtrack-dev" not in names
     out = capsys.readouterr().out
-    assert "env axes: write=Picks-dev | live read=Player-Snapshots-prod" in out
+    assert "env axes: write=Picks-dev write_mode=legacy | live read=Player-Snapshots-prod" in out
     picks_line = [line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0]
     payload = json.loads(picks_line)
     assert payload["write_env"] == "dev" and payload["source_env"] == "prod"
@@ -1601,3 +1676,231 @@ def test_hybrid_run_writes_picks_dev_with_prod_source(monkeypatch, capsys):
     fresh.save_picks_db(rows, "2026-06-15")
     assert set(client.tables) == {"Picks-dev"}, f"hybrid write touched {set(client.tables)}"
     assert [row["id"] for row in client.tables["Picks-dev"]["upserts"]] == [1]
+
+
+# -------------------------------------------------- stat_update (DEFAULT) mode
+
+
+def picks_log_line(out):
+    return json.loads([line for line in out.splitlines() if "SMARTSCORE_ML_PICKS" in line][0])
+
+
+def test_default_write_mode_is_stat_update_and_fills_only_stat(env_vars, prediction_tables, monkeypatch, capsys):
+    """The owner-corrected contract: the DEFAULT write mode PATCHes ONLY the
+    stat column on the EXISTING Picks-{ENV} slate rows - row count, ids and
+    every other column identical before/after, no save_picks_db call, and
+    the top-3 challenge picks emitted as log output only."""
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    picks = prediction_tables.picks_table
+    before = [dict(row) for row in picks.rows]  # the pre-run slate, including stat=None
+
+    calls: list = []
+    fake_save(monkeypatch, calls)
+    result = mod.handler({"date": ON_DATE}, None)
+
+    assert result["statusCode"] == 200
+    assert result["write_mode"] == "stat_update"
+    assert result["stat_update"] == {"slate_rows": 4, "filled": 4, "no_frame": 0, "not_on_slate": 0, "skipped": False}
+    # (a) ONLY the stat column moved, on the EXISTING rows (no insert, no wipe)
+    assert len(picks.rows) == len(before) == 4
+    assert [row["id"] for row in picks.rows] == [row["id"] for row in before]
+    for after, pre in zip(picks.rows, before):
+        for col, value in after.items():
+            if col == "stat":
+                assert pre["stat"] is None and isinstance(value, float) and 0.0 <= value <= 100.0
+            else:
+                assert value == pre[col], f"column {col} mutated: {pre[col]!r} -> {value!r}"
+    # four PATCHes, each carrying ONLY the stat key, one per existing id
+    assert [row_id for row_id, _payload, _pre in picks.patches] == [1, 2, 3, 4]
+    assert all(set(payload) == {"stat"} for _i, payload, _p in picks.patches)
+    # the ensemble mean-of-rank-pct -> percent, 1 decimal convention
+    sim_pct = round(int(picks.patches[0][1]["stat"]), 1)
+    assert sim_pct == picks.patches[0][1]["stat"]
+    # (e) the top-3 challenge picks are an OUTPUT: logged, never written
+    assert calls == []  # save_picks_db (the legacy publication) never fired
+    payload = picks_log_line(capsys.readouterr().out)
+    assert payload["write_mode"] == "stat_update"
+    assert payload["stat_column"]["stat_filled"] == 4
+    assert payload["stat_column"]["legacy_wipe_replace"] is False
+    assert len(payload["picks"]) == 3 and {row["tims"] for row in payload["picks"]} == {1, 2, 3}
+    assert all(row["stat"] is not None for row in payload["picks"])
+
+
+def test_stat_update_missing_slate_skips_cleanly_no_insert(env_vars, prediction_tables, monkeypatch, capsys):
+    """TIMING dependency (the owner-corrected contract): when the run fires
+    before the site's own SaveToDb publish, Picks-{ENV} has no rows for the
+    date -> WARN + CLEAN skip (status 200, no exception, no write, no
+    invented rows). The top-3 picks remain a log output of the frame."""
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    prediction_tables.picks_table.rows.clear()
+    calls: list = []
+    fake_save(monkeypatch, calls)
+
+    result = mod.handler({"date": ON_DATE}, None)  # must NOT raise
+
+    assert result["statusCode"] == 200
+    assert result["stat_update"] == {"slate_rows": 0, "filled": 0, "no_frame": 0, "not_on_slate": 0, "skipped": True}
+    assert calls == [] and prediction_tables.picks_table.patches == []
+    out = capsys.readouterr().out
+    assert "no rows for 2026-06-14" in out and "SKIPPED cleanly" in out
+    assert "never inserting our own rows" in out
+    payload = picks_log_line(out)
+    assert payload["stat_column"]["stat_fill_skipped"] is True
+    assert len(payload["picks"]) == 3  # the top-3 projection is still emitted
+
+
+def test_stat_update_warns_slate_rows_without_a_prediction(env_vars, prediction_tables, monkeypatch, capsys):
+    """(b) missing players: a slate row the model frame cannot score
+    (call-up without history) is WARNed BY NAME and left UNTOUCHED - no
+    invented stat, no inserted row."""
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    prediction_tables.picks_table.rows.append(
+        {
+            "id": 5,
+            "date": ON_DATE,
+            "player_id": 99,
+            "name": "callup",
+            "team_name": "Toronto",
+            "stat": None,
+            "tims": 1,
+            "gpg": 0.0,
+            "hgpg": 0.0,
+        }
+    )
+    calls: list = []
+    fake_save(monkeypatch, calls)
+
+    result = mod.handler({"date": ON_DATE}, None)
+
+    assert result["statusCode"] == 200
+    assert result["stat_update"] == {"slate_rows": 5, "filled": 4, "no_frame": 1, "not_on_slate": 0, "skipped": False}
+    out = capsys.readouterr().out
+    assert "no model prediction (call-ups without published history" in out
+    assert "'callup' (player_id 99)" in out  # WARNed by name
+    untouched = [row for row in prediction_tables.picks_table.rows if row["id"] == 5][0]
+    assert untouched["stat"] is None  # stat left UNTOUCHED
+    assert len(prediction_tables.picks_table.rows) == 5  # no insert happened
+    assert calls == []
+
+
+def test_stat_update_warns_frame_players_absent_from_the_slate(env_vars, prediction_tables, monkeypatch, capsys):
+    """(c) extra frame players: a scored player the slate does not carry
+    (the site left him off - likely scratched) is WARNed, never written,
+    and never inserted as a minimal row."""
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    picks = prediction_tables.picks_table
+    picks.rows = [row for row in picks.rows if row["player_id"] != 2]  # the site dropped player 2
+    calls: list = []
+    fake_save(monkeypatch, calls)
+
+    result = mod.handler({"date": ON_DATE}, None)
+
+    assert result["statusCode"] == 200
+    assert result["stat_update"] == {"slate_rows": 3, "filled": 3, "no_frame": 0, "not_on_slate": 1, "skipped": False}
+    out = capsys.readouterr().out
+    assert "not on today's Picks-prod slate" in out
+    assert "no stat write for them" in out
+    assert len(picks.rows) == 3 and [row["id"] for row in picks.rows] == [1, 3, 4]  # no row inserted
+    assert {row_id for row_id, _pl, _p in picks.patches} == {1, 3, 4}
+    assert calls == []
+
+
+def test_stat_update_dry_is_read_only(env_vars, prediction_tables, monkeypatch, capsys):
+    """(a/d) A dry pass in the DEFAULT mode PATCHes nothing; it still
+    assembles + logs the top-3 output."""
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    picks = prediction_tables.picks_table
+    before = [dict(row) for row in picks.rows]
+    calls: list = []
+    fake_save(monkeypatch, calls)
+
+    result = mod.handler({"date": ON_DATE, "dry": True}, None)
+
+    assert result["statusCode"] == 200 and result["dry"]
+    assert "stat_update" not in result  # nothing computed toward a write
+    assert picks.rows == before and picks.patches == []
+    assert calls == []
+    out = capsys.readouterr().out
+    assert "dry: stat update skipped (read-only)" in out
+    payload = picks_log_line(out)
+    assert payload["stat_column"]["stat_fill_skipped"] is True
+
+
+def test_invalid_write_mode_fails_closed(env_vars, prediction_tables, monkeypatch):
+    """(d) The write-mode axis is whitelisted: a typo aborts the run BEFORE
+    any read or write - the same fail-closed form resolve_env_axis has."""
+
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    with pytest.raises(ValueError, match="invalid write mode"):
+        mod.handler({"date": ON_DATE, "write_mode": "nope"}, None)
+
+
+def test_legacy_write_mode_flag_still_wipes_and_publishes(env_vars, prediction_tables, monkeypatch, capsys):
+    """(d) The legacy wipe+3 publication survives behind the explicit flag -
+    exactly the pre-stat_update behavior (3 rows via save_picks_db)."""
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls: list = []
+    fake_save(monkeypatch, calls)
+
+    result = mod.handler({"date": ON_DATE, "write_mode": "legacy"}, None)
+
+    assert result["statusCode"] == 200 and result["write_mode"] == "legacy"
+    assert len(calls) == 3 and sorted(r["tims"] for r in calls) == [1, 2, 3]
+    assert "stat_update" not in result
+    payload = picks_log_line(capsys.readouterr().out)
+    assert payload["write_mode"] == "legacy" and payload["stat_column"]["legacy_wipe_replace"] is True
+
+
+def test_stat_update_top3_only_in_job_summary(env_vars, prediction_tables, monkeypatch, tmp_path):
+    """(e) The job summary in the DEFAULT mode lists the top-3 picks table +
+    the stat-fill headline; the picks themselves reach the summary ONLY as
+    text output - the table mutation is stat-only on the site's rows."""
+    summary = tmp_path / "step-summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    calls: list = []
+    fake_save(monkeypatch, calls)
+
+    mod.handler({"date": ON_DATE}, None)
+
+    text = summary.read_text(encoding="utf-8")
+    assert "write_mode stat_update" in text
+    assert "top-3 challenge picks (OUTPUT ONLY" in text
+    assert "stat column updated on ALL players of the current Picks-{ENV} slate (no wipe" in text
+    assert "stat fill: 4 of 4 slate row(s) patched" in text
+    # (e) the top-3 rows appear ONLY as this summary table (the picks were
+    # never written to the Picks table - save_picks_db never fired)
+    table_rows = [line for line in text.splitlines() if re.match(r"^\| \d+ \| ", line)]
+    assert len(table_rows) == 3
+    assert any("| stat |" in line for line in text.splitlines())  # the table's header
+    assert calls == []
+
+
+def test_write_mode_cli_flag_maps_into_the_event(monkeypatch, capsys):
+    """The CLI wiring: --write-mode rides the event; an unset flag adds NO
+    key (the run() fallbacks then apply)."""
+    events = []
+    monkeypatch.setattr(mod, "run", lambda event, context=None: (events.append(event), {"statusCode": 200})[1])
+
+    mod.main(["--date", "2026-10-23", "--write-mode", "legacy"])
+    assert events[0]["write_mode"] == "legacy"
+
+    mod.main(["--date", "2026-10-23"])
+    assert "write_mode" not in events[1]  # default: no flag, no key
+
+    with pytest.raises(SystemExit):
+        mod.main(["--write-mode", "nope"])
+
+
+def test_write_mode_resolution_order(monkeypatch):
+    """The write-mode axis resolves CLI -> event -> WRITE_MODE var ->
+    DEFAULT, and fails closed on anything else (the same form
+    resolve_env_axis uses for the env axes)."""
+    monkeypatch.delenv("WRITE_MODE", raising=False)
+    assert mod.resolve_write_mode() == "stat_update"  # WRITE_MODE_DEFAULT
+    monkeypatch.setenv("WRITE_MODE", "legacy")
+    assert mod.resolve_write_mode() == "legacy"  # the env var beats the default
+    assert mod.resolve_write_mode("stat_update") == "stat_update"  # the event beats the env var
+    assert mod.resolve_write_mode("legacy", cli_value="stat_update") == "stat_update"  # CLI beats the event
+    with pytest.raises(ValueError, match="invalid write mode"):
+        mod.resolve_write_mode("nope")

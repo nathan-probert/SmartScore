@@ -30,9 +30,9 @@ runner:
    * `date` — slate date `YYYY-MM-DD` (default: ET-today);
    * `dry` — smoke run: assembles + validates the 3 picks and prints the
      SMARTSCORE_ML_PICKS log line, but **skips the Picks write**;
-   * `environment` — the WRITE side: which Picks table the run replaces
-     (`dev|prod`, default: `prod` — the env matrix below). It does NOT
-     decide the LIVE-read source;
+   * `environment` — the WRITE side: which Picks table's slate rows the run
+     stat-fills (`dev|prod`, default: `prod` — the env matrix below). It
+     does NOT decide the LIVE-read source;
    * `source` — the LIVE-READ side ONLY: which snapshot TODAY's rows are
      read from (`Player-Snapshots-{source}`, `dev|prod`, default `prod`
      UNCONDITIONALLY — independent of the write env, per the owner's rule
@@ -78,7 +78,7 @@ global; the LIVE-READ side takes `--source-env`):
 | **Per-game kick** (`repository_dispatch`, ML Picks Restart) | **prod** / prod — same job-level defaults | prod tables |
 | **Manual dispatch** | the `environment` input (default **prod**) for the WRITE table; the `source` input for the live read (default **prod**, UNCONDITIONAL — the write env does NOT decide it since 2026-11-03) — i.e. a manual dispatch with `environment=dev` and `source` unset writes **Picks-dev** and reads the REAL prod LIVE table `Player-Snapshots-prod` | `Picks-{environment}` + LIVE `Player-Snapshots-{source}` (unset ⇒ `Player-Snapshots-prod`); historical reads and the backfill go to the SHARED ledger `Player-Snapshots-backtrack-prod` regardless (§10) |
 | **Manual dispatch — explicit legacy dev read** | `environment=dev` + `source=dev` (the ONLY way to read the dev LIVE table now) | `Picks-dev` + LIVE `Player-Snapshots-dev` (empty shell — see the note below) + the SHARED ledger |
-| **Manual dispatch — PRE-DEPLOYMENT VALIDATION (HYBRID)** | `environment=dev` + `source=prod`: real prod slate | **writes ONLY `Picks-dev`** (Picks-prod untouched; the write is a full single-day REPLACE of the target table per run) while TODAY's rows are read from `Player-Snapshots-prod` (the real LIVE prod snapshot) and history stays the SHARED `Player-Snapshots-backtrack-prod` — the owner validates end-to-end picks against real live data without touching Picks-prod. Verified live 2026-11-03: dry --date 2026-10-23 (3 picks, mean 0.9232, no write) and non-dry --date 2026-10-19 (Picks-dev = 3 rows for 2026-10-19; Picks-prod count unchanged at 495) |
+| **Manual dispatch — PRE-DEPLOYMENT VALIDATION (HYBRID)** | `environment=dev` + `source=prod`: real prod slate | **stat-fills ONLY `Picks-dev`** (Picks-prod untouched; in the DEFAULT `stat_update` mode the write is a stat-column PATCH on the rows the table already holds — no wipe, no insert) while TODAY's rows are read from `Player-Snapshots-prod` (the real LIVE prod snapshot) and history stays the SHARED `Player-Snapshots-backtrack-prod` — the owner validates end-to-end picks against real live data without touching Picks-prod. Verified live 2026-11-03: dry --date 2026-10-23 (3 picks, mean 0.9232, no write) and, before the stat_update default, non-dry --date 2026-10-19 (Picks-dev = 3 rows for 2026-10-19). |
 
 **SOURCE-default rule (2026-11-03, the owner's "prod is the source of truth
 for feature reads"):** the SOURCE env now defaults to **prod** even in a dev
@@ -100,12 +100,16 @@ Storage `ML_STORAGE_BUCKET` bucket `ml-artifacts`, prefix `predict/ml`,
 lexically latest `.joblib`; §2): no key change is needed when switching
 between prod and hybrid runs.
 
-FAIL-SAFE (in force in BOTH modes, not env-dependent): the Picks write goes
+FAIL-SAFE (LEGACY mode, in force in both modes' artifact reads, not
+env-dependent): the legacy Picks write goes
 through the schema-safe writer `save_picks_db`
 (`run_daily_picks.py`, probe-before-delete + restore-on-insert-failure) — an
 unsupported payload key aborts BEFORE any delete, and a failed
 insert/count-verify restores the pre-wipe rows and raises, so a failed run
-leaves `Picks-dev`/`Picks-prod` as the OLD table, never 0 rows.
+leaves `Picks-dev`/`Picks-prod` as the OLD table, never 0 rows. The
+DEFAULT `stat_update` mode needs none of that: it PATCHes per row and
+cannot delete/insert anything; a single failed PATCH is LOUD and
+continues, and an all-patches-failed run raises (never green-on-zero).
 
 Either way the job does: checkout -> `uv sync --frozen --no-dev` (the same
 runtime dependency surface `deploy.yml`'s deploy job installs) -> artifact
@@ -303,10 +307,80 @@ own morning rates and confirmed opponent goalie, since the backtrack tables
 only gain a date's rows post-game), scores with
 the ensemble's mean within-(date, tims) rank percentile, applies
 `model.daily_picks` (one pick per tims group), validates the 3-pick shape,
-and publishes through `save_picks_db` — the identical chain the Lambda
-executed, worked through a schema-safe write. It emits ONE structured log line (`log: SMARTSCORE_ML_PICKS`,
-JSON) and appends a headline to the job summary, plus a stale-artifact
-warning when the artifact trains through a date older than 7 days.
+and — in the DEFAULT `stat_update` write mode — fills the stat column on
+the site's existing full-slate Picks rows, with the top-3 becoming log
+output. In `--write-mode legacy` it instead publishes the 3 rows through
+`save_picks_db` (the identical chain the Lambda executed, worked through a
+schema-safe write). It emits ONE structured log line
+(`log: SMARTSCORE_ML_PICKS`, JSON) and appends a headline to the job
+summary, plus a stale-artifact warning when the artifact trains through a
+date older than 7 days.
+
+### 1.1 Write mode: `stat_update` (DEFAULT) vs `legacy` — the corrected contract
+
+**OWNER-CORRECTED CONTRACT (2026-11-03): `Picks-{ENV}` is the FULL PLAYER
+SLATE for the current day.** The site's own pipeline owns the rows:
+`SaveToDb / PublishToDb` → `handle_publish_db` → `publish_public_db` →
+`utility.save_to_db` full-wipes and re-inserts ALL of today's players
+(hundreds of rows; ids restart at 1). The ML model's job in the DEFAULT
+`stat_update` mode is to:
+
+* read TODAY's existing `Picks-{ENV}` rows (`id, player_id, name,
+  team_name, stat, tims`);
+* compute a prediction for EVERY player on today's slate (the frame is
+  built from the live snapshot as always);
+* `PATCH` **only the `stat` column** on each existing row —
+  `update({"stat": value}).eq("id", row_id)` — a PostgREST PATCH scoped to
+  an existing id can never insert and never touches another column, so the
+  row count, ids and every other column are identical before/after BY
+  CONSTRUCTION (test-pinned in tests/unit/test_predict_picks.py +
+  tests/unit/test_picks_db_nan_behaviors.py);
+* **NEVER wipe the table and NEVER insert rows** of its own (opposite of
+  the legacy mode's wipe-then-3-row publication);
+* WARN by name and leave `stat` untouched for slate players the model
+  could not score (call-ups without published history), and WARN for model
+  frame players the site left off the slate (likely not playing — no
+  write);
+* treats a MISSING slate as a warn + clean skip: when `Picks-{ENV}` has no
+  rows for the pick date (this run fired BEFORE the site's own SaveToDb
+  publish), the run prints one `WARNING ... SKIPPED cleanly` line and
+  writes nothing — the site's pipeline always eventually publishes the
+  slate and the next kick re-fills it.
+
+The **top-3-per-group challenge picks become an OUTPUT** in that mode:
+they rank within `(date, tims)` exactly as before, but are emitted only
+through the structured `SMARTSCORE_ML_PICKS` log (a `picks` array) and the
+job summary (a picks table) — never written to the Picks table (they are a
+projection of the stat column anyway). The `SMARTSCORE_ML_PICKS` summary
+semantics: **3 challenge picks (top per group) + the stat column updated
+on all slate rows**.
+
+**Evidence the site's OWN flows never needed the 3-row Picks
+publication** (why the default changed): `UpdateHistory`
+(`handle_save_historic_db`) derives the calendar's picks via `choose_picks`
+from its OWN state payload (falling back to the published rows), and
+`NotifyUsers` (`handle_emails`) derives the email picks via `choose_picks`
+from the PUBLISHED FULL slate rows — both by taking, per tims group, the
+max-`stat` player of the full slate. A 3-row wipe publication replaced the
+slate those readers derive from.
+
+The legacy full REPLACE survives behind `--write-mode legacy` (CLI) /
+`event["write_mode"]` (the resolution order: flag → event → `WRITE_MODE`
+env var → `stat_update`). The workflow's dispatch input `write_mode`
+defaults to and pins `stat_update`. Fail-safe scaffolding belongs to the
+legacy mode (see below); the PATCH path needs none (it cannot wipe or
+insert by construction).
+
+**Idempotency/timing, stated plainly:** the stat PATCHes are
+read-modify-write per row, so later kicks in the same day simply re-fill
+the CURRENT slate (the site re-publishes it — a full wipe + fresh Rust
+stat values — after each refresh run; our PATCHes overwrite stat only
+AFTER that). The ordering is already serialized on the AWS side: the
+state machine's `KickMLPicks` state fires at the END of
+`PlayerProcessingPipeline`, i.e. AFTER `PublishToDb` has written the
+full-slate rows (templates/player_processing_pipeline.asl.json:
+`PublishToDb -> KickMLPicks`). A manual run against a date the site has
+not published yet hits the warn + clean skip above.
 
 ### 1.1 Missing-day and empty-snapshot semantics (owner-approved)
 
@@ -656,10 +730,14 @@ the pipeline run itself.
   date are fine and EXPECTED (the morning/projections/lineup refresh rules
   all re-execute it, each firing exactly ONE kick at the end; the retained
   nightly cron pass remains the guaranteed full-day snapshot fallback).
-  Every kick re-runs the same daily pass; the Picks write is a full
-  wipe-then-reinsert of the run's 3 picks via `save_picks_db`
-  (probe-before-delete + restore-on-insert-failure), so a repeat pass for
-  the same date rewrites the same rows rather than duplicating them. The
+  Every kick re-runs the same daily pass; in the DEFAULT `stat_update`
+  mode the write is a per-row stat-column PATCH on the site's OWN
+  full-slate rows (read-modify-write, never a wipe, never an insert), so a
+  repeat pass for the same date RE-FILLS the current slate's stat column
+  against whatever rows the site has published since. In legacy mode the
+  write is a full wipe-then-reinsert of the run's 3 picks via
+  `save_picks_db` (probe-before-delete + restore-on-insert-failure), so a
+  repeat pass rewrites the same rows rather than duplicating them. The
   workflow serializes reruns via its `concurrency` group, so two kicks
   overlapping queue, not race.
 * **Cost/rates for an NHL day:** ~15 games/day after the first game

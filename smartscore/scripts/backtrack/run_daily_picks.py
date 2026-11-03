@@ -50,12 +50,35 @@ Owner rules this script implements (docs/ml-picks-runbook.md):
     goalie/rate fields - REQUIRED_LIVE_COLUMNS) with a hard fail naming
     exactly what is missing, and asserts the built frame has the artifact's
     exact ordered feature columns;
+  * WRITE MODE (the owner-corrected contract, 2026-11-03): Picks-{ENV} is the
+    FULL PLAYER SLATE for the current day - the site's own pipeline
+    publishes it (SaveToDb -> publish_public_db -> utility.save_to_db: all
+    players, their stats, wiped and reinserted by the SITE with fresh ids).
+    The DEFAULT ml-picks write mode is therefore ``stat_update``
+    (stat_update_picks_db below): compute predictions for EVERY player on
+    today's slate and PATCH ONLY the ``stat`` column on the existing rows
+    (update().eq('id', row_id) - a PostgREST PATCH can never insert, so the
+    row count, the ids and every other column are untouched; there is NO
+    delete anywhere). The top-3-per-group challenge picks become an OUTPUT
+    (the structured SMARTSCORE_ML_PICKS log + the job summary), never a
+    table mutation. Rows the site's publish has not written yet (the slate
+    does not exist in Picks-{ENV} for the date) are a WARN + CLEAN SKIP -
+    we never insert our own minimal rows; the site's pipeline always
+    eventually publishes the slate, and the next idempotent kick re-fills
+    (the stat PATCHes are read-modify-write, so a repeated run for a date
+    just re-fills the CURRENT slate). The legacy wipe-then-publish-the-3
+    mode survives behind ``--write-mode legacy`` for explicit use; the
+    site's own flows NEVER needed the 3-row Picks publication (evidence:
+    handle_save_historic_db derives the calendar picks via choose_picks
+    from its OWN state payload, and NotifyUsers' handle_emails derives the
+    email picks via choose_picks from the PUBLISHED FULL slate rows - so
+    the 3-row wipe publication actively worked against both).
   * it picks one player per tims group (model.daily_picks' rule, applied by
-    the ensemble's mean within-group rank percentile) and publishes through
-    the existing Picks-{ENV} conventions, reached via the publish_public_db
-    row shape, through a schema-safe wrapper (save_picks_db below) that
-    probes the table's live columns BEFORE the delete and restores the
-    pre-wipe rows if the insert fails - no manual Supabase writes.
+    the ensemble's mean within-group rank percentile) for the top-3 OUTPUT
+    in every mode. In ``legacy`` mode ONLY, those 3 rows are published
+    through the schema-safe wrapper (save_picks_db below) that probes the
+    table's live columns BEFORE the delete and restores the pre-wipe rows
+    if the insert fails - no manual Supabase writes.
 
 Manual trigger: the workflow's ``date`` input (or ``--date YYYY-MM-DD``)
 overrides ET-today; ``dry``/``--dry`` skips the Picks write (smoke run).
@@ -96,10 +119,11 @@ THE THREE ENV AXES (HYBRID mode) and their EXACT resolution order:
       validates end-to-end picks against live prod data without touching
       Picks-prod;
     - ENV=dev  + source-env=dev   - plain dev mode (unchanged legacy).
-  The Picks write is a full REPLACE of the target table (single-day
-  convention: Picks-{write_env} holds ONLY the last written date's picks -
-  it is wiped and re-inserted with ids restarting at 1 on every run,
-  save_picks_db below).
+  The single-day convention under LEGACY mode only: Picks-{write_env} is
+  a full REPLACE (the last written date's 3 picks wiped and re-inserted
+  with ids restarting at 1, save_picks_db below). Under the DEFAULT
+  ``stat_update`` mode the table is NEVER wiped: the site's own pipeline
+  owns the slate rows; this run only PATCHes the stat column on them.
 
 Artifact source (the artifact-fact convention), in this documented order:
 (1) ``--artifact PATH`` (a local file, e.g. one committed under data/ml/) -
@@ -277,6 +301,9 @@ REMOVE_KEYS = ["ppg"]
 #   history -> CLI --history-env -> event["history_env"] -> HISTORY_ENV var
 #              -> "prod" PINNED; the reads route to the shared -prod ledger
 #              regardless of the value (027ef47's shared-ledger rule).
+#   mode    -> CLI --write-mode -> event["write_mode"] -> WRITE_MODE var ->
+#              'stat_update' (WRITE_MODE_DEFAULT; see the module docstring's
+#              WRITE MODE bullet - the owner-corrected contract).
 ENV_CHOICES = ("dev", "prod")
 HISTORY_ENV_DEFAULT = "prod"
 # The SOURCE axis's fallback: NOT the write env - 'prod' unconditionally
@@ -284,6 +311,40 @@ HISTORY_ENV_DEFAULT = "prod"
 # snapshot shell is empty and the old follow-the-write-env default is what
 # made an environment=dev run clean-skip on an empty table).
 SOURCE_ENV_DEFAULT = "prod"
+
+# The Picks write modes (the module docstring's WRITE MODE bullet):
+#
+#   * stat_update (DEFAULT) - read today's Picks-{ENV} slate rows, compute a
+#     prediction for EVERY player of the frame, and PATCH ONLY the stat
+#     column on the matching rows. The table's rows and every other column
+#     are untouched; there is NO delete. Call-ups without history, or frame
+#     players the site left off the slate, are WARNed by name and never
+#     written. A missing slate (the site's SaveToDb has not written the
+#     date's rows yet) is a WARN + CLEAN SKIP - never our own rows.
+#   * legacy - the former full REPLACE: wipe Picks-{ENV} and publish exactly
+#     the 3 challenge picks (one per tims group). Demoted behind
+#     --write-mode legacy because the site's OWN flows read the full-slate
+#     rows (NotifyUsers' choose_picks picks the email picks from them) - the
+#     wipe publication replaced the slate the emails are derived from.
+WRITE_MODES = ("stat_update", "legacy")
+WRITE_MODE_DEFAULT = "stat_update"
+
+
+def resolve_write_mode(event_value=None, cli_value=None):
+    """THE write-mode axis: CLI --write-mode -> event["write_mode"] ->
+    WRITE_MODE var -> WRITE_MODE_DEFAULT.
+
+    Whitelisted (stat_update|legacy) and fail-closed naming the axis - the
+    same form resolve_env_axis above uses for the env axes: a typo must
+    abort the run BEFORE any read or write, never guess a mode.
+    """
+    resolved = cli_value or event_value or os.environ.get("WRITE_MODE") or WRITE_MODE_DEFAULT
+    if resolved not in WRITE_MODES:
+        raise ValueError(
+            f"invalid write mode {resolved!r}: must be one of {list(WRITE_MODES)} "
+            "(--write-mode / event write_mode / WRITE_MODE env)"
+        )
+    return resolved
 
 
 def resolve_env_axis(cli_value, env_var, fallback):
@@ -1155,6 +1216,18 @@ def validate_picks(picks, on_date):
         )
 
 
+def stat_value(ensemble):
+    """The Picks `stat` convention, shared by BOTH write modes (the legacy
+    3-row publish at pick_rows_to_picks_db below and the stat_update PATCHes
+    at stat_update_picks_db): the ensemble's within-(date,tims) rank
+    percentile scaled to percent, 1 decimal - None when the prediction is
+    not finite (a NaN must never PATCH a number into the column)."""
+    stat = float(ensemble)
+    if not np.isfinite(stat):
+        return None
+    return round(stat * 100, 1)
+
+
 def pick_rows_to_picks_db(picks):
     """Whitelist into the Picks-{ENV} write shape (PICK_DB_COLUMNS).
 
@@ -1166,11 +1239,7 @@ def pick_rows_to_picks_db(picks):
     write_keys = [key for key in PICK_DB_COLUMNS if key not in REMOVE_KEYS]
     rows = []
     for _, row in picks.iterrows():
-        stat = row.get("ensemble", np.nan)
-        if isinstance(stat, float) and not np.isfinite(stat):
-            stat = None
-        else:
-            stat = round(float(stat) * 100, 1)
+        stat = stat_value(row.get("ensemble", np.nan))
         values = []
         for key in write_keys:
             if key == "stat":
@@ -1299,6 +1368,179 @@ def save_picks_db(rows, date):
         raise RuntimeError(report) from insert_error
 
 
+# ------------------------------------------------------------- stat update
+# The DEFAULT write mode (the owner-corrected contract, 2026-11-03): the
+# Picks-{ENV} table is the FULL PLAYER SLATE the site's own pipeline
+# publishes (SaveToDb -> handle_publish_db -> publish_public_db ->
+# utility.save_to_db, full wipe + full-slate reinsert). This run only fills
+# the `stat` column on the existing rows - the write below is a plain
+# PostgREST PATCH per row (update().eq('id', row_id)), which can NEVER
+# insert a row: contract-safe by construction, no probe/restore scaffolding
+# needed.
+
+
+def picks_slate_rows(on_date, env=None):
+    """Today's Picks-{env} slate rows, read-only: (id, player_id, name,
+    team_name, stat, tims) - the site's own full-slate publish produced
+    them; the stat_update write PATCHes only their stat.
+
+    Returns None when the table has NO rows for ``on_date``: the site's own
+    SaveToDb publish has not written today's slate yet (the run may fire
+    before the pipeline's publish in wall-clock, e.g. a manual dispatch).
+    Callers must WARN + SKIP cleanly - the same contract
+    ``today_live_rows`` implements on the live-read side - and NEVER insert
+    their own minimal rows: the site's pipeline always eventually publishes
+    the slate, and the next idempotent kick (or the nightly cron) re-fills.
+    """
+    env = env or ENV
+    table = f"Picks-{env}"
+    rows = (
+        SUPABASE_ADMIN_CLIENT.table(table)
+        .select("id,player_id,name,team_name,stat,tims")
+        .eq("date", on_date)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        print(
+            f"WARNING: Picks-{env} has no rows for {on_date} - the site's own publish "
+            "(SaveToDb -> publish_public_db -> save_to_db) has not written today's full slate yet; "
+            "stat fill SKIPPED cleanly (never inserting our own rows - the site's pipeline will "
+            "publish the slate, and the next kick re-fills it)",
+            flush=True,
+        )
+        return None
+    return rows
+
+
+def stat_update_picks_db(sim, on_date, env=None):
+    """stat_update mode: PATCH ONLY the `stat` column on today's Picks-{ENV} slate.
+
+    The owner-corrected contract (module docstring, WRITE MODE): the table
+    is the FULL PLAYER SLATE the site's own pipeline publishes; this run
+    fills the stat column on EVERY player of the slate the model could
+    score, and touches NOTHING else:
+
+      1. read the existing rows (picks_slate_rows above - a missing slate is
+         a WARN + clean skip, never a write);
+      2. compute every slate row's stat from ``sim`` (stat_value, the same
+         convention the legacy 3-row publication uses) and PATCH it:
+         ``update({'stat': v}).eq('id', row_id)``. A PostgREST PATCH
+         filtered by an existing id can never insert and never touches
+         another column - so the row count, the ids and every other column
+         are identical before/after by construction (test-pinned); the
+         per-player PATCH keeps the row's OWN id (no renumbering, opposite
+         of the legacy wipe-then-reinsert);
+      3. WARN by name for slate rows the model frame could not score
+         (call-ups without history) and leave their stat UNTOUCHED - no
+         invented values, no inserted rows;
+      4. WARN for model frame players the slate does not carry (likely not
+         playing tonight) and never write them.
+
+    Idempotent by construction (a read-modify-write per row): a repeated
+    run for a date simply re-fills the CURRENT slate. A slate row whose
+    date vanished mid-run (the site re-published between step 1 and 2) is a
+    silent no-op PATCH (eq matched nothing) - never a new row.
+
+    A failed PATCH is LOUD (one line with the failing id) and the loop
+    continues, so one bad row cannot withhold the rest of the fill; when
+    EVERY patch fails the run raises - a green run with zero writes can
+    only be the slate-missing skip above. This is the same fail-loud spirit
+    as save_picks_db above, minus the scaffolding a PATCH never needs.
+
+    Returns the counts: {"slate_rows", "filled", "no_frame", "not_on_slate", "skipped"}.
+    """
+    env = env or ENV
+    table = f"Picks-{env}"
+    slate = picks_slate_rows(on_date, env=env)
+    if slate is None:
+        return {"slate_rows": 0, "filled": 0, "no_frame": 0, "not_on_slate": 0, "skipped": True}
+
+    predictions = {
+        int(player_id): stat_value(ensemble)
+        for player_id, ensemble in zip(sim["player_id"], sim["ensemble"])
+        if pd.notna(player_id)
+    }
+    slate_ids = set()
+    filled_id2stat = []  # (id, stat)
+    no_frame = []
+    for row in slate:
+        try:
+            player_id = int(row.get("player_id"))
+        except (TypeError, ValueError):
+            no_frame.append(f"{row.get('name')!r} (player_id {row.get('player_id')!r}: not numeric)")
+            continue
+        slate_ids.add(player_id)
+        if player_id not in predictions:
+            no_frame.append(f"{row.get('name')!r} (player_id {player_id})")
+            continue
+        filled_id2stat.append((row.get("id"), predictions[player_id]))
+
+    # Frame players absent from the slate: the site did not publish them
+    # tonight (scratch/healthy-scratch/not dressed). WARN, never write.
+    not_on_slate = [pid for pid in predictions if pid not in slate_ids]
+    _warn_pids = ", ".join(str(pid) for pid in not_on_slate[:10])
+    if not_on_slate:
+        print(
+            f"WARNING: {len(not_on_slate)} model frame player(s) (player_id(s) {_warn_pids}"
+            f"{'...' if len(not_on_slate) > 10 else ''}) are not on today's Picks-{env} slate - "
+            "likely not playing tonight; no stat write for them",
+            flush=True,
+        )
+    if no_frame:
+        print(
+            f"WARNING: {len(no_frame)} Picks-{env} slate row(s) have no model prediction (call-ups "
+            f"without published history or a bad player_id) - stat left UNTOUCHED: "
+            f"{no_frame[:10]}{'...' if len(no_frame) > 10 else ''}",
+            flush=True,
+        )
+
+    # One PATCH per row: only the stat column moves; a non-finite prediction
+    # PATCHes None (the column keeps whatever the site published) too.
+    fill_failures = []
+    filled = 0
+    for row_id, stat in filled_id2stat:
+        if row_id is None:
+            fill_failures.append(("(no id)", stat))
+            continue
+        try:
+            SUPABASE_ADMIN_CLIENT.table(table).update({"stat": stat}).eq("id", row_id).execute()
+            filled += 1
+        except Exception as exc:  # noqa: BLE001 - one bad row must not withhold the fill
+            fill_failures.append((row_id, None))
+            print(
+                f"WARNING: stat PATCH failed for Picks-{env} row id={row_id} ({type(exc).__name__}: "
+                f"{str(exc)[:160]}) - the row's stat is untouched (idempotent: the next kick re-fills)",
+                flush=True,
+            )
+    if slate and not filled and predictions and not no_frame:
+        raise RuntimeError(
+            f"stat_update wrote zero stat columns on Picks-{env} for {on_date} while "
+            f"{len(slate)} slate row(s) had predictions - the table write path failed outright"
+        )
+    if fill_failures and filled:
+        print(
+            f"WARNING: {len(fill_failures)} of {len(filled_id2stat)} stat PATCH(es) failed; the "
+            f"remaining {filled} landed (the failing rows keep the site's stat values)",
+            flush=True,
+        )
+    print(
+        f"stat_update: filled stat on {filled}/{len(slate)} Picks-{env} slate row(s) "
+        f"(no prediction for {len(no_frame)}, not on slate: {len(not_on_slate)}) - "
+        "all other columns and rows untouched",
+        flush=True,
+    )
+    result = {
+        "slate_rows": len(slate),
+        "filled": filled,
+        "no_frame": len(no_frame),
+        "not_on_slate": len(not_on_slate),
+        "skipped": False,
+    }
+    return result
+
+
 # ------------------------------------------------------------------ run
 
 
@@ -1308,7 +1550,18 @@ def today_et():
     return datetime.datetime.now(pytz.timezone("America/Toronto")).strftime("%Y-%m-%d")
 
 
-def job_summary(on_date, key, meta, n_picks, mean_max_prob, dry):
+def job_summary(
+    on_date,
+    key,
+    meta,
+    n_picks,
+    mean_max_prob,
+    dry,
+    *,
+    write_mode=WRITE_MODE_DEFAULT,
+    stat_result=None,
+    pick_rows=None,
+):
     """Append the run's headline to $GITHUB_STEP_SUMMARY when one exists
     (on GitHub Actions); a no-op anywhere else."""
     path = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -1321,6 +1574,35 @@ def job_summary(on_date, key, meta, n_picks, mean_max_prob, dry):
         f"- picks published: {n_picks}{'' if not dry else ' (DRY - no Picks write)'}",
         f"- mean ensemble percentile: {mean_max_prob}",
     ]
+    if write_mode == "stat_update":
+        lines = [
+            f"## ML picks run: {on_date} (write_mode stat_update)",
+            "",
+            f"- artifact: `{key}` (train_through {meta.get('train_through')}, seed {meta.get('seed')})",
+            f"- top-3 challenge picks (OUTPUT ONLY - not written to the Picks table): {n_picks}",
+            "- stat column updated on ALL players of the current Picks-{ENV} slate (no wipe; "
+            "the site's SaveToDb owns the slate rows)",
+            f"- mean ensemble percentile: {mean_max_prob}",
+        ]
+        if dry:
+            lines.append("- DRY run: no stat PATCHes (read-only)")
+        elif stat_result is not None:
+            if stat_result["skipped"]:
+                fill_line = "- stat fill: SKIPPED cleanly (the slate has not been published yet)"
+            else:
+                fill_line = (
+                    f"- stat fill: {stat_result['filled']} of {stat_result['slate_rows']} slate row(s) patched; "
+                    f"{stat_result['no_frame']} slate row(s) left untouched (no prediction); "
+                    f"{stat_result['not_on_slate']} frame player(s) not on the slate (no write)"
+                )
+            lines.append(fill_line)
+        lines += [
+            "",
+            "| tims | name | team | stat |",
+            "| --- | --- | --- | --- |",
+        ]
+        for row in pick_rows or []:
+            lines.append(f"| {row.get('tims')} | {row.get('name')} | {row.get('team_name')} | {row.get('stat')} |")
     with open(path, "a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
 
@@ -1406,6 +1688,12 @@ def run(event=None, context=None):
     #            'prod' (pinned default; routed to the shared ledger anyway)
     source_env = resolve_env_axis(event.get("source_env"), "SOURCE_ENV", SOURCE_ENV_DEFAULT)
     history_env = resolve_env_axis(event.get("history_env"), "HISTORY_ENV", HISTORY_ENV_DEFAULT)
+    # THE WRITE MODE axis (CLI --write-mode -> event["write_mode"] -> WRITE_MODE
+    # var -> 'stat_update' via resolve_write_mode above): the default fills
+    # ONLY the stat column on the site's OWN full-slate Picks rows (never
+    # wiping, never inserting); 'legacy' restores the historical
+    # wipe-then-publish-the-3-picks REPLACE behind the explicit flag.
+    write_mode = resolve_write_mode(event.get("write_mode"))
     if history_env != HISTORY_ENV_DEFAULT:
         print(
             f"NOTE: --history-env {history_env} is accepted but the reads still route to the "
@@ -1414,7 +1702,7 @@ def run(event=None, context=None):
             flush=True,
         )
     print(
-        f"env axes: write=Picks-{ENV} | live read=Player-Snapshots-{source_env} "
+        f"env axes: write=Picks-{ENV} write_mode={write_mode} | live read=Player-Snapshots-{source_env} "
         f"| history=shared {SHARED_HISTORY_TABLE} (history_env={history_env})",
         flush=True,
     )
@@ -1528,21 +1816,59 @@ def run(event=None, context=None):
         raise RuntimeError(f"frame produced no rows for {on_date}")
 
     sim = ensemble_scores(bundle, frame)
+
+    # THE WRITE BRANCH (module docstring, WRITE MODE). stat_update (DEFAULT)
+    # runs BEFORE the top-3 assembly so a malformed picks shape can never
+    # withhold the stat fill (the fill is the mode's primary output; the
+    # top-3 computation then fails/validates exactly as it always did).
+    stat_result = None
+    if write_mode == "stat_update":
+        if dry:
+            print(
+                f"dry: stat update skipped (read-only) - the Picks-{ENV} slate would have been stat-filled", flush=True
+            )
+        else:
+            stat_result = stat_update_picks_db(sim, on_date)
+
     picks = model.daily_picks(sim, "ensemble")
     validate_picks(picks, on_date)
     rows = pick_rows_to_picks_db(picks)
-    if not dry:
-        # schema-safe full replace: the wipe commits only when the insert is
-        # safe (probe before delete + restore-on-insert-failure); on failure
-        # the run raises instead of leaving Picks-{ENV} empty.
-        save_picks_db(rows, on_date)
+    if write_mode == "legacy":
+        if not dry:
+            # schema-safe full replace: the wipe commits only when the insert is
+            # safe (probe before delete + restore-on-insert-failure); on failure
+            # the run raises instead of leaving Picks-{ENV} empty.
+            save_picks_db(rows, on_date)
     mean_max_prob = round(float(pd.to_numeric(picks["ensemble"], errors="coerce").mean()), 4) if len(picks) else None
+    stat_payload = {"legacy_wipe_replace": write_mode == "legacy"}
+    if stat_result is not None:
+        stat_payload |= {
+            "slate_rows": stat_result["slate_rows"],
+            "stat_filled": stat_result["filled"],
+            "no_frame_skipped": stat_result["no_frame"],
+            "not_on_slate_skipped": stat_result["not_on_slate"],
+            "stat_fill_skipped": stat_result["skipped"],
+        }
+    elif dry:
+        stat_payload |= {"stat_fill_skipped": True, "reason": "dry"}
     print(
         json.dumps(
             {
                 "log": "SMARTSCORE_ML_PICKS",
                 "date": on_date,
+                "write_mode": write_mode,
                 "n_picks": len(rows),
+                "picks": [
+                    {
+                        "player_id": int(row["player_id"]),
+                        "name": row["name"],
+                        "team_name": row["team_name"],
+                        "tims": int(row["tims"]),
+                        "stat": row["stat"],
+                    }
+                    for row in rows
+                ],
+                "stat_column": stat_payload,
                 "mean_max_prob": mean_max_prob,
                 "ensemble_scale": "within-(date,tims) rank percentile",
                 "write_env": ENV,
@@ -1560,12 +1886,28 @@ def run(event=None, context=None):
         flush=True,
     )
     if dry:
-        print(f"dry: assembled {len(rows)} ML picks for {on_date} (no Picks write)", flush=True)
-    job_summary(on_date, key, meta, len(rows), mean_max_prob, dry)
+        dry_note = (
+            f"assembled {len(rows)} ML picks for {on_date}"
+            if write_mode == "legacy"
+            else f"assembled {len(rows)} ML picks (top-3 output) for {on_date} (stat fill deferred to a live pass)"
+        )
+        print(f"dry: {dry_note}", flush=True)
+    job_summary(
+        on_date,
+        key,
+        meta,
+        len(rows),
+        mean_max_prob,
+        dry,
+        write_mode=write_mode,
+        stat_result=stat_result,
+        pick_rows=rows,
+    )
 
-    return {
+    result = {
         "statusCode": 200,
         "date": on_date,
+        "write_mode": write_mode,
         "artifact": {
             "bucket": bucket or "(local file)",
             "key": key,
@@ -1575,6 +1917,9 @@ def run(event=None, context=None):
         "picks": rows,
         "dry": dry,
     }
+    if stat_result is not None:
+        result["stat_update"] = stat_result
+    return result
 
 
 # Kept as the module's canonical entry name so callers (and tests) get the
@@ -1605,6 +1950,15 @@ def main(argv=None):
         help="Supabase Storage path override (default the ML_ARTIFACT_STORAGE_PREFIX env, predict/ml)",
     )
     parser.add_argument(
+        "--write-mode",
+        choices=WRITE_MODES,
+        default=None,
+        help="what the run writes to Picks-{ENV}. DEFAULT 'stat_update': fill ONLY the stat column on "
+        "the site's OWN full-slate rows (no wipe, no insert; the top-3 challenge picks become log/summary "
+        "output). 'legacy' restores the historical full REPLACE - wipe the table and publish exactly the "
+        "3 challenge picks. Resolution: this flag -> event write_mode -> WRITE_MODE env var -> 'stat_update'",
+    )
+    parser.add_argument(
         "--source-env",
         choices=ENV_CHOICES,
         default=None,
@@ -1631,6 +1985,8 @@ def main(argv=None):
         event["date"] = args.date
     if args.dry:
         event["dry"] = True
+    if args.write_mode:
+        event["write_mode"] = args.write_mode
     if args.source_env:
         event["source_env"] = args.source_env
     if args.history_env:
