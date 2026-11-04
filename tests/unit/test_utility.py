@@ -335,3 +335,15 @@ def test_save_to_db_carries_forward_goalie_values_on_fetch_failure(mock_request,
     posted = mock_request.call_args.kwargs["json_data"]
     assert posted[0]["opp_goalie_name"] == "Starter"
     assert posted[0]["opp_goalie_status"] == "CONFIRMED"
+
+
+@patch("utility.count_picks_for_date", return_value=1)
+@patch("utility.exponential_backoff_supabase_request")
+def test_save_to_db_preserves_legacy_stat(mock_request, mock_count):
+    """Site publish payload carries legacy_stat alongside stat."""
+    players = [{"id": 1, "date": "2026-04-15", "player_id": 11, "stat": 0.42, "legacy_stat": 0.42}]
+    save_to_db(players, "2026-04-15")
+
+    posted = mock_request.call_args.kwargs["json_data"]
+    assert posted[0]["legacy_stat"] == 0.42
+    assert posted[0]["legacy_stat"] == posted[0]["stat"]

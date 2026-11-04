@@ -1,3 +1,15 @@
+-- (deploy.yml 'Guard migration files' allowlist marker.)
+-- BACKTRACK-PROD-PINNED. The -dev backtracking tables were deleted Oct 2026:
+-- their rows were removed on 2026-10-24 and the owner issued the final
+-- DROP TABLE for the three empty shells that same month
+-- (docs/backtrack_dev_deleted.md; DROP SQL in docs/ml-picks-runbook.md,
+-- section "Deleting the -dev backtrack table shells").
+-- The standing migrate job re-applies every file in supabase/migrations/ on
+-- every run, so ALL statements in this file target the '-prod' tables
+-- LITERALLY. Do not re-introduce the __ENV__ token here: a PR deploy with
+-- ENV=dev would otherwise revive the retired '-dev' shell. These statements
+-- are idempotent no-ops against an environment that never had dev backtrack
+-- tables.
 -- ppg: power play goals per game, single season, on Player-Snapshots-backtrack.
 --
 -- WHY A NEW COLUMN
@@ -16,5 +28,5 @@
 -- directory through psql on every deploy with no migration history: a plain ADD
 -- COLUMN would fail on the second run.
 
-ALTER TABLE "Player-Snapshots-backtrack-__ENV__"
+ALTER TABLE "Player-Snapshots-backtrack-prod"
     ADD COLUMN IF NOT EXISTS "ppg" DOUBLE PRECISION;

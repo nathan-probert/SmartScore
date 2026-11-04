@@ -104,18 +104,12 @@ def test_pipeline_normal_and_last_run_reload_separated_slices():
     assert last_run_routing["last_run"] == "PublishToDb"
     assert pipeline["States"]["CheckLastRun"]["Default"] == "GetInjuries"
 
-    # CheckInitialRun is now only reachable for first_run/normal_run, so
-    # last_run must no longer be routed there; unexpected statuses degrade
-    # to the normal-run archive+publish rather than hanging the machine.
     # normal_run goes through SaveToDb so the mid-morning refresh also
-    # updates Player-Snapshots.
-    initial_routing = {
-        choice["StringEquals"]: choice["Next"] for choice in pipeline["States"]["CheckInitialRun"]["Choices"]
-    }
-    assert "last_run" not in initial_routing
-    assert initial_routing["normal_run"] == "SaveToDb"
-    assert initial_routing["first_run"] == "SaveToDb"
-    assert pipeline["States"]["CheckInitialRun"]["Default"] == "SaveToDb"
+    # updates Player-Snapshots; the former CheckInitialRun Choice was a no-op
+    # (all three branches were SaveToDb, PR #134/#136) and was removed -
+    # GetTims routes straight to SaveToDb.
+    assert "CheckInitialRun" not in pipeline["States"]
+    assert pipeline["States"]["GetTims"]["Next"] == "SaveToDb"
 
     assert pipeline["States"]["SaveToDb"]["Next"] == "CheckSaveHistory"
     history_routing = {

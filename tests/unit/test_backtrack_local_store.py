@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import local_store
+import publish_shot_cols
 import pytest
 
 
@@ -436,13 +437,25 @@ def test_publish_prefers_archive_names_over_boxscore_initials(tmp_path, monkeypa
             {"player_id": 201, "name": "Brent Burns"},
         ]
     )
-    monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
+    monkeypatch.setattr(local_store, "config", lambda: ("prod", client))
+
+    # The session-wide supabase mock (tests/unit/conftest.py) makes the
+    # shot-columns migration probe read as "landed", which would send
+    # attach_shot_columns into shot_features() against the canonical
+    # data/raw_nhl.sqlite - an untracked 2.5 GB store this test does not build
+    # and must not require (it makes its own tmp_path store). Seed the probe
+    # cache the way a not-yet-migrated table looks, so attach takes its
+    # documented probe-gated no-op path; the 16 shot/TOI columns have their
+    # own coverage in test_shot_columns.py.
+    publish_shot_cols._PROBE["Player-Snapshots-backtrack-prod"] = False
 
     written = local_store.publish("20232024", db_path=tmp_path / "raw.sqlite")
 
     assert written == 2
     # Names were read from the archive table and rows written to the backtrack one.
-    assert set(client.table_names) == {"Player-Snapshots-dev", "Player-Snapshots-backtrack-dev"}
+    # (prod: Player-Snapshots-backtrack-dev was deleted on 2026-10-24; the guard
+    # in deleted_env_tables.py must not fire here.)
+    assert set(client.table_names) == {"Player-Snapshots-prod", "Player-Snapshots-backtrack-prod"}
     names = {r["player_id"]: r["name"] for r in client.upserted}
     # The archive's full spelling wins where it exists...
     assert names[201] == "Brent Burns"
@@ -876,13 +889,15 @@ def test_publish_goalies_ships_team_scoped_stats_and_full_names(tmp_path, monkey
     conn.close()
 
     client = _FakeArchiveClient([])
-    monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
+    monkeypatch.setattr(local_store, "config", lambda: ("prod", client))
 
     written = local_store.publish_goalies("20232024", db_path=tmp_path / "raw.sqlite")
 
     assert written == 4
-    # Goalie rows go to the goalie table and nowhere else.
-    assert client.table_names == ["Goalie-Snapshots-backtrack-dev"]
+    # Goalie rows go to the goalie table and nowhere else. ENV=dev now fails
+    # the guard (Goalie-Snapshots-backtrack-dev was deleted 2026-10-24), so the
+    # publish is exercised against prod.
+    assert client.table_names == ["Goalie-Snapshots-backtrack-prod"]
     assert all(k["on_conflict"] == "season,player_id,date" for k in client.upsert_kwargs)
     rows = {(r["player_id"], r["date"]): r for r in client.upserted}
     assert all(r["team_abbrev"] == "TOR" and r["team_name"] == local_store.to_place("TOR") for r in client.upserted)
@@ -918,9 +933,30 @@ def test_publish_goalies_without_features_writes_nothing(tmp_path, monkeypatch):
     conn.close()
 
     client = _FakeArchiveClient([])
-    monkeypatch.setattr(local_store, "config", lambda: ("dev", client))
+    monkeypatch.setattr(local_store, "config", lambda: ("prod", client))
 
     written = local_store.publish_goalies("20232024", db_path=tmp_path / "raw.sqlite")
 
     assert written == 0
     assert client.table_names == []
+
+
+def test_publish_team_env_dev_fails_loud(tmp_path, monkeypatch):
+    """A stale ENV=dev publish fails loud: no PostgREST 404, no silent write.
+
+    Team-Stats-backtrack-dev was deleted (rows 2026-10-24; empty shell
+    dropped Oct 2026, docs/backtrack_dev_deleted.md), so a dev-resolved
+    publish must raise via guard_backtrack_table BEFORE any Supabase
+    request is attempted.
+    """
+    conn = local_store.connect(tmp_path / "store.sqlite")
+    conn.execute(
+        "INSERT INTO derived_team_stats (season, team_abbrev, game_date, game_id, tgpg, otga, otshga)"
+        " VALUES ('20232024', 'BOS', '2023-10-05', 20001, '', '', '')"
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(local_store, "config", lambda: ("dev", None))
+    with pytest.raises(RuntimeError, match="no longer exists"):
+        local_store.publish_team("20232024", db_path=tmp_path / "store.sqlite")

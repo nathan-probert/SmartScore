@@ -1,3 +1,15 @@
+-- (deploy.yml 'Guard migration files' allowlist marker.)
+-- BACKTRACK-PROD-PINNED. The -dev backtracking tables were deleted Oct 2026:
+-- their rows were removed on 2026-10-24 and the owner issued the final
+-- DROP TABLE for the three empty shells that same month
+-- (docs/backtrack_dev_deleted.md; DROP SQL in docs/ml-picks-runbook.md,
+-- section "Deleting the -dev backtrack table shells").
+-- The standing migrate job re-applies every file in supabase/migrations/ on
+-- every run, so ALL statements in this file target the '-prod' tables
+-- LITERALLY. Do not re-introduce the __ENV__ token here: a PR deploy with
+-- ENV=dev would otherwise revive the retired '-dev' shell. These statements
+-- are idempotent no-ops against an environment that never had dev backtrack
+-- tables.
 -- Player-Snapshots-backtrack: season-to-date stats reconstructed from NHL game logs.
 --
 -- WHY THIS EXISTS
@@ -88,7 +100,7 @@
 -- Idempotent because .github/workflows/deploy.yml pipes every file in this
 -- directory through psql on every deploy with no migration history.
 
-CREATE TABLE IF NOT EXISTS "Player-Snapshots-backtrack-__ENV__" (
+CREATE TABLE IF NOT EXISTS "Player-Snapshots-backtrack-prod" (
     -- Key and identity
     "date" TEXT NOT NULL,
     "player_id" BIGINT NOT NULL,
@@ -121,16 +133,16 @@ CREATE TABLE IF NOT EXISTS "Player-Snapshots-backtrack-__ENV__" (
     -- Training label. null = not graded, matching Player-Snapshots-{ENV}.
     "scored" INTEGER,
 
-    CONSTRAINT "Player-Snapshots-backtrack-__ENV___pkey" PRIMARY KEY ("date", "player_id")
+    CONSTRAINT "Player-Snapshots-backtrack-prod_pkey" PRIMARY KEY ("date", "player_id")
 );
 
 -- The PK covers `WHERE date = ?`. This serves the per-player rebuild and the diff
 -- against Player-Snapshots-{ENV}, which both filter on player_id.
-CREATE INDEX IF NOT EXISTS "Player-Snapshots-backtrack-__ENV___player_idx"
-    ON "Player-Snapshots-backtrack-__ENV__" ("player_id", "date");
+CREATE INDEX IF NOT EXISTS "Player-Snapshots-backtrack-prod_player_idx"
+    ON "Player-Snapshots-backtrack-prod" ("player_id", "date");
 
 -- Same reasoning as the live archive: the training set is not publicly readable.
-ALTER TABLE "Player-Snapshots-backtrack-__ENV__" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "Player-Snapshots-backtrack-prod" ENABLE ROW LEVEL SECURITY;
 
 -- The opponent-goalie block moved to Goalie-Snapshots-backtrack-{ENV}, where one
 -- row per goalie appearance beats one number repeated across ~21 skater rows per
@@ -138,13 +150,13 @@ ALTER TABLE "Player-Snapshots-backtrack-__ENV__" ENABLE ROW LEVEL SECURITY;
 -- move; on a fresh table the columns above are never created and the statements
 -- are no-ops. publish() stopped sending the keys in the same change (PostgREST
 -- rejects a batch naming a column the table does not declare).
-ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_name";
-ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_team";
-ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_status";
-ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_confirmed";
-ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_nhl_id";
-ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_gaa";
-ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_save_pct";
-ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_record";
-ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_shutouts";
-ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-__ENV__" DROP COLUMN IF EXISTS "opp_goalie_games_played";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-prod" DROP COLUMN IF EXISTS "opp_goalie_name";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-prod" DROP COLUMN IF EXISTS "opp_goalie_team";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-prod" DROP COLUMN IF EXISTS "opp_goalie_status";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-prod" DROP COLUMN IF EXISTS "opp_goalie_confirmed";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-prod" DROP COLUMN IF EXISTS "opp_goalie_nhl_id";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-prod" DROP COLUMN IF EXISTS "opp_goalie_gaa";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-prod" DROP COLUMN IF EXISTS "opp_goalie_save_pct";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-prod" DROP COLUMN IF EXISTS "opp_goalie_record";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-prod" DROP COLUMN IF EXISTS "opp_goalie_shutouts";
+ALTER TABLE IF EXISTS "Player-Snapshots-backtrack-prod" DROP COLUMN IF EXISTS "opp_goalie_games_played";

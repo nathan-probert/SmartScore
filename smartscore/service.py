@@ -227,6 +227,9 @@ def make_predictions_teams(players, teams):
     rust_probabilities = make_predictions_rust.predict(rust_players, min_max, WEIGHTS)
     for i, player in enumerate(players):
         player["stat"] = rust_probabilities[i]
+        # Preserve the site's legacy weighted-average prediction alongside the
+        # ML-overwritten `stat` (legacy_stat = same value, copied not recomputed).
+        player["legacy_stat"] = rust_probabilities[i]
 
     return players
 

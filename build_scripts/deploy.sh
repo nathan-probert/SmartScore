@@ -31,6 +31,7 @@ LAMBDA_FUNCTIONS=(
   "GetGoalies-$ENV"
   "GetLineups-$ENV"
   "SendEmails-$ENV"
+  "MLPicksKick-$ENV"
 )
 
 
@@ -59,7 +60,33 @@ generate_smartscore_stack() {
     exit 1
   fi
 
+  # (The retired ML pick-pass parameter overrides (MLS3Bucket/MLEcrImageUri)
+  # are gone with the MLPicks Lambda; the Model pass now runs as the
+  # scheduled .github/workflows/ml-picks.yml workflow instead.)
+
+  # GITHUB_DISPATCH_TOKEN (optional): the fine-grained PAT (Actions: write,
+  # this repo only) used by the MLPicksKick Lambda to repository_dispatch
+  # 'ml-picks-game' into ml-picks.yml. Forwarded from the environment when
+  # set; when unset, create-stack falls back to the template's empty
+  # default and update-stack keeps the previously stored NoEcho value. The
+  # relay fails loudly per kick if it ends up empty.
+  CFN_PARAM_OVERRIDES=(ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY")
+  if [ -n "${GITHUB_DISPATCH_TOKEN:-}" ]; then
+    CFN_PARAM_OVERRIDES+=("ParameterKey=GithubDispatchToken,ParameterValue=${GITHUB_DISPATCH_TOKEN}")
+  fi
+
   if aws cloudformation describe-stacks --stack-name "$STACK_NAME" &>/dev/null; then
+    # Fail fast with an actionable message when the stack is stuck in a
+    # (rollback) failed state: UpdateStack (and waiter) cannot recover that
+    # and every attempt just fails cryptically until the rollback is
+    # completed with continue-update-rollback (or the stack is deleted).
+    PRE_STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].StackStatus" --output text)
+    case "$PRE_STATUS" in
+      CREATE_FAILED|DELETE_FAILED|ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED)
+        echo "Error: stack $STACK_NAME is stuck in $PRE_STATUS; it cannot be updated."
+        echo "Recover first: aws cloudformation continue-update-rollback --stack-name $STACK_NAME"
+        exit 1 ;;
+    esac
     echo "Updating CloudFormation stack $STACK_NAME..."
     UPDATE_OUTPUT=$(aws cloudformation update-stack \
       --stack-name "$STACK_NAME" \
@@ -72,12 +99,16 @@ generate_smartscore_stack() {
         ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
-        ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
+        "${CFN_PARAM_OVERRIDES[@]}" \
       --capabilities CAPABILITY_NAMED_IAM 2>&1)
 
     if echo "$UPDATE_OUTPUT" | grep -q "No updates are to be performed."; then
       echo "No updates needed. Skipping wait."
     else
+      # Surface the raw UpdateStack response. Its ValidationError text is the
+      # only place that names an offending resource for template/parameter
+      # problems; swallowing it made past rollbacks undiagnosable from CI.
+      echo "$UPDATE_OUTPUT"
       echo "Waiting for CloudFormation stack update to complete..."
       aws cloudformation wait stack-update-complete --stack-name "$STACK_NAME"
     fi
@@ -94,7 +125,7 @@ generate_smartscore_stack() {
         ParameterKey=BrevoSmtpKey,ParameterValue="$BREVO_SMTP_KEY" \
         ParameterKey=BrevoFromEmail,ParameterValue="$BREVO_FROM_EMAIL" \
         ParameterKey=FeatureSendEmails,ParameterValue="$FEATURE_SEND_EMAILS" \
-        ParameterKey=PosthogApiKey,ParameterValue="$POSTHOG_FEATURE_FLAG_KEY" \
+        "${CFN_PARAM_OVERRIDES[@]}" \
       --capabilities CAPABILITY_NAMED_IAM
 
     echo "Waiting for CloudFormation stack creation to complete..."
@@ -106,6 +137,17 @@ generate_smartscore_stack() {
 
   if [[ "$STACK_STATUS" != "CREATE_COMPLETE" && "$STACK_STATUS" != "UPDATE_COMPLETE" ]]; then
     echo "CloudFormation stack operation failed with status: $STACK_STATUS."
+    # Print the most recent failed-resource events so the failing resource
+    # + its ResourceStatusReason are visible directly in CI logs.
+    aws cloudformation describe-stack-events --stack-name "$STACK_NAME" --max-items 60 \
+      --query "StackEvents[?ResourceStatus=='UPDATE_FAILED'].[LogicalResourceId,ResourceType,ResourceStatusReason]" \
+      --output table &>/dev/null \
+      && echo "(failed-resource events printed above if any)" \
+      || echo "(describe-stack-events failed; run it manually with ResourceStatus=='UPDATE_FAILED')"
+    if [[ "$STACK_STATUS" == *ROLLBACK* || "$STACK_STATUS" == *FAILED* ]]; then
+      echo "Recovery: aws cloudformation continue-update-rollback --stack-name $STACK_NAME"
+      echo "Then inspect: aws cloudformation describe-stack-events --stack-name $STACK_NAME --max-items 40 --query 'StackEvents[?ResourceStatus==\`UPDATE_FAILED\`].[LogicalResourceId,ResourceType,ResourceStatusReason]' --output text"
+    fi
     exit 1  # Exit with error
   fi
 

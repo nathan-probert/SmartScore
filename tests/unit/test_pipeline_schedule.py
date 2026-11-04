@@ -33,10 +33,18 @@ TEMPLATES = Path(__file__).resolve().parents[2] / "templates"
 
 
 class CfnLoader(yaml.SafeLoader):
-    """SafeLoader that keeps CloudFormation intrinsic tag scalars inspectable."""
+    """SafeLoader that keeps CloudFormation intrinsic tags inspectable (scalar or sequence values)."""
 
 
-CfnLoader.add_multi_constructor("!", lambda loader, suffix, node: {suffix: loader.construct_scalar(node)})
+def _cfn_intrinsic(loader, suffix, node):
+    if isinstance(node, yaml.SequenceNode):
+        return {suffix: loader.construct_sequence(node)}
+    if isinstance(node, yaml.MappingNode):
+        return {suffix: loader.construct_mapping(node)}
+    return {suffix: loader.construct_scalar(node)}
+
+
+CfnLoader.add_multi_constructor("!", _cfn_intrinsic)
 
 TEMPLATE = yaml.load((TEMPLATES / "template.yaml").read_text(encoding="utf-8"), Loader=CfnLoader)
 
@@ -139,14 +147,50 @@ def test_first_run_fetches_lineups_before_predictions():
 def test_normal_run_archives_before_publishing():
     pipeline = _asl("player_processing_pipeline.asl.json")["States"]
 
-    routing = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckInitialRun"]["Choices"]}
-    assert routing["normal_run"] == "SaveToDb"
-    assert routing["first_run"] == "SaveToDb"
+    # The former CheckInitialRun Choice state was a no-op once PR #134 made
+    # normal_run archive too (all three branches went to the same SaveToDb);
+    # GetTims now routes straight to SaveToDb.
+    assert pipeline["GetTims"]["Next"] == "SaveToDb"
+    assert "CheckInitialRun" not in pipeline
 
     assert pipeline["SaveToDb"]["Next"] == "CheckSaveHistory"
     history = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckSaveHistory"]["Choices"]}
     assert history["first_run"] == "UpdateHistory"
     assert pipeline["CheckSaveHistory"]["Default"] == "PublishToDb"
+
+    # The ML kick is no longer a parallel EventBridge target: it fires after
+    # the write path completes (PublishToDb -> KickMLPicks -> End).
+    assert pipeline["PublishToDb"]["Next"] == "KickMLPicks"
+
+
+def test_kick_ml_picks_is_the_terminal_write_path_consumer():
+    """Race fix (PR #146 follow-up): KickMLPicks runs at the END of the run.
+
+    The kick must be the terminal Task of BOTH first_run and
+    normal_run/last_run rounds, pass ONLY the pipeline's own pick date
+    ($.date), and keep the state lean via ResultPath NONE. No Retry: a
+    failed dispatch fails the run loudly, and re-triggering is an idempotent
+    re-kick.
+    """
+    pipeline = _asl("player_processing_pipeline.asl.json")
+
+    kick = pipeline["States"]["KickMLPicks"]
+    assert kick["Type"] == "Task"
+    assert kick["Resource"].endswith(":function:MLPicksKick-prod")
+    assert kick["Parameters"] == {"date.$": "$.date"}
+    assert kick["ResultPath"] is None
+    assert kick["End"] is True
+    assert "Retry" not in kick
+
+
+def test_publish_to_db_is_no_longer_the_terminal_state():
+    pipeline = _asl("player_processing_pipeline.asl.json")["States"]
+
+    # Serialization point: PublishToDb hands off to KickMLPicks instead of
+    # ending the run, so the Actions pass starts only after the LIVE
+    # snapshot rows (incl. fresh tims) are published.
+    assert pipeline["PublishToDb"]["Next"] == "KickMLPicks"
+    assert "End" not in pipeline["PublishToDb"]
 
 
 _PLAYERS = [
@@ -220,15 +264,12 @@ def test_status_routes_to_the_expected_archive_branch(status):
 
     if status == "last_run":
         # last_run is routed at CheckLastRun, before the enrichment chain;
-        # CheckInitialRun must be unreachable for it.
+        # the enrichment branches (GetTims -> SaveToDb) must be unreachable for it.
         last_run_routing = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckLastRun"]["Choices"]}
         assert last_run_routing["last_run"] == "PublishToDb"
-        initial = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckInitialRun"]["Choices"]}
-        assert "last_run" not in initial
         return
 
-    initial = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckInitialRun"]["Choices"]}
-    assert initial[status] == "SaveToDb"
+    assert pipeline["GetTims"]["Next"] == "SaveToDb"
 
     history = {choice["StringEquals"]: choice["Next"] for choice in pipeline["CheckSaveHistory"]["Choices"]}
     assert history["first_run"] == "UpdateHistory"
@@ -346,13 +387,18 @@ def test_asl_routing_per_run_status():
     assert normal[0] == "LoadWorkingSet"
     assert "SaveToDb" in normal
     assert "UpdateHistory" not in normal
-    assert normal[-1] == "PublishToDb"
+    assert normal[-1] == "KickMLPicks"
 
     last = _trace_asl(pipeline, "last_run")
     assert last[0] == "LoadWorkingSet"
     assert "SaveToDb" not in last
     assert "UpdateHistory" not in last
-    assert last[-1] == "PublishToDb"
+    assert last[-1] == "KickMLPicks"
+
+    # Every exec-round kicks AFTER the publish writes complete.
+    for trace in (first, normal, last):
+        assert "KickMLPicks" in trace
+        assert trace.index("PublishToDb") < trace.index("KickMLPicks")
 
 
 @patch("event_handler.backfill_dates")

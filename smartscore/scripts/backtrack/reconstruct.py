@@ -123,7 +123,9 @@ def snapshot_table():
 
 
 def backtrack_table():
-    return f"Player-Snapshots-backtrack-{config()[0]}"
+    from deleted_env_tables import guard_backtrack_table  # noqa: PLC0415
+
+    return guard_backtrack_table(f"Player-Snapshots-backtrack-{config()[0]}")
 
 
 # Same justification as player_archive.py: a row is ~30 columns, so 500 keeps the

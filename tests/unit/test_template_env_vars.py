@@ -23,6 +23,19 @@ class CfnLoader(yaml.SafeLoader):
 CfnLoader.add_multi_constructor("!", lambda loader, suffix, node: {"__cfn_tag__": suffix})
 
 
+class CfnValueLoader(yaml.SafeLoader):
+    """SafeLoader that KEEPS intrinsic-tag values so Resource lists/Grant shapes stay inspectable."""
+
+
+def _keep_intrinsic(loader, suffix, node):
+    if isinstance(node, yaml.SequenceNode):
+        return [getattr(child, "value", _keep_intrinsic(loader, suffix, child)) for child in node.value]
+    return loader.construct_scalar(node)
+
+
+CfnValueLoader.add_multi_constructor("!", _keep_intrinsic)
+
+
 def _find_template() -> Path:
     for parent in Path(__file__).resolve().parents:
         candidate = parent / "templates" / "template.yaml"
@@ -34,18 +47,40 @@ def _find_template() -> Path:
 TEMPLATE_PATH = _find_template()
 TEMPLATE_TEXT = TEMPLATE_PATH.read_text(encoding="utf-8")
 TEMPLATE = yaml.load(TEMPLATE_TEXT, Loader=CfnLoader)
+VALUE_TEMPLATE = yaml.load(TEMPLATE_TEXT, Loader=CfnValueLoader)
+
+# Import-time REQUIRED (cold_start): every Handler in this template lives in
+# the shared ``event_handler`` module chain, which imports ``config.py`` and
+# builds BOTH Supabase clients while the module is being imported
+# (event_handler.py:9 -> player_archive.py:38 -> config.py:19/:23). Missing
+# any of the three crashes the Lambda on cold start with ``SupabaseException``
+# before the handler runs. PR #146 escalation: MLPicksKick-{env} deployed
+# with only GITHUB_DISPATCH_TOKEN and could never boot - the pure relay
+# semantics hid the shared-import requirement.
+IMPORT_REQUIRED_ENV_VARS = (
+    "SUPABASE_URL",
+    "SUPABASE_API_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+)
 
 # Credentials shared by every handler: the Supabase/PostHog clients, which
 # player_archive also needs because Player-Snapshots has RLS on and no policies
 # (service role only). Scoped per-handler credentials (Brevo) are deliberately
 # excluded - only SendEmailsFunction needs those.
-SHARED_ENV_VARS = (
-    "ENV",
-    "SUPABASE_URL",
-    "SUPABASE_API_KEY",
-    "SUPABASE_SERVICE_ROLE_KEY",
-    "POSTHOG_FEATURE_FLAG_KEY",
-)
+SHARED_ENV_VARS = ("ENV", *IMPORT_REQUIRED_ENV_VARS, "POSTHOG_FEATURE_FLAG_KEY")
+
+# Relay-exempt variables: ENV and the PostHog key are OPTIONAL at import
+# (ENV defaults to "dev" and feature_flags only lazily consults PostHog), so
+# the relay may still omit them. The relay must NOT be exempt from
+# IMPORT_REQUIRED_ENV_VARS: it shares event_handler's import chain
+# (test_relay_carries_import_required_env_var... below). The old FULL
+# exemption of MLPicksKick from Supabase wiring predates the cold-start
+# escalation and was wrong: "never USES Supabase" does not mean "never
+# IMPORTS config".
+RELAY_ONLY_FUNCTIONS = frozenset({"MLPicksKickFunction"})
+
+# Per-function scoped credentials not covered by SHARED_ENV_VARS.
+RELAY_ENV_VARS = {"MLPicksKickFunction": ("GITHUB_DISPATCH_TOKEN",)}
 
 
 def lambda_functions() -> dict:
@@ -70,14 +105,70 @@ def test_every_lambda_function_gets_shared_env_var(env_var):
     """Every handler can reach Supabase and PostHog.
 
     A new Lambda added to the template without this variable would otherwise
-    only fail when that handler first runs.
+    only fail when that handler first runs. Relay-only functions
+    (RELAY_ONLY_FUNCTIONS) are exempt ONLY from the optional shared vars
+    (ENV/POSTHOG): they still must carry IMPORT_REQUIRED_ENV_VARS - see
+    test_relay_carries_import_required_env_var_from_the_shared_param.
     """
-    missing = [name for name, resource in lambda_functions().items() if env_var not in env_vars(resource)]
+    missing = [
+        name
+        for name, resource in lambda_functions().items()
+        if env_var not in env_vars(resource) and name not in RELAY_ONLY_FUNCTIONS
+    ]
 
     assert not missing, (
         f"{len(missing)} Lambda function(s) missing {env_var}: {sorted(missing)}. "
         f"Add it to the Environment.Variables block of each."
     )
+
+
+# The import trio's values come from the SAME parameters the other 15
+# functions use - no new secrets and no inline values.
+IMPORT_REQUIRED_PARAM_SOURCES = {
+    "SUPABASE_URL": "SupabaseUrl",
+    "SUPABASE_API_KEY": "SupabaseApiKey",
+    "SUPABASE_SERVICE_ROLE_KEY": "SupabaseServiceRoleKey",
+}
+
+
+@pytest.mark.parametrize(
+    "env_var,param_name",
+    sorted(IMPORT_REQUIRED_PARAM_SOURCES.items()),
+)
+def test_relay_carries_import_required_env_var_from_the_shared_param(env_var, param_name):
+    """MLPicksKick is a relay at RUNTIME but a full pipeline module at IMPORT.
+
+    Its Handler is ``event_handler.handle_ml_picks_kick``, so the Lambda
+    imports the shared chain the other 15 functions share, and
+    ``config.py:19/:23`` builds both Supabase clients at module import. The
+    deployed escalation proved it: with only GITHUB_DISPATCH_TOKEN wired the
+    relay died on cold start with ``SupabaseException: supabase_url is
+    required``. Assert presence AND parameter source - the trio must come
+    from the same ``Supabase*`` CloudFormation parameters the other
+    functions use.
+    """
+    resource = lambda_functions().get("MLPicksKickFunction")
+    assert resource is not None, "MLPicksKickFunction missing from template.yaml"
+    assert env_var in env_vars(resource), f"MLPicksKickFunction is missing {env_var} (import-required, config.py)"
+
+    variables = VALUE_TEMPLATE["Resources"]["MLPicksKickFunction"]["Properties"]["Environment"]["Variables"]
+    assert variables[env_var] == param_name, (
+        f"MLPicksKickFunction's {env_var} must be !Ref {param_name} (the shared Supabase parameter), "
+        f"got {variables[env_var]!r}"
+    )
+
+
+@pytest.mark.parametrize("function_name,env_var", [(f, e) for f, vars_ in RELAY_ENV_VARS.items() for e in vars_])
+def test_relay_function_gets_its_scoped_env_var(function_name, env_var):
+    """Every relay-only Lambda still gets its own scoped credentials.
+
+    MLPicksKick's GitHub dispatch is a 401-only failure at runtime without
+    GITHUB_DISPATCH_TOKEN wired through the template's NoEcho parameter -
+    exactly the class of silent breakage this file exists to prevent.
+    """
+    resource = lambda_functions().get(function_name)
+    assert resource is not None, f"{function_name} missing from template.yaml"
+    assert env_var in env_vars(resource), f"{function_name} is missing {env_var} (Architecture A per-game relay)"
 
 
 def test_no_lambda_still_receives_the_retired_worker_token():
@@ -97,13 +188,56 @@ def test_no_lambda_still_receives_the_retired_worker_token():
     assert "SMARTSCORE_API_TOKEN" not in TEMPLATE_TEXT
 
 
-def test_every_ref_points_at_a_declared_parameter():
+def test_every_ref_points_at_a_declared_parameter_or_resource():
     """Catches typos in !Ref targets, which CloudFormation only rejects at deploy."""
-    declared = set(TEMPLATE.get("Parameters", {}))
+    declared = set(TEMPLATE.get("Parameters", {})) | set(TEMPLATE.get("Resources", {}))
     referenced = set(re.findall(r"!Ref\s+([A-Za-z0-9_]+)", TEMPLATE_TEXT))
 
     undeclared = sorted(referenced - declared)
-    assert not undeclared, f"!Ref to undeclared parameter(s): {undeclared}"
+    assert not undeclared, f"!Ref to undeclared parameter(s)/resource(s): {undeclared}"
+
+
+def test_kick_ml_picks_role_and_permission_wiring():
+    """KickMLPicks wiring (PR #146 follow-up race fix).
+
+    The state machine's KickMLPicks Task invokes MLPicksKick at the END of
+    the run, so (a) the StateMachineExecutionRole must grant
+    lambda:InvokeFunction on the relay, and (b) the invoke permission must
+    name states.amazonaws.com - the state machine is the principal, EventBridge
+    is no longer an MLPicksKick invoker.
+    """
+    role = VALUE_TEMPLATE["Resources"]["StateMachineExecutionRole"]["Properties"]
+    policy_document = role["Policies"][0]["PolicyDocument"]
+    invoke_statement = next(
+        statement for statement in policy_document["Statement"] if "lambda:InvokeFunction" in statement["Action"]
+    )
+    assert any(resource == "MLPicksKickFunction.Arn" for resource in invoke_statement["Resource"]), (
+        "StateMachineExecutionRole missing lambda:InvokeFunction on MLPicksKickFunction - "
+        "the KickMLPicks state would fail with AccessDenied"
+    )
+
+    permission = VALUE_TEMPLATE["Resources"]["MLPicksKickStatePermission"]["Properties"]
+    assert permission["Principal"] == "states.amazonaws.com"
+    assert "stateMachine:PlayerProcessingPipeline-${ENV}" in permission["SourceArn"]
+
+    # The old EventBridge-per-rule grant is retired: no events.amazonaws.com
+    # principal invokes the relay.
+    assert "MLPicksKickFunctionPermission" not in VALUE_TEMPLATE["Resources"]
+    for name, resource in VALUE_TEMPLATE["Resources"].items():
+        if resource.get("Type") != "AWS::Lambda::Permission":
+            continue
+        properties = resource.get("Properties", {})
+        if "MLPicksKickFunction" in str(properties.get("FunctionName", "")):
+            assert properties["Principal"] == "states.amazonaws.com", (
+                f"{name} must not re-introduce an EventBridge principal"
+            )
+
+
+def test_kick_ml_picks_asl_state_points_at_the_relay_function():
+    """The pipeline ASL's final state invokes the relay by its function name."""
+    asl_text = (TEMPLATE_PATH.parent / "player_processing_pipeline.asl.json").read_text(encoding="utf-8")
+    assert "function:MLPicksKick-${ENV}" in asl_text, "KickMLPicks state must invoke MLPicksKick-${ENV}"
+    assert "MLPicksKickStatePermission" in VALUE_TEMPLATE["Resources"]
 
 
 def _deploy_script() -> Path:

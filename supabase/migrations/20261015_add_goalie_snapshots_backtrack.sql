@@ -1,3 +1,15 @@
+-- (deploy.yml 'Guard migration files' allowlist marker.)
+-- BACKTRACK-PROD-PINNED. The -dev backtracking tables were deleted Oct 2026:
+-- their rows were removed on 2026-10-24 and the owner issued the final
+-- DROP TABLE for the three empty shells that same month
+-- (docs/backtrack_dev_deleted.md; DROP SQL in docs/ml-picks-runbook.md,
+-- section "Deleting the -dev backtrack table shells").
+-- The standing migrate job re-applies every file in supabase/migrations/ on
+-- every run, so ALL statements in this file target the '-prod' tables
+-- LITERALLY. Do not re-introduce the __ENV__ token here: a PR deploy with
+-- ENV=dev would otherwise revive the retired '-dev' shell. These statements
+-- are idempotent no-ops against an environment that never had dev backtrack
+-- tables.
 -- Goalie-Snapshots-backtrack: season-to-date goalie stats reconstructed from NHL game logs.
 --
 -- WHY A SEPARATE TABLE
@@ -53,7 +65,7 @@
 -- Idempotent because .github/workflows/deploy.yml pipes every file in this
 -- directory through psql on every deploy with no migration history.
 
-CREATE TABLE IF NOT EXISTS "Goalie-Snapshots-backtrack-__ENV__" (
+CREATE TABLE IF NOT EXISTS "Goalie-Snapshots-backtrack-prod" (
     "season" TEXT NOT NULL,
     "player_id" BIGINT NOT NULL,
     "team_abbrev" TEXT NOT NULL,
@@ -68,12 +80,12 @@ CREATE TABLE IF NOT EXISTS "Goalie-Snapshots-backtrack-__ENV__" (
     "shutouts" INTEGER,
     "games_played" INTEGER,
 
-    CONSTRAINT "Goalie-Snapshots-backtrack-__ENV___pkey" PRIMARY KEY ("season", "player_id", "date")
+    CONSTRAINT "Goalie-Snapshots-backtrack-prod_pkey" PRIMARY KEY ("season", "player_id", "date")
 );
 
 -- The PK covers reads filtered by player_id. This serves the join from
 -- Player-Snapshots-backtrack-{ENV}, which filters on date.
-CREATE INDEX IF NOT EXISTS "Goalie-Snapshots-backtrack-__ENV___date_idx"
-    ON "Goalie-Snapshots-backtrack-__ENV__" ("date");
+CREATE INDEX IF NOT EXISTS "Goalie-Snapshots-backtrack-prod_date_idx"
+    ON "Goalie-Snapshots-backtrack-prod" ("date");
 
-ALTER TABLE "Goalie-Snapshots-backtrack-__ENV__" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "Goalie-Snapshots-backtrack-prod" ENABLE ROW LEVEL SECURITY;

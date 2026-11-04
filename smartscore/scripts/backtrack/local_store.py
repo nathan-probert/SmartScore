@@ -63,6 +63,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from deleted_env_tables import guard_backtrack_table  # noqa: E402
 from goalie_client import fetch_goalies, parse_goalies  # noqa: E402
 from lineup_reconstruct import reconstruct_game  # noqa: E402
 from nhl_client import (  # noqa: E402
@@ -1953,7 +1954,7 @@ def publish(season, db_path=DB_PATH):
     }
 
     env_name, supabase = config()
-    table = f"Player-Snapshots-backtrack-{env_name}"
+    table = guard_backtrack_table(f"Player-Snapshots-backtrack-{env_name}")
     full_names = _archive_names(supabase, f"Player-Snapshots-{env_name}", {r["player_id"] for r in rows})
 
     # Historic pick groups and projected starters, read back from the daily
@@ -2005,6 +2006,14 @@ def publish(season, db_path=DB_PATH):
             }
         )
 
+    # The 16 shot/TOI + club columns (shot-columns migration). attach is a
+    # probe-gated no-op until the migration has landed on this env's table,
+    # so a publish racing the owner's DDL degrades to today's payload
+    # instead of 400-ing the whole batch (spec gotcha 5).
+    from publish_shot_cols import attach_shot_columns  # noqa: PLC0415
+
+    payload = attach_shot_columns(payload, table)
+
     written = 0
     batch_size = 500
 
@@ -2041,7 +2050,7 @@ def publish_team(season, db_path=DB_PATH):
         return 0
 
     env_name, supabase = config()
-    table = f"Team-Stats-backtrack-{env_name}"
+    table = guard_backtrack_table(f"Team-Stats-backtrack-{env_name}")
 
     payload = [
         {
@@ -2104,7 +2113,7 @@ def publish_goalies(season, db_path=DB_PATH):
         return 0
 
     env_name, supabase = config()
-    table = f"Goalie-Snapshots-backtrack-{env_name}"
+    table = guard_backtrack_table(f"Goalie-Snapshots-backtrack-{env_name}")
 
     # Names. Box scores print initials ("I. Samsonov"); the daily starter feed
     # carries the full spelling ("Ilya Samsonov"), so it is resolved to the
