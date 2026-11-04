@@ -1757,3 +1757,27 @@ def test_stat_update_top3_only_in_job_summary(env_vars, prediction_tables, monke
     table_rows = [line for line in text.splitlines() if re.match(r"^\| \d+ \| ", line)]
     assert len(table_rows) == 3
     assert any("| stat |" in line for line in text.splitlines())  # the table's header
+
+
+def test_stat_update_patch_leaves_legacy_stat_untouched(env_vars, prediction_tables, monkeypatch, capsys):
+    """Regression: the ML stat_update PATCH must carry ONLY {'stat': ...};
+    a pre-existing legacy_stat on the Picks row is never sent or clobbered."""
+    fake_s3(monkeypatch, make_bundle(today=datetime.date.today().isoformat()))
+    picks = prediction_tables.picks_table
+    # Seed every slate row with a legacy_stat value the ML path must preserve.
+    for row in picks.rows:
+        row["legacy_stat"] = 0.31
+        row["stat"] = 0.31
+
+    before_legacy = [row["legacy_stat"] for row in picks.rows]
+
+    result = mod.handler({"date": ON_DATE}, None)
+
+    assert result["statusCode"] == 200
+    assert result["stat_update"]["filled"] == 4
+    # PATCH payload carries ONLY the stat key - legacy_stat is never sent.
+    assert [row_id for row_id, _payload, _pre in picks.patches] == [1, 2, 3, 4]
+    assert all(set(payload) == {"stat"} for _i, payload, _p in picks.patches)
+    assert all("legacy_stat" not in payload for _i, payload, _p in picks.patches)
+    # The row's legacy_stat survives untouched.
+    assert [row["legacy_stat"] for row in picks.rows] == before_legacy == [0.31, 0.31, 0.31, 0.31]

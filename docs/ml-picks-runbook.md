@@ -344,6 +344,10 @@ The ML log, `SMARTSCORE_ML_PICKS` payload and job summary deliberately
 stay on the 0-100 display scale; readers that show a percentage multiply
 by 100 (`smartscore/scripts/get_odds.py:218,232`, and the site UI).
 
+`legacy_stat` = the site's legacy weighted-average value (0-1), written by
+the site publish (skaters + goalies) and never touched by the ML overlay;
+`stat` = the ML rank percentile (0-1).
+
 The **top-3-per-group challenge picks are an OUTPUT**, full stop:
 they rank within `(date, tims)` exactly as before, but are emitted only
 through the structured `SMARTSCORE_ML_PICKS` log (a `picks` array) and the
