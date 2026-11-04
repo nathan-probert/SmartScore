@@ -501,10 +501,6 @@ def write_historic_db(picks):
                     entry["Scored"] = int(player["scored"])
 
     data = old_entries + picks if picks else old_entries
-    # Historic-Picks has no legacy_stat column by design: the legacy value
-    # lives on Picks. Strip it so the archive payload never carries it.
-    for _row in data:
-        _row.pop("legacy_stat", None)
     update_historical_data(data)
 
     return _collect_newly_scored_entries(old_entries, dates_no_scored)

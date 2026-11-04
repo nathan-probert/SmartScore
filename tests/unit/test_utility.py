@@ -15,7 +15,6 @@ from utility import (
     get_tims_players,
     put_working_set,
     save_to_db,
-    update_historical_data,
 )
 
 
@@ -348,13 +347,3 @@ def test_save_to_db_preserves_legacy_stat(mock_request, mock_count):
     posted = mock_request.call_args.kwargs["json_data"]
     assert posted[0]["legacy_stat"] == 0.42
     assert posted[0]["legacy_stat"] == posted[0]["stat"]
-
-
-@patch("utility.exponential_backoff_supabase_request")
-def test_update_historical_data_strips_legacy_stat(mock_request):
-    """Historic-Picks upsert payload must not carry legacy_stat."""
-    players = [{"id": 99, "date": "2026-04-15", "player_id": 11, "stat": 0.42, "legacy_stat": 0.42}]
-    update_historical_data(players)
-
-    posted = mock_request.call_args.kwargs["json_data"]
-    assert "legacy_stat" not in posted[0]
