@@ -194,6 +194,7 @@ def update_historical_data(players):
         player.pop("opponent_id", None)
         player.pop("season", None)
         player.pop("team_abbr", None)
+        player.pop("legacy_stat", None)
         player["id"] = i + 1
     exponential_backoff_supabase_request(f"Historic-Picks-{ENV}", method="post", json_data=players)
 

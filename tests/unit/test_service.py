@@ -716,3 +716,26 @@ def test_get_schedule_slate_pairs_filters_to_the_target_date(mock_client):
 
     assert get_schedule_slate_pairs("2026-10-20") == {frozenset(("PHI", "NJD"))}
     mock_client.return_value.get_schedule.assert_called_once_with("2026-10-20")
+
+
+@patch("service.datetime")
+@patch("service.get_players_for_date", return_value=[])
+@patch("service.update_historical_data")
+@patch("service.get_historical_data")
+def test_write_historic_db_strips_legacy_stat(
+    mock_get_historical_data, mock_update_historical_data, mock_get_players_for_date, mock_datetime
+):
+    """Historic-Picks upsert payload must not carry legacy_stat."""
+    mock_now = datetime(2026, 4, 15, 12, 0, 0, tzinfo=pytz.timezone("America/Toronto"))
+    mock_datetime.datetime.now.return_value = mock_now
+    mock_datetime.timedelta = real_datetime.timedelta
+
+    mock_get_historical_data.return_value = [
+        {"date": "2026-04-14", "player_id": 1, "name": "A", "Scored": None, "legacy_stat": 0.42},
+    ]
+
+    picks = [{"id": 99, "date": "2026-04-15", "player_id": 2, "name": "B", "Scored": None, "legacy_stat": 0.7}]
+    write_historic_db(picks)
+
+    written = mock_update_historical_data.call_args[0][0]
+    assert all("legacy_stat" not in entry for entry in written)
