@@ -72,7 +72,9 @@ Cloudflare `smartscore-api` worker that fronted it. The other two Supabase table
 are downstream reporting, not the training set: `Picks-{ENV}` is the current day's
 full ranked roster (wiped and rewritten on every `PublishToDb`), and
 `Historic-Picks-{ENV}` is a ~7-day visual of who we've been picking (only 3 picks
-per date, via `choose_picks`/`NUM_EXPECTED_PLAYERS`).
+per date). The site's own pipeline no longer writes today's historic picks, since
+its Rust prediction now lives in `legacy_stat`; the ML pass owns the historic
+write and records its top-3 against `stat`.
 
 Table shape, added by
 `supabase/migrations/20261002_add_player_snapshots_table.sql`:
@@ -145,6 +147,8 @@ Other constraints worth knowing:
   otshga/hppg/home), so lineup data is recorded but not yet a model input.
   `MakePredictions` now runs after `GetLineups` on the `first_run` path, so a future
   lineup feature has the merged data available without another re-order.
+  It writes its weighted-average score to `legacy_stat` only; `stat` is left for the
+  ML pass to fill, and `choose_picks` skips rows with no `stat`.
 - **`lineup_status` distinguishes outcomes.** `PROJECTED` vs `UNKNOWN` lets a training
   job separate a real negative (not on a forward line) from a failed/empty fetch.
   Filter on `PROJECTED` rather than treating null as "not a top-9 forward".
