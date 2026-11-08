@@ -1193,6 +1193,67 @@ def pick_rows_to_picks_db(picks):
     return rows
 
 
+def _historic_pick_columns(env):
+    table = f"Historic-Picks-{env}"
+    try:
+        rows = SUPABASE_ADMIN_CLIENT.table(table).select("*").limit(1).execute().data or []
+        if rows:
+            return list(rows[0].keys())
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: could not discover Historic-Picks columns: {exc}", flush=True)
+    # Conservative fallback that exists on every Picks/Historic-Picks table.
+    return ["id", "date", "player_id", "name", "team_name", "tims", "stat"]
+
+
+def write_historic_picks_if_missing(picks, on_date, env):
+    """Idempotently write the ML top-3 picks to Historic-Picks-{env}.
+
+    The AWS pipeline no longer writes today's historic picks (it skips them so
+    the ML pass owns them). This runs on every ML pass but only writes when the
+    date is absent, so repeat kicks / the nightly cron are no-ops.
+    """
+    table = f"Historic-Picks-{env}"
+    existing = SUPABASE_ADMIN_CLIENT.table(table).select("date").eq("date", on_date).limit(1).execute().data or []
+    if existing:
+        print(f"Historic-Picks-{env}: {on_date} already present - skipping write", flush=True)
+        return
+
+    if picks is None or (hasattr(picks, "empty") and picks.empty):
+        print("Historic-Picks write skipped: no ML picks", flush=True)
+        return
+
+    columns = _historic_pick_columns(env)
+    records = []
+    for i, (_, row) in enumerate(picks.iterrows()):
+        record = {"date": on_date}
+        pid = row.get("player_id", row.get("id"))
+        if isinstance(pid, (np.generic,)):
+            pid = pid.item()
+        record["player_id"] = int(pid) if pid is not None and not (isinstance(pid, float) and np.isnan(pid)) else None
+        if "id" in columns:
+            record["id"] = i + 1
+        if "Scored" in columns:
+            record["Scored"] = None
+        for col in columns:
+            if col in ("id", "date", "player_id", "Scored"):
+                continue
+            if col == "stat":
+                value = stat_value(row.get("ensemble", np.nan))
+            elif col in getattr(row, "index", []):
+                value = row.get(col)
+                if isinstance(value, (np.generic,)):
+                    value = value.item()
+                if isinstance(value, float) and np.isnan(value):
+                    value = None
+                record[col] = value
+        records.append(record)
+
+    if not records:
+        return
+    SUPABASE_ADMIN_CLIENT.table(table).insert(records).execute()
+    print(f"Historic-Picks-{env}: wrote {len(records)} ML picks for {on_date}", flush=True)
+
+
 # ------------------------------------------------------------- stat update
 # The DEFAULT write mode (the owner-corrected contract, 2026-11-03): the
 # Picks-{ENV} table is the FULL PLAYER SLATE the site's own pipeline
@@ -1639,6 +1700,11 @@ def run(event=None, context=None):
     picks = model.daily_picks(sim, "ensemble")
     validate_picks(picks, on_date)
     rows = pick_rows_to_picks_db(picks)
+    if not dry:
+        try:
+            write_historic_picks_if_missing(picks, on_date, ENV)
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARNING: Historic-Picks write failed: {exc}", flush=True)
     mean_max_prob = round(float(pd.to_numeric(picks["ensemble"], errors="coerce").mean()), 4) if len(picks) else None
     stat_payload = {}
     if stat_result is not None:

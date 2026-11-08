@@ -13,13 +13,6 @@ name: ML Daily Picks
 # docs/ml-picks-runbook.md.
 
 on:
-  schedule:
-    # 05:30 ET-equivalent to the retired EventBridge trigger's cron 30 9.
-    # DST caveat: GitHub cron is a FIXED UTC clock while the pipeline's
-    # "today" is America/Toronto - 09:30 UTC is 05:30 EDT but 04:30 EST,
-    # so the local wall-clock anchor shifts one hour across clock changes
-    # (same accepted behaviour the template documented for its crons).
-    - cron: '30 9 * * *'
   workflow_dispatch:
     inputs:
       date:

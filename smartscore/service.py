@@ -226,9 +226,9 @@ def make_predictions_teams(players, teams):
     )
     rust_probabilities = make_predictions_rust.predict(rust_players, min_max, WEIGHTS)
     for i, player in enumerate(players):
-        player["stat"] = rust_probabilities[i]
-        # Preserve the site's legacy weighted-average prediction alongside the
-        # ML-overwritten `stat` (legacy_stat = same value, copied not recomputed).
+        # Rust's weighted-average prediction is the site's *legacy* score.
+        # `stat` is intentionally left unset here: it is filled later by the ML
+        # pass (run_daily_picks) directly, so the two never need copying over.
         player["legacy_stat"] = rust_probabilities[i]
 
     return players
@@ -440,9 +440,12 @@ def choose_picks(players):
     tims_picks = {}
     for player in players:
         tims = int(player["tims"])
+        stat = player.get("stat")
+        if stat is None:
+            continue
         if tims not in tims_picks:
             tims_picks[tims] = player
-        elif player["stat"] > tims_picks[tims]["stat"]:
+        elif stat > tims_picks[tims].get("stat", float("-inf")):
             tims_picks[tims] = player
     tims_picks.pop(0, None)
 
@@ -467,11 +470,12 @@ def write_historic_db(picks):
     for entry in old_entries:
         table[entry["date"]].append((entry["player_id"], entry["Scored"]))
 
-    if today in table.keys():
+    today_already_present = today in table.keys()
+    if today_already_present:
         logger.info(f"Today already in table: {table[today]}")
-        # Already processed today (e.g. a retry or a second run). Returning []
-        # keeps the cumulative metrics idempotent instead of recounting.
-        return []
+        # ML pass (or a retry) already recorded today's picks. Do not append
+        # them again, but still backfill Scored for earlier dates below.
+        picks = []
 
     if picks:
         while len(table) >= DAYS_TO_KEEP_HISTORIC_DATA:

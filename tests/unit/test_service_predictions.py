@@ -47,9 +47,9 @@ def test_make_predictions_teams_basic(mock_rust, mock_min_max):
     result = make_predictions_teams(players, teams)
 
     assert len(result) == 2
-    assert result[0]["stat"] == 0.65
+    assert result[0].get("stat") is None
     assert result[0]["legacy_stat"] == 0.65
-    assert result[1]["stat"] == 0.75
+    assert result[1].get("stat") is None
     assert result[1]["legacy_stat"] == 0.75
     mock_rust.predict.assert_called_once()
 
