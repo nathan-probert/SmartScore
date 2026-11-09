@@ -86,6 +86,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "smartscore"))
 sys.path.insert(1, Path(__file__).resolve().parent)
@@ -260,6 +262,29 @@ def fit_bundle(frame, args):
     # sklearn Pipeline is plain-picklable, so option (a) is used.
     logreg = model.make_pipeline(logreg_imputer, logreg_scaler, captured["LogisticRegression"])
 
+    # Calibrated probability: monotonic isotonic fit of the mean member
+    # probability onto the binary `scored` label. Monotonicity guarantees the
+    # published probability cannot reorder picks (ranking stays on the ensemble
+    # percentile); the fit only rescales the probability to the observed rate.
+    calibrator = None
+    try:
+        from sklearn.isotonic import IsotonicRegression  # noqa: PLC0415
+
+        probe = frame.iloc[:1]
+        x_train, _ = model.categorise(frame, probe)
+        raw_prob = pd.Series(0.0, index=frame.index)
+        for name, member, cols in (
+            ("hgb", hgb, list(model.DATASET_FEATURES)),
+            ("lgbm", lgbm, list(model.DATASET_FEATURES)),
+            ("logreg", logreg, list(model.NUMERIC_FEATURES)),
+        ):
+            raw_prob = raw_prob + np.asarray(member.predict_proba(x_train[cols])[:, 1], dtype=float) / 3.0
+        calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+        calibrator.fit(raw_prob.to_numpy(dtype=float), frame["scored"].astype(int).to_numpy())
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: calibrator fit skipped: {exc}", flush=True)
+        calibrator = None
+
     bundle = {
         # --- ARTIFACT CONTRACT keys (sibling-agreed; the daily pass reads both
         # --- designs via normalise_bundle) ------------------------------
@@ -297,7 +322,9 @@ def fit_bundle(frame, args):
             "lgbm": lgbm,
             "logreg": logreg,
             "ranker": ranker,
+            "calibrator": calibrator,
         },
+        "calibrator": calibrator,
         # --- legacy envelope keys (same objects; the legacy reader path
         # --- and any older reader keep working) --------------------------
         "hgb": hgb,

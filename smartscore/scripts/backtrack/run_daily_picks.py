@@ -390,6 +390,16 @@ def normalise_bundle(bundle, key="artifact"):
     names = ("hgb", "lgbm", "logreg")
     members = {n: (models.get(n) if contract else _pick([n], required=False)) for n in names}
     absent = [n for n, m in members.items() if m is None]
+
+    # Calibrator (optional): a monotonic map from the scoring probability to a
+    # calibrated probability. Absent on older artifacts -> inference falls back
+    # to the raw mean member probability.
+    calibrator = None
+    if isinstance(bundle, dict):
+        calibrator = bundle.get("calibrator")
+        if calibrator is None and isinstance(models, dict):
+            calibrator = models.get("calibrator")
+    bundle["calibrator"] = calibrator
     if absent:
         raise RuntimeError(
             f"artifact {key} ({source} design) is malformed: missing ensemble "
@@ -1130,6 +1140,22 @@ def ensemble_scores(bundle, frame):
     sim[["hgb", "lgbm", "logreg"]] = sim[["hgb", "lgbm", "logreg"]].fillna(0.0)
     ranks = sim.groupby(["date", "tims"])[["hgb", "lgbm", "logreg"]].rank(pct=True)
     sim["ensemble"] = ranks.mean(axis=1)
+    # Actual scoring probability: mean of the members' native probabilities.
+    # The ensemble percentile above remains the ranking key, so picks are
+    # unchanged; only the published value moves from a rank to a probability.
+    sim["prob"] = sim[["hgb", "lgbm", "logreg"]].mean(axis=1)
+    calibrator = bundle.get("calibrator") if isinstance(bundle, dict) else None
+    if calibrator is not None:
+        try:
+            if hasattr(calibrator, "predict_proba"):
+                sim["prob"] = np.asarray(calibrator.predict_proba(sim[["prob"]])[:, 1], dtype=float)
+            elif callable(calibrator):
+                sim["prob"] = np.asarray(calibrator(sim["prob"]), dtype=float)
+            elif hasattr(calibrator, "transform"):
+                sim["prob"] = np.asarray(calibrator.transform(sim["prob"]), dtype=float)
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARNING: calibrator apply failed: {exc}", flush=True)
+    sim["prob"] = sim["prob"].clip(lower=0.0, upper=1.0)
     return sim
 
 
@@ -1147,19 +1173,23 @@ def validate_picks(picks, on_date):
         )
 
 
-def stat_value(ensemble):
-    """The Picks `stat` DISPLAY convention, shared by the SMARTSCORE_ML_PICKS
-    top-3 output (pick_rows_to_picks_db's stat cell) and the stat_update
-    computation stage: the ensemble's within-(date,tims) rank percentile
-    scaled to percent, 1 decimal - None when the prediction is not finite
-    (a NaN must never PATCH a number into the column). The DB WRITE boundary
-    only (stat_update_picks_db) carries the 0-1 decimal form: the PATCHed
-    value is stat_value(ensemble) / 100, full precision - the log/picks
-    display stays on the 0-100 scale."""
-    stat = float(ensemble)
-    if not np.isfinite(stat):
+def stat_value(prob):
+    """The Picks `stat` value: an actual probability of the player scoring in
+    that game (0-1), shared by the SMARTSCORE_ML_PICKS top-3 output
+    (pick_rows_to_picks_db's stat cell) and the stat_update computation
+    stage. Returns None when the prediction is not finite (a NaN must never
+    PATCH a number into the column).
+
+    The ranking is deliberately NOT derived from this value: picks are selected
+    on the ensemble rank percentile (see ``ensemble_scores``), so publishing a
+    probability here cannot change which players are picked. The DB WRITE
+    boundary (stat_update_picks_db) stores this value verbatim (full
+    precision) - no /100 scaling, because the value is already a 0-1
+    probability."""
+    value = float(prob)
+    if not np.isfinite(value):
         return None
-    return round(stat * 100, 1)
+    return float(np.clip(value, 0.0, 1.0))
 
 
 def pick_rows_to_picks_db(picks):
@@ -1176,7 +1206,8 @@ def pick_rows_to_picks_db(picks):
     write_keys = [key for key in PICK_DB_COLUMNS if key not in REMOVE_KEYS]
     rows = []
     for _, row in picks.iterrows():
-        stat = stat_value(row.get("ensemble", np.nan))
+        prob = row.get("prob", row.get("ensemble", np.nan))
+        stat = stat_value(prob)
         values = []
         for key in write_keys:
             if key == "stat":
@@ -1348,9 +1379,15 @@ def stat_update_picks_db(sim, on_date, env=None):
     if slate is None:
         return {"slate_rows": 0, "filled": 0, "no_frame": 0, "not_on_slate": 0, "skipped": True}
 
+    if "prob" in getattr(sim, "columns", []):
+        prob_series = sim["prob"]
+    elif all(col in getattr(sim, "columns", []) for col in ("hgb", "lgbm", "logreg")):
+        prob_series = sim[["hgb", "lgbm", "logreg"]].mean(axis=1)
+    else:
+        prob_series = sim["ensemble"]
     predictions = {
-        int(player_id): (stat / 100 if (stat := stat_value(ensemble)) is not None else None)
-        for player_id, ensemble in zip(sim["player_id"], sim["ensemble"])
+        int(player_id): (stat if (stat := stat_value(prob)) is not None else None)
+        for player_id, prob in zip(sim["player_id"], prob_series)
         if pd.notna(player_id)
     }
     slate_ids = set()
@@ -1735,7 +1772,7 @@ def run(event=None, context=None):
                 ],
                 "stat_column": stat_payload,
                 "mean_max_prob": mean_max_prob,
-                "ensemble_scale": "within-(date,tims) rank percentile",
+                "stat_scale": "scoring probability (mean member predict_proba)",
                 "write_env": ENV,
                 "artifact": {
                     "key": key,

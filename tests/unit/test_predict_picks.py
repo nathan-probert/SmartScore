@@ -1098,7 +1098,7 @@ def test_pick_payload_whitelist():
         "player_id": 1,
         "name": "a",
         "team_name": "T",
-        "stat": 12.3,  # ensemble ranked-pct -> percent, 1 decimal
+        "stat": 0.12345,  # scoring probability (mean member proba)
         "tims": 1,
         "gpg": 0.5,
         "hgpg": 0.1,
