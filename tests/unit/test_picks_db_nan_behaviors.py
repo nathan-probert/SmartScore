@@ -268,8 +268,8 @@ def test_stat_value_convention_matches_the_legacy_percent():
     the DB write divides it by 100 at the stat_update PATCH boundary, so
     the column holds a 0-1 fraction. None on a non-finite prediction (a
     NaN must never patch a number into the column)."""
-    assert mod.stat_value(0.12345) == 12.3
-    assert mod.stat_value(0.999) == 99.9
+    assert mod.stat_value(0.12345) == 0.12345
+    assert mod.stat_value(0.999) == 0.999
     assert mod.stat_value(np.nan) is None
     assert mod.stat_value(float("inf")) is None
 
@@ -297,8 +297,8 @@ def test_stat_update_patches_only_stat_and_never_inserts(monkeypatch):
     assert len(table) == 2  # row count unchanged (99 was never inserted)
     assert sorted(row["id"] for row in table) == [1, 2]  # ids untouched
     by_id = {row["id"]: row for row in table}
-    assert by_id[1] == {**prior[0], "stat": 99.9 / 100}  # 0.999 - the 0-1 decimal write form
-    assert by_id[2] == {**prior[1], "stat": 11.1 / 100}  # 0.111
+    assert by_id[1] == {**prior[0], "stat": 0.999}  # probability - the 0-1 write form
+    assert by_id[2] == {**prior[1], "stat": 0.111}  # 0.111
     assert result["filled"] == 2 and result["slate_rows"] == 2 and result["not_on_slate"] == 1
 
 
