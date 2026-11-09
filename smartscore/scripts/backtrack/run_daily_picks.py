@@ -1153,8 +1153,8 @@ def ensemble_scores(bundle, frame):
                 sim["prob"] = np.asarray(calibrator(sim["prob"]), dtype=float)
             elif hasattr(calibrator, "transform"):
                 sim["prob"] = np.asarray(calibrator.transform(sim["prob"]), dtype=float)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARNING: calibrator apply failed: {exc}", flush=True)
     sim["prob"] = sim["prob"].clip(lower=0.0, upper=1.0)
     return sim
 

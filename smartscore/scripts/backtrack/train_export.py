@@ -86,13 +86,14 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "smartscore"))
 sys.path.insert(1, Path(__file__).resolve().parent)
 
 import joblib  # noqa: E402
 import model  # noqa: E402
-from sklearn.isotonic import IsotonicRegression  # noqa: E402
 
 # noqa: E402
 import pandas as pd  # noqa: E402 (model.py uses the global pd namespace)
