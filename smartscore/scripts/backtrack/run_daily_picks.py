@@ -1254,6 +1254,21 @@ def write_historic_picks_if_missing(picks, on_date, env):
         return
 
     columns = _historic_pick_columns(env)
+
+    # Keep the table to the most recent DAYS_TO_KEEP_HISTORIC_DATA days (mirrors
+    # the site's own publish pruning) so it stays a ~week visual instead of
+    # growing forever. Prune before inserting today's rows.
+    DAYS_TO_KEEP_HISTORIC_DATA = 8
+    try:
+        all_rows = SUPABASE_ADMIN_CLIENT.table(table).select("date").execute().data or []
+        distinct_dates = sorted({r.get("date") for r in all_rows if r.get("date")})
+        if len(distinct_dates) >= DAYS_TO_KEEP_HISTORIC_DATA:
+            to_remove = distinct_dates[: len(distinct_dates) - (DAYS_TO_KEEP_HISTORIC_DATA - 1)]
+            for d in to_remove:
+                SUPABASE_ADMIN_CLIENT.table(table).delete().eq("date", d).execute()
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: Historic-Picks pruning failed: {exc}", flush=True)
+
     # `id` is the table's (non-null, no-default) primary key. The site's own
     # publish renumbers every row sequentially on each write, but this ML pass
     # INSERTs brand-new rows, so a fixed 1..N would collide with the rows
