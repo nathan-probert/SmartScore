@@ -1254,6 +1254,20 @@ def write_historic_picks_if_missing(picks, on_date, env):
         return
 
     columns = _historic_pick_columns(env)
+    # `id` is the table's (non-null, no-default) primary key. The site's own
+    # publish renumbers every row sequentially on each write, but this ML pass
+    # INSERTs brand-new rows, so a fixed 1..N would collide with the rows
+    # already stored from earlier dates. Derive the next free id from the
+    # current max instead (and fall back to 1..N only on an empty/odd table).
+    next_id = 1
+    if "id" in columns:
+        try:
+            existing_ids = SUPABASE_ADMIN_CLIENT.table(table).select("id").execute().data or []
+            parsed = [int(r.get("id")) for r in existing_ids if r.get("id") is not None]
+            if parsed:
+                next_id = max(parsed) + 1
+        except (TypeError, ValueError):
+            next_id = 1
     records = []
     for i, (_, row) in enumerate(picks.iterrows()):
         record = {"date": on_date}
@@ -1262,7 +1276,7 @@ def write_historic_picks_if_missing(picks, on_date, env):
             pid = pid.item()
         record["player_id"] = int(pid) if pid is not None and not (isinstance(pid, float) and np.isnan(pid)) else None
         if "id" in columns:
-            record["id"] = i + 1
+            record["id"] = next_id + i
         if "Scored" in columns:
             record["Scored"] = None
         for col in columns:
@@ -1270,6 +1284,7 @@ def write_historic_picks_if_missing(picks, on_date, env):
                 continue
             if col == "stat":
                 value = stat_value(row.get("ensemble", np.nan))
+                record[col] = value
             elif col in getattr(row, "index", []):
                 value = row.get(col)
                 if isinstance(value, (np.generic,)):
