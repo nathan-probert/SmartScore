@@ -1294,6 +1294,22 @@ def write_historic_picks_if_missing(picks, on_date, env):
             record["id"] = next_id + i
         if "Scored" in columns:
             record["Scored"] = None
+        # Columns whose DB type is an integer (see the Historic-Picks
+        # schema: player_id, tims, Scored, opp_goalie_nhl_id,
+        # opp_goalie_shutouts, opp_goalie_games_played are all integer/
+        # bigint). pandas carries them as float64 whenever a NaN is
+        # possible, so a value such as 10.0 would be sent verbatim and
+        # Postgres rejects "10.0" for an integer column
+        # ("invalid input syntax for type integer"). Coerce integral floats
+        # (and numpy scalars) to a Python int before serialising.
+        _INTEGER_COLUMNS = {
+            "player_id",
+            "tims",
+            "Scored",
+            "opp_goalie_nhl_id",
+            "opp_goalie_shutouts",
+            "opp_goalie_games_played",
+        }
         for col in columns:
             if col in ("id", "date", "player_id", "Scored"):
                 continue
@@ -1306,6 +1322,11 @@ def write_historic_picks_if_missing(picks, on_date, env):
                     value = value.item()
                 if isinstance(value, float) and np.isnan(value):
                     value = None
+                if value is not None and col in _INTEGER_COLUMNS:
+                    try:
+                        value = int(value)
+                    except (TypeError, ValueError):
+                        value = None
                 record[col] = value
         records.append(record)
 
