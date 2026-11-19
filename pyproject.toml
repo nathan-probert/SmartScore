@@ -77,6 +77,16 @@ select = [
   # string ever reaches a statement.
   "S608",
 ]
+"smartscore/scripts/backtrack/ml_ledger.py" = [
+  # Same by-construction audit as ml_history_store.py: table names come from
+  # TABLE_MAP, season file paths from the split; values are bound parameters.
+  "S608",
+]
+"smartscore/scripts/backtrack/publish_daily_features.py" = [
+  # Same by-construction audit: the one f-string SELECT names a module
+  # constant table from TABLE_MAP; the read is parameter-free.
+  "S608",
+]
 "tests/*" = [
   "D",
   "S",

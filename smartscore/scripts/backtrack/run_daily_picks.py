@@ -145,7 +145,9 @@ sys.path.insert(0, str(_root / "smartscore"))
 sys.path.insert(1, str(_here.parent))
 import backfill_missing_days  # noqa: E402  (same directory: the daily gap-fill helper run() invokes)
 import ml_history_store  # noqa: E402  (same directory: ML_HISTORY_BACKEND's local history store)
+import ml_ledger  # noqa: E402  (same directory: the per-season ledger files + the shared season rule)
 import model  # noqa: E402
+import publish_daily_features  # noqa: E402  (same directory: the nightly publisher's published column list)
 from team_map import TEAM_ABBREV_TO_PLACE  # noqa: E402
 
 from config import ENV, SUPABASE_ADMIN_CLIENT  # noqa: E402
@@ -163,6 +165,13 @@ SHARED_GOALIE_TABLE = "Goalie-Snapshots-backtrack-prod"
 # documentation-of-record; the write itself is the STAT-ONLY PATCH of
 # stat_update_picks_db below: this run never wipes or inserts anything (the
 # site's own save_to_db owns the full-slate publish).
+
+# The SMALL feature table (publish_daily_features.py / ml_ledger.py): the
+# nightly job computes the 20 history-derived features over the Storage
+# ledger and publishes ~one row per slate player here, so THIS run never
+# reads the big backtrack tables. Hard-pinned to -prod per the shared-ledger
+# doctrine (the daily run reads ONE feature table whatever its env).
+FEATURES_TABLE = os.environ.get("ML_FEATURES_TABLE", "ML-Daily-Features-prod")
 
 # The HISTORY fetch is deliberately FULL (every published backtrack row
 # strictly before the pick date): career_games / career_goals_pg /
@@ -875,14 +884,12 @@ def season_label(on_date):
     every season-scoped feature for the veterans who played in them. The
     published record carries no season column, so this label IS the season
     key the recompute groups on - it must match the training path's store
-    ids (verified: zero disagreements across the store's full date range)."""
-    day = datetime.date.fromisoformat(on_date)
-    if datetime.date(2020, 7, 1) <= day <= datetime.date(2020, 9, 30):
-        return "20192020"  # the COVID bubble: the 2019-20 season's playoffs
-    if datetime.date(2021, 7, 1) <= day <= datetime.date(2021, 7, 31):
-        return "20202021"  # the delayed 2020-21 post-season
-    start = day.year if day.month >= 7 else day.year - 1
-    return f"{start}{start + 1}"
+    ids (verified: zero disagreements across the store's full date range).
+
+    The implementation lives in ml_ledger.season_of - the ledger's
+    per-season file split groups rows by the SAME rule, so one
+    implementation serves both."""
+    return ml_ledger.season_of(on_date)
 
 
 # ------------------------------------------------- published per-game data
@@ -1092,6 +1099,72 @@ def _inject_today_context(teams, goalies, today, on_date):
     return teams, goalies
 
 
+def features_rows(on_date):
+    """ML-Daily-Features rows for the pick date - the small-table path.
+
+    The nightly publisher (publish_daily_features.py) computes the 20
+    history-derived features over the Storage ledger and publishes them
+    here; when rows exist, this run reads NOTHING from the big backtrack
+    tables. ``None`` = no rows for the date (or the table is not there yet
+    - the pre-cutover state): the caller uses the full-ledger path, which
+    is why this probe swallows a read failure with ONE printed line instead
+    of failing the run."""
+    try:
+        rows = SUPABASE_ADMIN_CLIENT.table(FEATURES_TABLE).select("*").eq("date", on_date).execute().data or []
+    except Exception as exc:  # noqa: BLE001 - "table absent/unreadable yet" is a normal transition state
+        print(
+            f"WARNING: {FEATURES_TABLE} unreadable ({type(exc).__name__}: {str(exc)[:160]}) - "
+            "falling back to the full-ledger history path",
+            flush=True,
+        )
+        return None
+    # Shape guard: the published table always carries the publisher's
+    # identity columns. Anything else (a pre-migration table, a stubbed
+    # client's default answer) is treated as "not published yet".
+    if not (isinstance(rows, list) and rows and isinstance(rows[0], dict) and "club" in rows[0]):
+        print(
+            f"WARNING: {FEATURES_TABLE} returned an unexpected shape for {on_date} - "
+            "falling back to the full-ledger history path",
+            flush=True,
+        )
+        return None
+    return pd.DataFrame(rows)
+
+
+def _merge_features(today, features, on_date):
+    """Attach the published feature rows to today's live rows, and resolve
+    club/opp from them (the publisher resolved both from the NHL schedule -
+    the same resolution _map_live_rows does against the history when the
+    full-ledger path runs). Slate players with no published feature row keep
+    NaN club/opp: their rates/features are NaN and daily_picks skips them -
+    ONE warning names them (a surprise call-up the nightly roster pass
+    missed; tomorrow's publisher run picks them up)."""
+    today["player_id"] = pd.to_numeric(today["player_id"])
+    feature_cols = [
+        "date",
+        "player_id",
+        "club",
+        "opp",
+        *model.SHOT_FEATURES,
+        *publish_daily_features.STREAK_COLUMNS,
+    ]
+    features = features[[col for col in feature_cols if col in features.columns]].copy()
+    features["player_id"] = pd.to_numeric(features["player_id"])
+    features = features.rename(columns={"club": "team_abbrev", "opp": "opponent_abbrev"})
+    merged = today.merge(features, on=["date", "player_id"], how="left", validate="one_to_one")
+    uncovered = merged[merged["team_abbrev"].isna()]
+    if not uncovered.empty:
+        names = [str(n) for n in uncovered["name"].head(10)]
+        print(
+            f"WARNING: {len(uncovered)} slate player(s) have no published feature row for {on_date} "
+            f"({', '.join(names)}{'...' if len(uncovered) > 10 else ''}) - their pre-game features are "
+            "NaN and daily_picks will skip them (the nightly publisher covers the roster; a "
+            "same-day call-up waits for the next pass)",
+            flush=True,
+        )
+    return merged
+
+
 def load_prediction_tables(source_env, on_date, history_env=HISTORY_ENV):
     """The run's data assembly - every read READ-ONLY.
 
@@ -1100,19 +1173,35 @@ def load_prediction_tables(source_env, on_date, history_env=HISTORY_ENV):
     ('prod'). ``history_env`` is DOCUMENTATION-IN-CODE only: the history
     reads route to the ONE shared -prod ledger whatever it says (027ef47).
 
-    Returns (today, players, teams, goalies, history); ``today`` is None when
-    the LIVE snapshot has no rows for the pick date (the caller exits cleanly:
-    warn + no picks + status 0). ``players`` concatenates the FULL backtrack
-    history (strictly before the pick date - the prior-games context) with
-    today's live rows mapped onto the frame shape; ``teams``/``goalies``
-    carry the history tables plus the injected pick-date context rows;
-    ``history`` is the raw fetch (including the stage-2 per-game raw columns)
-    that shot_block_from_history runs the exact recompute on.
-    """
+    TWO paths, chosen by data, not by flags:
+
+    * FEATURES PATH (history=None): ML-Daily-Features has rows for the pick
+      date - the nightly publisher's output. ``today`` carries the 20
+      published feature columns (merged) and club/opp resolved from them;
+      players/teams/goalies are the today-only frames with the injected
+      pick-date context rows. The big backtrack tables are never read.
+    * FULL-LEDGER PATH (the original): ``players`` concatenates the FULL
+      backtrack history (strictly before the pick date) with today's live
+      rows mapped onto the frame shape; ``teams``/``goalies`` carry the
+      history tables plus the injected pick-date context rows; ``history``
+      is the raw fetch (including the stage-2 per-game raw columns) that
+      shot_block_from_history runs the exact recompute on. Kept as the
+      transition fallback: it serves the run until the first nightly
+      publish lands, and it is what the retired flow used.
+
+    ``today`` is None when the LIVE snapshot has no rows for the pick date
+    (the caller exits cleanly: warn + no picks + status 0)."""
     today = today_live_rows(source_env, on_date)
     if today is None:
         return None
     require_live_columns(today, on_date, source_env=source_env)
+    features = features_rows(on_date)
+    if features is not None:
+        today = _merge_features(today, features, on_date)
+        empty_teams = pd.DataFrame(columns=TEAM_FETCH_COLUMNS)
+        empty_goalies = pd.DataFrame(columns=GOALIE_FETCH_COLUMNS)
+        teams, goalies = _inject_today_context(empty_teams, empty_goalies, today, on_date)
+        return today, today.copy(), teams, goalies, None
     teams = history_team_rows(history_env, on_date)
     goalies = history_goalie_rows(history_env, on_date)
     history = history_rows(history_env, on_date)
@@ -1711,7 +1800,18 @@ def run(event=None, context=None):
     # warn-and-continue doctrine), and the affected dates stay unmarked
     # for the next pass.
     yesterday = (datetime.date.fromisoformat(on_date) - datetime.timedelta(days=1)).isoformat()
-    if not dry:
+    # THE FEATURES PROBE comes first: when ML-Daily-Features has rows for
+    # the date, the nightly publisher owns the gap-fill AND the feature
+    # computation (publish_daily_features.py ran last night against the
+    # Storage ledger) - this run stays read-only against the big tables.
+    features = features_rows(on_date)
+    if features is not None:
+        print(
+            f"features path: {FEATURES_TABLE} has rows for {on_date} - the nightly publisher owns "
+            "the gap-fill; skipping it",
+            flush=True,
+        )
+    elif not dry:
         # UNCHANGED shared-ledger behavior (027ef47): the gap-fill targets
         # Player-Snapshots-backtrack-prod REGARDLESS of the picks env (the
         # helper's routing is env-independent; the arg is compatibility
@@ -1770,22 +1870,35 @@ def run(event=None, context=None):
     # If the exact recompute itself fails (not a partial-backfill day -
     # that degrades to exact-over-available above), the clearly-marked
     # stage-1 carry-forward attach keeps the run alive, LOUD.
-    try:
-        shot_block = shot_block_from_history(on_date, pd.to_numeric(today["player_id"]).tolist(), history)
-    except Exception as exc:  # noqa: BLE001 - fallback-only: never the primary path
-        print(
-            f"WARNING: the exact shot-block recompute failed ({type(exc).__name__}: {str(exc)[:240]}) - "
-            "falling back to the STAGE-1 carry-forward attach (last published row's precomputed rolling "
-            "columns; approximate, see carry_forward_shot_block)",
-            flush=True,
-        )
-        shot_block = carry_forward_shot_block(on_date, pd.to_numeric(today["player_id"]).tolist())
-    warn_missing_history_days(history, on_date)
+    # FEATURES MODE (history is None): the nightly publisher computed the
+    # block over the Storage ledger and it already rode _merge_features
+    # onto today - extract it in the same shape the merge below consumes.
+    features_mode = history is None
+    if features_mode:
+        shot_block = today[["date", "player_id", *model.SHOT_FEATURES]].copy()
+    else:
+        try:
+            shot_block = shot_block_from_history(on_date, pd.to_numeric(today["player_id"]).tolist(), history)
+        except Exception as exc:  # noqa: BLE001 - fallback-only: never the primary path
+            print(
+                f"WARNING: the exact shot-block recompute failed ({type(exc).__name__}: {str(exc)[:240]}) - "
+                "falling back to the STAGE-1 carry-forward attach (last published row's precomputed rolling "
+                "columns; approximate, see carry_forward_shot_block)",
+                flush=True,
+            )
+            shot_block = carry_forward_shot_block(on_date, pd.to_numeric(today["player_id"]).tolist())
+    if history is not None:
+        warn_missing_history_days(history, on_date)
     frame = model.build_frame(players, teams, goalies, source="supabase")
     frame = frame.drop(columns=model.SHOT_FEATURES, errors="ignore").merge(
         shot_block, on=["date", "player_id"], how="left", validate="many_to_one"
     )
-    frame = model.add_derived(frame, teams, source="supabase")
+    if features_mode:
+        # prevN/rest came published; the same-day projected-units merge and
+        # the rank percentiles are all that is left to compute.
+        frame = model.add_rank_features(model.add_projected_lineup_features(frame))
+    else:
+        frame = model.add_derived(frame, teams, source="supabase")
     frame = frame[frame["date"].astype(str) == on_date].reset_index(drop=True)
     if not set(bundle["all_features"]).issubset(frame.columns):
         missing = [c for c in bundle["all_features"] if c not in frame.columns]

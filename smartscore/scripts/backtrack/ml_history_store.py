@@ -3,44 +3,36 @@
 
 WHY THIS EXISTS
 ---------------
-The published backtrack family (Player-Snapshots-backtrack-prod ~624k rows,
+The published backtrack family (Player-Snapshots-backtrack-prod ~629k rows,
 Team-Stats-backtrack-prod, Goalie-Snapshots-backtrack-prod,
 Player-Game-Raw-Markers-prod) is ~560 MB JSON-encoded - over the Supabase
-free tier's 500 MB database cap - and the daily picks run reads the whole
-ledger through PostgREST on every pass (~15 runs per slate date), so DB
-size AND egress both scale with it.
-
-The data was only in Supabase because the daily picks run executed on
-GitHub Actions ephemeral runners, which cannot reach this machine's SQLite.
-The raw layer has ALWAYS lived locally (data/raw_nhl.sqlite - the migrations
-name it the source of truth); the Supabase tables are derived copies. With
-the daily run moving onto this machine (see docs/ml-picks-local-runbook.md),
-the derived tables can live next to the raw store and Supabase keeps only
-what the website touches (Picks, Historic-Picks, Working, Metrics,
-Player-Snapshots-{env}, user_preferences, auth).
+free tier's 500 MB database cap. Its real home is now Supabase STORAGE as
+per-season compressed files (ml_ledger.py); THIS module is the SQLite
+schema/upsert layer those files are built on, and the local working store
+training and the nightly publisher read.
 
 THE BACKEND SWITCH
 ------------------
 ``ML_HISTORY_BACKEND`` selects where history reads/writes go:
 
 * ``supabase`` (DEFAULT) - unchanged behavior. CI, the unit tests, and the
-  GitHub Actions daily run keep reading/writing the Supabase tables, so
-  merging this code changes nothing until the local scheduler takes over.
-* ``sqlite`` - history reads/writes hit ``data/ml_history.sqlite`` (override
-  the path with ``ML_HISTORY_DB``). The live snapshot read
-  (run_daily_picks.today_live_rows -> Player-Snapshots-{env}) and the Picks /
-  Historic-Picks writes stay on Supabase in BOTH modes - they belong to the
-  website's tables, not this family.
+  daily run's full-ledger fallback path keep reading/writing the Supabase
+  tables, so merging this code changes nothing until the nightly publisher
+  starts writing ML-Daily-Features rows.
+* ``sqlite`` - history reads/writes hit the SQLite file at ``ML_HISTORY_DB``
+  (default ``data/ml_history.sqlite``; ml_ledger materializes the working
+  ledger there). The live snapshot read (run_daily_picks.today_live_rows ->
+  Player-Snapshots-{env}) and the Picks / Historic-Picks writes stay on
+  Supabase in BOTH modes - they belong to the website's tables, not this
+  family.
 
-DUAL-WRITE (the parity window)
-------------------------------
+DUAL-WRITE
+----------
 ``ML_HISTORY_DUAL_WRITE=1`` (default off) makes the SQLite write path ALSO
-mirror every upsert to the Supabase tables. The mirror failure is LOUD but
-never fatal - SQLite is the source of truth once the run is local; the
-mirror exists only to keep the Supabase copies current so the GitHub
-Actions path keeps working unchanged while the local run is being
-validated side by side (docs/ml-picks-local-runbook.md, "parity week").
-Flip it off at cutover.
+mirror every upsert to the Supabase tables - a loud-continue convenience
+for any window where a Supabase copy must stay current while the local
+ledger is the source of truth. Off by default; the nightly publisher does
+not need it (the ledger is Storage-side).
 
 SCHEMA
 ------
@@ -451,22 +443,54 @@ BOOTSTRAP_PAGE = 1000
 
 
 def _supabase_pages(supabase_table, delay=0.0):
-    """Yield the whole Supabase table as offset pages of dicts.
+    """Yield the whole Supabase table as pages of dicts.
 
-    Plain ascending offset paging (no ordering column): PostgREST pages by
-    offset against the table's natural scan, and the one-shot bootstrap is
-    the only consumer - model.fetch_table's month windows exist for the
-    daily path, not here. ``delay`` throttles for politeness."""
-    offset = 0
-    while True:
-        page = SUPABASE_ADMIN_CLIENT.table(supabase_table).select("*").range(offset, offset + BOOTSTRAP_PAGE - 1)
-        rows = page.execute().data
+    Month-window paging, NOT raw offsets: a single ascending offset walk
+    makes PostgREST re-scan from the table start on every page and trips the
+    statement timeout (57014) a few hundred thousand rows in - exactly the
+    failure model.fetch_table documents. Each window's offsets stay small.
+    The window bounds come from SUPABASE (two ordered offset-0 queries, both
+    cheap) - the local copy may be partial (idempotent resume) and its max
+    date would stop the windows short. ``delay`` throttles for politeness."""
+    for probe in ("first", "last"):
+        rows = (
+            SUPABASE_ADMIN_CLIENT.table(supabase_table)
+            .select("date")
+            .order("date", desc=(probe == "last"))
+            .limit(1)
+            .execute()
+            .data
+        )
         if not rows:
             return
-        yield rows
-        offset += len(rows)
-        if delay:
-            time.sleep(delay)
+        if probe == "first":
+            first = rows[0]["date"]
+        else:
+            last = rows[0]["date"]
+    if not first or not last:
+        return
+    for lo, month_hi in _month_windows(first, last):
+        offset = 0
+        while True:
+            query = SUPABASE_ADMIN_CLIENT.table(supabase_table).select("*").gte("date", lo).lt("date", month_hi)
+            rows = query.range(offset, offset + BOOTSTRAP_PAGE - 1).execute().data
+            if not rows:
+                break
+            yield rows
+            offset += len(rows)
+            if delay:
+                time.sleep(delay)
+
+
+def _month_windows(min_date, max_date):
+    """Half-open month windows covering [min_date, max_date] (model's
+    pattern, standalone duplicate so this module keeps its import graph)."""
+    start = datetime.date.fromisoformat(min_date).replace(day=1)
+    end = datetime.date.fromisoformat(max_date)
+    while start <= end:
+        nxt = datetime.date(start.year + (start.month == 12), 1 if start.month == 12 else start.month + 1, 1)
+        yield start.isoformat(), nxt.isoformat()
+        start = nxt
 
 
 def bootstrap(supabase_table, batch_size=1000, delay=0.0):
