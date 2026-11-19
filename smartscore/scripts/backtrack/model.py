@@ -81,6 +81,7 @@ import sys
 import time
 from pathlib import Path
 
+import ml_history_store  # noqa: E402  (same directory: the local history store's backend switch)
 import numpy as np
 import pandas as pd
 
@@ -239,7 +240,12 @@ def _fetch_window(table, order_cols, lo, hi, chunk):
 
 
 def fetch_table(table, order_cols, refresh=False, chunk=PAGE):
-    """Download one table into a CSV cache and return it as a DataFrame."""
+    """Download one table into a CSV cache and return it as a DataFrame.
+
+    ``ML_HISTORY_BACKEND=sqlite`` reads the local store instead of PostgREST:
+    one SELECT (no month windows - those exist for PostgREST's statement
+    timeout, not a local index), same CSV cache afterwards so the training
+    cache's reproducibility semantics are unchanged."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / f"{table.lower().replace('-', '_')}.csv"
     if path.exists() and not refresh:
@@ -247,6 +253,16 @@ def fetch_table(table, order_cols, refresh=False, chunk=PAGE):
 
     print(f"fetching {table} ...", flush=True)
     start = time.time()
+    if ml_history_store.backend() == "sqlite":
+        frame = ml_history_store.fetch_window(
+            table, columns=["*"], lo="0000-01-01", hi="9999-12-31", order_cols=order_cols
+        )
+        if frame.empty:
+            raise RuntimeError(f"{table} is empty - wrong --env, or nothing was published to it")
+        frame.to_csv(path, index=False)
+        print(f"  {len(frame):,} rows in {time.time() - start:.0f}s -> {path.name}")
+        return frame
+
     first = SUPABASE_ADMIN_CLIENT.table(table).select("date").order("date").limit(1).execute().data
     last = SUPABASE_ADMIN_CLIENT.table(table).select("date").order("date", desc=True).limit(1).execute().data
     if not first or not last:

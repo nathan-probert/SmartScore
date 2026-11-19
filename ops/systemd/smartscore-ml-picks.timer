@@ -1,0 +1,15 @@
+[Unit]
+Description=SmartScore ML picks pass every 30 minutes on game days
+RefUnitDocumentation=https://github.com/nathan-probert/SmartScore/blob/main/docs/ml-picks-local-runbook.md
+
+[Timer]
+# 08:00-23:30 ET at half-hour steps (the timezone suffix is part of the
+# calendar spec). run_daily_picks exits 0 and writes nothing when the live
+# snapshot has no rows for today, so off-day fires cost one live-snapshot
+# read each and stay green.
+OnCalendar=*-*-* 08..23:00/30 Canada/Toronto
+Persistent=true
+Unit=smartscore-ml-picks.service
+
+[Install]
+WantedBy=timers.target

@@ -144,6 +144,7 @@ _root = _here.parents[2]
 sys.path.insert(0, str(_root / "smartscore"))
 sys.path.insert(1, str(_here.parent))
 import backfill_missing_days  # noqa: E402  (same directory: the daily gap-fill helper run() invokes)
+import ml_history_store  # noqa: E402  (same directory: ML_HISTORY_BACKEND's local history store)
 import model  # noqa: E402
 from team_map import TEAM_ABBREV_TO_PLACE  # noqa: E402
 
@@ -571,7 +572,13 @@ def _paged_date_window(table, columns, lo, hi, order_cols, chunk=model.PAGE):
     construction (the publish runs after that day's games) and must not enter
     pre-game features. (model._month_windows' last window runs to the month's
     end, so each window's hi is clamped to ``hi`` here.)
-    """
+
+    ``ML_HISTORY_BACKEND=sqlite`` routes to the local store's one ordered
+    SELECT - the windows and paging are PostgREST workarounds, not the
+    contract; the half-open ``hi`` boundary IS the contract and the local
+    query preserves it."""
+    if ml_history_store.backend() == "sqlite":
+        return ml_history_store.fetch_window(table, columns, lo, hi, order_cols)
     frames = []
     for win_lo, month_hi in model._month_windows(lo, hi):
         win_hi = min(month_hi, hi)
@@ -594,6 +601,11 @@ def _paged_date_window(table, columns, lo, hi, order_cols, chunk=model.PAGE):
 
 
 def _first_published_date(table):
+    if ml_history_store.backend() == "sqlite":
+        first = ml_history_store.first_date(table)
+        if not first:
+            raise RuntimeError(f"{table} is empty - wrong --env, or nothing was published to it")
+        return first
     first = SUPABASE_ADMIN_CLIENT.table(table).select("date").order("date").limit(1).execute().data
     if not first:
         raise RuntimeError(f"{table} is empty - wrong --env, or nothing was published to it")
@@ -794,8 +806,10 @@ def _latest_shot_columns(env, player_ids):
     Chunked ``in`` queries (PostgREST 400s oversized payloads), paged reads;
     the per-player latest row is taken in pandas (order by date). The
     fallback reads the SHARED ledger too (SHARED-LEDGER RULE)."""
-    table = SHARED_HISTORY_TABLE
     columns = ["date", "player_id", *model.SHOT_FEATURES]
+    if ml_history_store.backend() == "sqlite":
+        return ml_history_store.latest_rows_per_player(SHARED_HISTORY_TABLE, columns, player_ids)
+    table = SHARED_HISTORY_TABLE
     frames = []
     for start in range(0, len(player_ids), 200):
         chunk = [int(pid) for pid in player_ids[start : start + 200]]
@@ -891,7 +905,14 @@ def raw_columns_available(env):
 
     Same probe pattern publish_shot_cols.columns_landed uses (PostgREST 400s
     any request naming an unknown column). Cached per env within the run.
-    """
+
+    The SQLite backend needs no probe: ml_history_store.SCHEMA ships the
+    raw columns from the first connection, so the answer is constant True
+    (the DDL-staging state this function guards against is a Supabase
+    migration reality only)."""
+    if ml_history_store.backend() == "sqlite":
+        _RAW_PROBE[env] = True
+        return True
     if env not in _RAW_PROBE:
         try:
             SUPABASE_ADMIN_CLIENT.table(SHARED_HISTORY_TABLE).select("game_shots").limit(1).execute()

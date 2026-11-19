@@ -70,6 +70,13 @@ select = [
   # (never user-supplied file: or custom schemes).
   "S310",
 ]
+"smartscore/scripts/backtrack/ml_history_store.py" = [
+  # S608 audit is satisfied by construction: every identifier in the f-string
+  # SQL is a module constant (TABLE_MAP names, the migrations' column lists,
+  # PRIMARY_KEYS) and every value is a bound parameter - no user-supplied
+  # string ever reaches a statement.
+  "S608",
+]
 "tests/*" = [
   "D",
   "S",
