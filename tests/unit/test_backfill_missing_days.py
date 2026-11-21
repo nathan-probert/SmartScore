@@ -572,7 +572,7 @@ def test_stage2_recompute_matches_local_store_exactly(tmp_path, monkeypatch, cap
     shot_block_from_history) - same per-game lines -> identical 14 features,
     max abs diff < 1e-9 (observed 0.0)."""
 
-    run_daily_picks = _load_run_daily_picks()
+    publisher = _load_publish_daily_features()
     days = ["2026-01-01", "2026-01-03", "2026-01-05", "2026-01-08"]
     rows = []
     for index, day in enumerate(days):
@@ -636,9 +636,7 @@ def test_stage2_recompute_matches_local_store_exactly(tmp_path, monkeypatch, cap
     history["game_shots"] = history["shots"]
     history["game_toi_min"] = model._toi_minutes(history["toi"])
 
-    block = (
-        run_daily_picks.shot_block_from_history(x_date, [1, 2], history).sort_values("player_id").reset_index(drop=True)
-    )
+    block = publisher.shot_block_from_history(x_date, [1, 2], history).sort_values("player_id").reset_index(drop=True)
     diffs = (training_rows[model.SHOT_FEATURES] - block[model.SHOT_FEATURES]).abs()
     observed = float(diffs.to_numpy().max())
     anchor = training_rows[["player_id", "sd_shots_pg", "career_goals_pg", "career_games"]].to_string(index=False)
@@ -651,7 +649,7 @@ def test_null_raw_rows_warn_and_recompute_over_partial_prefix(capsys):
     lateness) are dropped from the ledger with a LOUD warning, and the
     rolling/ewm/career math runs over the available raw rows - verified
     against the shared core over the dropped frame (partial prefix)."""
-    run_daily_picks = _load_run_daily_picks()
+    publisher = _load_publish_daily_features()
     days = ["2026-01-01", "2026-01-03", "2026-01-05", "2026-01-08"]
     rows = []
     for index, day in enumerate(days):
@@ -667,7 +665,7 @@ def test_null_raw_rows_warn_and_recompute_over_partial_prefix(capsys):
     history = pd.DataFrame(rows)
     history.loc[history["date"] == "2026-01-05", ["game_goals", "game_shots", "game_toi_min"]] = None
 
-    block = run_daily_picks.shot_block_from_history("2026-01-08", [1], history)
+    block = publisher.shot_block_from_history("2026-01-08", [1], history)
     out = capsys.readouterr().out
     assert "WARNING" in out and "partial-prefix" in out and "1 published row" in out
 
@@ -681,6 +679,16 @@ def test_null_raw_rows_warn_and_recompute_over_partial_prefix(capsys):
     expected = expected[expected["date"] == "2026-01-08"].reset_index(drop=True)
     diffs = (expected[model.SHOT_FEATURES] - block[model.SHOT_FEATURES]).abs().to_numpy().max()
     assert diffs < 1e-9
+
+
+def _load_publish_daily_features():
+    spec = importlib.util.spec_from_file_location(
+        "publish_daily_features_stage2_test",
+        ROOT / "smartscore" / "scripts" / "backtrack" / "publish_daily_features.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _load_run_daily_picks():
