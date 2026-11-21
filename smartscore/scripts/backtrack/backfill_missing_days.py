@@ -94,6 +94,7 @@ _root = _here.parents[3]
 sys.path.insert(0, str(_root / "smartscore"))
 sys.path.insert(1, str(_here.parent))
 
+import ml_history_store  # noqa: E402
 import nhl_client  # noqa: E402
 from nhl_client import CACHE_DIR, fetch_boxscore, fetch_schedule  # noqa: E402
 
@@ -140,7 +141,13 @@ def raw_columns_landed(table, probe_column="game_shots"):
     migrate job applies it on merge to main; label a 'deploy' PR for dev) the
     helper skips with ONE loud warning and zero writes - the authorized
     first-run backfill becomes possible with the same one command post-merge.
-    Cached per table for the process lifetime."""
+    Cached per table for the process lifetime.
+
+    The SQLite backend always returns True: ml_history_store.SCHEMA ships the
+    raw columns (and the marker shelf) from the first connection - there is
+    no staged-migration state to probe on the local store."""
+    if ml_history_store.backend() == "sqlite":
+        return True
     placed = _RAW_SCHEMA_PROBE.get(table)
     if placed is None:
         try:
@@ -176,6 +183,8 @@ def yesterday_et(now=None):
 def latest_published_date(env):
     """The newest date with any published snapshot row in the SHARED ledger
     (None when the ledger is EMPTY - the bootstrap state, fail-loud)."""
+    if ml_history_store.backend() == "sqlite":
+        return ml_history_store.latest_date(player_table(env))
     rows = (
         SUPABASE_ADMIN_CLIENT.table(player_table(env)).select("date").order("date", desc=True).limit(1).execute().data
         or []
@@ -190,7 +199,9 @@ def marked_dates(env, after_date):
     an unknown/absent marker table (pre-migration envs - the table ships in
     the same 20261027 migration as the columns) surfaces as no markers, which
     just means the dates are attempted - the upserts are idempotent by PK
-    either way."""
+    either way (an unknown/absent marker surface = no markers = dates attempted)."""
+    if ml_history_store.backend() == "sqlite":
+        return ml_history_store.marked_dates(marker_table(env), after_date)
     table = marker_table(env)
     rows = []
     offset = 0
@@ -218,6 +229,8 @@ def marked_dates(env, after_date):
 
 def existing_player_keys(table, day):
     """The player_id set the snapshot table already owns for one date."""
+    if ml_history_store.backend() == "sqlite":
+        return ml_history_store.existing_player_keys(table, day)
     ids = []
     offset = 0
     while True:
@@ -306,9 +319,17 @@ def _upsert_rows(table, rows, batch_size=UPSERT_BATCH):
     shape); one failed batch raises (the caller fails the DATE - unmarked,
     retried by a later pass - never the whole run). Every row set must share
     ONE key signature: a mixed payload would turn a missing key into an
-    explicit NULL on PostgREST, wiping a published column."""
+    explicit NULL on PostgREST, wiping a published column.
+
+    SQLite backend: ml_history_store.upsert_rows takes over - its single
+    ON CONFLICT DO UPDATE names only the row's own columns, so the lane
+    split above stays meaningful, and when ML_HISTORY_DUAL_WRITE=1 the
+    same rows mirror to Supabase (loud-continue on mirror failure) so the
+    GitHub Actions path keeps reading fresh data during parity."""
     if not rows:
         return 0
+    if ml_history_store.backend() == "sqlite":
+        return ml_history_store.upsert_rows(table, rows, batch_size=batch_size)
     shapes = {tuple(sorted(row)) for row in rows}
     if len(shapes) != 1:
         raise RuntimeError(
@@ -435,8 +456,14 @@ def backfill(env, through_date=None, dry=False, delay_seconds=None):
         # runs whose ledger is the shared -prod one; a dev-mode run now
         # self-heals against the shared ledger like any other).
         raise RuntimeError(
-            f"the shared history ledger ({SHARED_HISTORY_LEDGER}) is empty: run the publish/bootstrap "
-            "chain once (make backtrack-publish ENV=prod) - the helper never bootstraps"
+            f"the shared history ledger ({SHARED_HISTORY_LEDGER}) is empty: "
+            + (
+                "bootstrap the local store first: uv run python smartscore/scripts/backtrack/ml_history_store.py "
+                "--bootstrap"
+                if ml_history_store.backend() == "sqlite"
+                else "run the publish/bootstrap chain once (make backtrack-publish ENV=prod) - "
+                "the helper never bootstraps"
+            )
         )
     summary = {
         "status": "ok",
@@ -521,11 +548,17 @@ def backfill(env, through_date=None, dry=False, delay_seconds=None):
             summary["rows"] += day_written
             summary["created"] += day_created
             if not dry:
-                SUPABASE_ADMIN_CLIENT.table(marker_table(env)).upsert(
-                    [{"date": day, "games": len(day_games), "player_games": day_written}],
-                    on_conflict="date",
-                    returning="minimal",
-                ).execute()
+                if ml_history_store.backend() == "sqlite":
+                    ml_history_store.marker_upsert(
+                        marker_table(env),
+                        {"date": day, "games": len(day_games), "player_games": day_written},
+                    )
+                else:
+                    SUPABASE_ADMIN_CLIENT.table(marker_table(env)).upsert(
+                        [{"date": day, "games": len(day_games), "player_games": day_written}],
+                        on_conflict="date",
+                        returning="minimal",
+                    ).execute()
             summary["backfilled"].append(day)
             print(
                 f"{day}: {len(day_games)} FINAL game(s), {day_written} player-game row(s) "

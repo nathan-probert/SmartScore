@@ -26,6 +26,10 @@ secret_readme.md
 # compresses it to ~4 MB so it is not fatal either way, but there is no reason to
 # carry two copies of the same data that can drift.
 data/raw_nhl.sqlite
+data/ml_history.sqlite
+# The ledger working set (ml_ledger.py): per-season files + the materialized
+# working database are derived from the bucket, never source.
+data/ledger/
 data/*.sqlite-journal
 data/*.sqlite-wal
 data/*.sqlite-shm

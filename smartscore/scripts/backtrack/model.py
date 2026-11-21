@@ -81,6 +81,7 @@ import sys
 import time
 from pathlib import Path
 
+import ml_history_store  # noqa: E402  (same directory: the local history store's backend switch)
 import numpy as np
 import pandas as pd
 
@@ -239,7 +240,12 @@ def _fetch_window(table, order_cols, lo, hi, chunk):
 
 
 def fetch_table(table, order_cols, refresh=False, chunk=PAGE):
-    """Download one table into a CSV cache and return it as a DataFrame."""
+    """Download one table into a CSV cache and return it as a DataFrame.
+
+    ``ML_HISTORY_BACKEND=sqlite`` reads the local store instead of PostgREST:
+    one SELECT (no month windows - those exist for PostgREST's statement
+    timeout, not a local index), same CSV cache afterwards so the training
+    cache's reproducibility semantics are unchanged."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / f"{table.lower().replace('-', '_')}.csv"
     if path.exists() and not refresh:
@@ -247,6 +253,16 @@ def fetch_table(table, order_cols, refresh=False, chunk=PAGE):
 
     print(f"fetching {table} ...", flush=True)
     start = time.time()
+    if ml_history_store.backend() == "sqlite":
+        frame = ml_history_store.fetch_window(
+            table, columns=["*"], lo="0000-01-01", hi="9999-12-31", order_cols=order_cols
+        )
+        if frame.empty:
+            raise RuntimeError(f"{table} is empty - wrong --env, or nothing was published to it")
+        frame.to_csv(path, index=False)
+        print(f"  {len(frame):,} rows in {time.time() - start:.0f}s -> {path.name}")
+        return frame
+
     first = SUPABASE_ADMIN_CLIENT.table(table).select("date").order("date").limit(1).execute().data
     last = SUPABASE_ADMIN_CLIENT.table(table).select("date").order("date", desc=True).limit(1).execute().data
     if not first or not last:
@@ -622,16 +638,23 @@ def projected_lineup_features(frame):
 def add_derived(frame, teams, source="sqlite"):
     """V2 features layered onto the joined frame. Everything stays pre-game.
 
-    * rank_*       - percentile of the rate within the day's tims group. Only
-                     that day's pre-game stats enter the ranking, and a
-                     date-blocked fold holds the whole slate out together, so
-                     no train row ever contributes to a test row's rank.
+    Composed of add_history_features (prevN/rest/shot block - the half the
+    nightly publisher precomputes into ML-Daily-Features) then
+    add_rank_features (the same-day percentiles, always computed live).
+    Training runs the whole composition; the daily run's small-table path
+    runs ONLY add_rank_features - the history half arrives published."""
+    return add_rank_features(add_history_features(frame, teams, source=source))
+
+
+def add_history_features(frame, teams, source="sqlite"):
+    """The history-derived half of add_derived: past-games context only.
+
     * prevN_goals / games_since_goal - past scored labels shifted one row per
-                     player, strictly earlier games only.
+      player, strictly earlier games only.
     * days_since_game (per player), club_rest_days / opp_rest_days (per club)
     * shot-* / rN_* / ewm_* / career_* - prior-games-only shot, TOI and
-                     shooting-talent block from the raw boxscore store (see
-                     shot_features); never includes the current game's line.
+      shooting-talent block from the raw boxscore store (see shot_features);
+      never includes the current game's line.
     """
     frame = frame.sort_values(["player_id", "date"]).reset_index(drop=True)
     n_rows = len(frame)
@@ -699,23 +722,43 @@ def add_derived(frame, teams, source="sqlite"):
         )
 
     # V9 stage 2: method-b projected units + prior-only linemate quality.
-    frame = frame.merge(
+    frame = add_projected_lineup_features(frame)
+
+    if len(frame) != n_rows:
+        raise RuntimeError(f"add_history_features changed row count: {n_rows} -> {len(frame)}")
+    suffixes = [col for col in frame.columns if col.endswith(("_x", "_y"))]
+    if suffixes:
+        raise RuntimeError(f"add_history_features leaked merge suffix columns: {suffixes}")
+    return frame
+
+
+def add_projected_lineup_features(frame):
+    """The V9 stage-2 projected-units merge, split out of
+    add_history_features so the daily run's small-table path can run it
+    too: the same-day linemate priors need only the day's own rows (lineup
+    units + rates live on the live snapshot rows), never the history."""
+    # V9 stage 2: method-b projected units + prior-only linemate quality.
+    return frame.merge(
         projected_lineup_features(frame),
         on=["date", "player_id"],
         how="left",
         validate="many_to_one",
     )
 
+
+def add_rank_features(frame):
+    """The same-day half of add_derived: rank_* percentiles of the four
+    rates within the day's tims group. Only that day's pre-game stats enter
+    the ranking, and a date-blocked fold holds the whole slate out
+    together, so no train row ever contributes to a test row's rank."""
+    n_rows = len(frame)
     # Within (date, tims group) percentiles of the four rates.
     groups = frame[frame["tims"].isin([1, 2, 3])]
     for col in ("gpg", "hgpg", "five_gpg", "ppg"):
         frame[f"rank_{col}"] = groups.groupby(["date", "tims"])[col].rank(pct=True)
 
     if len(frame) != n_rows:
-        raise RuntimeError(f"add_derived changed row count: {n_rows} -> {len(frame)}")
-    suffixes = [col for col in frame.columns if col.endswith(("_x", "_y"))]
-    if suffixes:
-        raise RuntimeError(f"add_derived leaked merge suffix columns: {suffixes}")
+        raise RuntimeError(f"add_rank_features changed row count: {n_rows} -> {len(frame)}")
     return frame
 
 

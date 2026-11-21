@@ -45,6 +45,13 @@ on:
   repository_dispatch:
     types: [ml-picks-game]
 
+  # The nightly ledger pass (the `nightly` job below): 09:30 UTC = 04:30 ET
+  # at latest in winter - every game has been FINAL for hours, and the
+  # features it publishes target TOMORROW's slate for the next morning's
+  # kicks.
+  schedule:
+    - cron: '30 9 * * *'
+
 permissions:
   contents: read
 
@@ -56,6 +63,10 @@ concurrency:
 jobs:
   picks:
     runs-on: ubuntu-latest
+    # The nightly `schedule` trigger belongs to the `nightly` job (the
+    # ledger pass); a scheduled picks pass at 04:30 ET would exit cleanly
+    # ("no live snapshot rows") - skip it instead of burning a runner.
+    if: github.event_name != 'schedule'
     # The picks pass is now narrow: one bounded gap-fill (a couple of NHL API
     # requests per missing completed day - rarely more than yesterday's slate)
     # + one artifact download + inference over published history. 45 min keeps
@@ -265,3 +276,60 @@ jobs:
           else
             echo "ML picks run finished (no summary written: the pass did not reach job_summary)."
           fi
+
+  # The nightly ledger pass (publish_daily_features.py / ml_ledger.py): the
+  # full backtrack history lives in Supabase Storage as one compressed
+  # SQLite file per season (ml/ledger/<season>.sqlite.gz) - the free plan's
+  # 50 MB per-file upload cap holds because each season is ~4-6 MB gz. This
+  # job runs ONCE per night, AFTER the day's games end and BEFORE the next
+  # morning's first kick:
+  #   pull   - download every season file, materialize the working ledger
+  #   backfill - yesterday's FINAL games' per-game raw stats into the ledger
+  #   compute  - tomorrow's slate's 20 history-derived features (the EXACT
+  #              frame pipeline the run uses, over the ledger)
+  #   publish  - upsert them to ML-Daily-Features-prod (~700 rows - the
+  #              small table the kicks read instead of the 560 MB tables)
+  #   push     - re-split the ledger and upload the season files whose bytes
+  #              changed (gzip is deterministic: history is write-once)
+  # The daily kicks then never read the big Supabase tables; if this job
+  # fails, the kicks fall back per player to the last published feature row
+  # (warn + continue). docs/ml-ledger-runbook.md.
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ENV: prod
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_API_KEY: ${{ secrets.SUPABASE_API_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      ML_STORAGE_BUCKET: ${{ secrets.ML_STORAGE_BUCKET || 'ml-artifacts' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/setup-uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      # The ledger split+publish (backfill through yesterday, features for
+      # tomorrow ET, ML-Daily-Features upsert, changed-season upload).
+      # --date is left at the default (tomorrow ET): the morning kicks
+      # predict tomorrow's slate with these features.
+      - name: Pull ledger, backfill, publish daily features, push
+        run: |
+          uv run --with lightgbm==4.7.0 python smartscore/scripts/backtrack/publish_daily_features.py --env prod
