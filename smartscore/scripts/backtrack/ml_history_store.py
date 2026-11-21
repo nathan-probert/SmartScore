@@ -239,9 +239,7 @@ def connect(readonly=True):
     # mode=ro for reads (a write would fail loudly); a plain connect creates
     # the file for the first write, where ensure_schema runs right after.
     con = (
-        sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
-        if readonly
-        else sqlite3.connect(path, timeout=30)
+        sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) if readonly else sqlite3.connect(path, timeout=30)
     )
     try:
         if not readonly:
