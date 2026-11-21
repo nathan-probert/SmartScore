@@ -1057,18 +1057,24 @@ def _map_live_rows(today, history, goalies):
 
 
 def _inject_today_context(teams, goalies, today, on_date):
-    """One Team-Stats / Goalie-Snapshots row per today's fixture, so
+    """One Team-Stats / Goalie-Snapshots row per today's FIXTURE CLUB, so
     build_frame's season / club-rate / opponent-goalie merges see the pick
     date. The backtrack tables only gain a date's rows post-game; the pick
     date's context comes from the live snapshot itself: each club's own
     published morning rates (tgpg/otga/otshga - identical on every row of
     the club) and the confirmed opponent goalie it names. add_derived then
     computes the pick date's rest days from the resulting schedule with the
-    SAME math the training rows ran."""
+    SAME math the training rows ran.
+
+    Grouped by CLUB, not (team_name, club): the live slate can carry more
+    than one team_name spelling per club (upstream data quirks), and two
+    group rows for one (date, club) would violate build_frame's
+    many_to_one season join. team_name rides the first row of the club."""
     season = season_label(on_date)
     team_rows, goalie_rows = [], []
-    for (team_name, club), rows in today.groupby(["team_name", "team_abbrev"]):
+    for club, rows in today.groupby("team_abbrev"):
         first = rows.iloc[0]
+        team_name = first.get("team_name")
         team_rows.append(
             {
                 "date": on_date,

@@ -307,3 +307,44 @@ def test_load_prediction_tables_features_path(monkeypatch):
     assert today.iloc[0]["sd_shots_pg"] == 1.0
     # the injected context rows exist for build_frame's merges
     assert not teams.empty and not goalies.empty
+
+
+def test_inject_today_context_dedupes_club_spellings():
+    """The live slate can carry more than one team_name spelling per club;
+    the injected context rows must stay one-per-club or build_frame's
+    many_to_one season join raises MergeError (seen live: CBJ published two
+    spellings; the first features-path run died on it)."""
+    today = pd.DataFrame(
+        [
+            {
+                "date": "2026-11-21",
+                "player_id": 1,
+                "name": "A",
+                "team_name": "Columbus",
+                "team_abbrev": "CBJ",
+                "opponent_abbrev": "TOR",
+                "tgpg": 3.0,
+                "otga": 2.5,
+                "otshga": 0.5,
+                "home": True,
+            },
+            {
+                "date": "2026-11-21",
+                "player_id": 2,
+                "name": "B",
+                "team_name": "Columbus Blue Jackets",
+                "team_abbrev": "CBJ",
+                "opponent_abbrev": "TOR",
+                "tgpg": 3.0,
+                "otga": 2.5,
+                "otshga": 0.5,
+                "home": True,
+            },
+        ]
+    )
+    empty_teams = pd.DataFrame(columns=rdp.TEAM_FETCH_COLUMNS)
+    empty_goalies = pd.DataFrame(columns=rdp.GOALIE_FETCH_COLUMNS)
+    teams, goalies = rdp._inject_today_context(empty_teams, empty_goalies, today, "2026-11-21")
+    assert len(teams) == 1
+    assert teams.iloc[0]["team_abbrev"] == "CBJ"
+    assert len(goalies) == 1
