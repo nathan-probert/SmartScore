@@ -28,6 +28,14 @@ patcher.start()
 
 
 def _load(name):
+    """Import once, reuse everywhere: re-executing a module that another
+    test file already imported REPLACES it in sys.modules, silently
+    detaching that file's monkeypatch targets (test_backfill_missing_days
+    patches model.RAW_DB on the object IT imported - a re-exec'd twin
+    would read the unpatched default and fail CI-only, where
+    data/raw_nhl.sqlite does not exist)."""
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, ROOT / "smartscore" / "scripts" / "backtrack" / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
