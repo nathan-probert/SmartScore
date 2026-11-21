@@ -399,32 +399,6 @@ def run(event=None):
     return {"statusCode": 200, "date": on_date, "dry": dry, "published": 0 if published is None else len(published)}
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--date", default=None, help="slate date YYYY-MM-DD (default: tomorrow in ET)")
-    parser.add_argument("--env", default=os.environ.get("ENV", "prod"), choices=["dev", "prod"])
-    parser.add_argument("--dry", action="store_true", help="read-only: no ledger writes, no feature publish")
-    args = parser.parse_args(argv)
-    event = {}
-    if args.date:
-        event["date"] = args.date
-    if args.dry:
-        event["dry"] = True
-    os.environ["ENV"] = args.env
-    result = run(event)
-    return 0 if result["statusCode"] == 200 else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-
-
-# ----------------------------------------------------- ledger reads (local)
-
-
-# The ledger tables (ml_history_store's TABLE_MAP keys) and the columns the
-# publisher's own reads consume - moved here when the run's fallback path
-# retired (the publisher is the only full-ledger reader left).
 LEDGER_PLAYER_TABLE = "Player-Snapshots-backtrack-prod"
 LEDGER_TEAM_TABLE = "Team-Stats-backtrack-prod"
 LEDGER_GOALIE_TABLE = "Goalie-Snapshots-backtrack-prod"
@@ -534,3 +508,31 @@ def shot_block_from_history(on_date, player_ids, history):
     if missing:
         raise RuntimeError(f"shot-block core produced no column(s) {missing} for {on_date}")
     return block
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--date", default=None, help="slate date YYYY-MM-DD (default: tomorrow in ET)")
+    parser.add_argument("--env", default=os.environ.get("ENV", "prod"), choices=["dev", "prod"])
+    parser.add_argument("--dry", action="store_true", help="read-only: no ledger writes, no feature publish")
+    args = parser.parse_args(argv)
+    event = {}
+    if args.date:
+        event["date"] = args.date
+    if args.dry:
+        event["dry"] = True
+    os.environ["ENV"] = args.env
+    result = run(event)
+    return 0 if result["statusCode"] == 200 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+
+# ----------------------------------------------------- ledger reads (local)
+
+
+# The ledger tables (ml_history_store's TABLE_MAP keys) and the columns the
+# publisher's own reads consume - moved here when the run's fallback path
+# retired (the publisher is the only full-ledger reader left).
