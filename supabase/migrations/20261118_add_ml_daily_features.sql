@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS "ML-Daily-Features-__ENV__" (
     "name" TEXT,
     "club" TEXT,
     "opp" TEXT,
+    -- ppg is the ONE rate the live snapshot does not carry (it has gpg /
+    -- hgpg / five_gpg / hppg): the ledger's player rows own the single-season
+    -- PP rate, so the publisher carries the player's latest value here.
+    "ppg" DOUBLE PRECISION,
     -- the 14 shot/TOI features (model.SHOT_FEATURES), precomputed
     "sd_shots_pg" DOUBLE PRECISION,
     "sd_goals_pg" DOUBLE PRECISION,
@@ -71,3 +75,9 @@ ALTER TABLE "ML-Daily-Features-__ENV__"
     ALTER COLUMN "days_since_game" TYPE DOUBLE PRECISION,
     ALTER COLUMN "club_rest_days" TYPE DOUBLE PRECISION,
     ALTER COLUMN "opp_rest_days" TYPE DOUBLE PRECISION;
+
+-- The first deploy shipped the table without ppg (the publisher's frame
+-- gained the column when the first live run KeyError'd on it - the live
+-- snapshot has gpg/hgpg/five_gpg/hppg but not ppg). Idempotent ADD.
+ALTER TABLE "ML-Daily-Features-__ENV__"
+    ADD COLUMN IF NOT EXISTS "ppg" DOUBLE PRECISION;
