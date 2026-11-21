@@ -1174,6 +1174,11 @@ def job_summary(
     (on GitHub Actions); a no-op anywhere else."""
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
+        # LOUD: this silent return made a broken workflow wiring invisible -
+        # every historical run said "the pass did not reach job_summary"
+        # while the real reason (an unset env var, a failed write) stayed
+        # hidden. The next run's log names it.
+        print("summary: GITHUB_STEP_SUMMARY is not set - nothing appended (outside Actions?)", flush=True)
         return
     lines = [
         f"## ML picks run: {on_date}",
@@ -1206,6 +1211,7 @@ def job_summary(
         lines.append(f"| {row.get('tims')} | {row.get('name')} | {row.get('team_name')} | {row.get('stat')} |")
     with open(path, "a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
+    print(f"summary: appended {len(lines)} headline line(s) to {path}", flush=True)
 
 
 def load_artifact_storage(client, bucket, prefix):

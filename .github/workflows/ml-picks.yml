@@ -269,6 +269,9 @@ jobs:
           fi
           echo "Trigger context: ${{ github.event_name }} (date:'${DISPATCH_DATE}' dry:'${DISPATCH_DRY}')"
           uv run --with lightgbm==4.7.0 python smartscore/scripts/backtrack/run_daily_picks.py ${ARGS}
+          # diagnostics for the job-summary wiring (per-step GITHUB_STEP_SUMMARY files)
+          echo "step summary file: ${GITHUB_STEP_SUMMARY:-UNSET}"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then wc -c "${GITHUB_STEP_SUMMARY}" || true; fi
 
       # Step 5: the script prints the single structured SMARTSCORE_ML_PICKS
       # log line and appends the headline to $GITHUB_STEP_SUMMARY; this step
@@ -276,11 +279,12 @@ jobs:
       - name: Job summary
         if: always()
         run: |
-          if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -s "${GITHUB_STEP_SUMMARY:-}" ]; then
-            echo "ML picks run complete - see the job summary for the headline."
-          else
-            echo "ML picks run finished (no summary written: the pass did not reach job_summary)."
-          fi
+          # NB: GITHUB_STEP_SUMMARY is a PER-STEP file - this step's own file
+          # is always empty, so testing it here was meaningless (every run
+          # printed "did not reach job_summary"). The headline lives in the
+          # picks step's file, concatenated into the run's Summary tab; the
+          # picks step's log now names it explicitly (see job_summary).
+          echo "The top-3 headline is in the run's Summary tab (written by the picks step)."
 
   # The nightly ledger pass (publish_daily_features.py / ml_ledger.py): the
   # full backtrack history lives in Supabase Storage as one compressed
