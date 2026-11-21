@@ -269,9 +269,12 @@ def seed(working_db=None):
     """ONE-TIME seed: copy the four Supabase tables into the bucket.
 
     Runs the idempotent bootstrap (ml_history_store.bootstrap, month-window
-    paging) then pushes every season file. ~10 minutes and ~130 MB of
-    PostgREST reads - a fraction of the 5 GB monthly egress."""
+    paging) into the WORKING database (``ML_HISTORY_DB`` is bound to the
+    target so bootstrap and push write/read the same file), then pushes
+    every season file. ~10 minutes and ~130 MB of PostgREST reads - a
+    fraction of the 5 GB monthly egress."""
     working_db = Path(working_db or default_working_db())
+    os.environ["ML_HISTORY_DB"] = str(working_db)
     for table in LEDGER_TABLES:
         n = ml_history_store.bootstrap(table, delay=0.02)
         print(f"  bootstrapped {table}: {n:,} rows", flush=True)
