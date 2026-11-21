@@ -238,10 +238,9 @@ def connect(readonly=True):
     path.parent.mkdir(parents=True, exist_ok=True)
     # mode=ro for reads (a write would fail loudly); a plain connect creates
     # the file for the first write, where ensure_schema runs right after.
-    if readonly:
-        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
-    else:
-        con = sqlite3.connect(path, timeout=30)
+    con = (
+        sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) if readonly else sqlite3.connect(path, timeout=30)
+    )
     try:
         if not readonly:
             con.execute("PRAGMA journal_mode=WAL")
@@ -250,6 +249,16 @@ def connect(readonly=True):
         con.row_factory = sqlite3.Row
         yield con
     finally:
+        try:
+            if not readonly:
+                # Leave the file in DELETE-journal mode: a later read-only
+                # open (split_seasons, verify, another process) of a
+                # WAL-mode db fails 'unable to open database file' when it
+                # cannot create the -shm sidecar. Checkpoint + convert.
+                con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                con.execute("PRAGMA journal_mode=DELETE")
+        except sqlite3.Error:
+            pass
         con.close()
 
 

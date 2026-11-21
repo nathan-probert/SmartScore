@@ -44,16 +44,16 @@ CREATE TABLE IF NOT EXISTS "ML-Daily-Features-__ENV__" (
     "r10_toi_pg" DOUBLE PRECISION,
     "ewm_goals" DOUBLE PRECISION,
     "ewm_shots" DOUBLE PRECISION,
-    "career_games" INTEGER,
+    "career_games" DOUBLE PRECISION,
     "career_goals_pg" DOUBLE PRECISION,
     "career_shots_pg" DOUBLE PRECISION,
     -- the goal-streak + rest block (add_derived's history-derived set)
     "prev2_goals" DOUBLE PRECISION,
     "prev3_goals" DOUBLE PRECISION,
     "games_since_goal" DOUBLE PRECISION,
-    "days_since_game" INTEGER,
-    "club_rest_days" INTEGER,
-    "opp_rest_days" INTEGER,
+    "days_since_game" DOUBLE PRECISION,
+    "club_rest_days" DOUBLE PRECISION,
+    "opp_rest_days" DOUBLE PRECISION,
     CONSTRAINT "ML-Daily-Features-__ENV___pkey" PRIMARY KEY ("date", "player_id")
 );
 
@@ -61,3 +61,13 @@ CREATE INDEX IF NOT EXISTS "ML-Daily-Features-__ENV___date_idx"
     ON "ML-Daily-Features-__ENV__" ("date");
 
 ALTER TABLE "ML-Daily-Features-__ENV__" ENABLE ROW LEVEL SECURITY;
+
+-- The first deploy created these as INTEGER; the publisher's frame carries
+-- NaN-capable floats (to_json emits "74.0"), which Postgres rejects into an
+-- INTEGER column (22P02). Features are numeric to the model regardless -
+-- widen the four columns; idempotent (re-running is a no-op).
+ALTER TABLE "ML-Daily-Features-__ENV__"
+    ALTER COLUMN "career_games" TYPE DOUBLE PRECISION,
+    ALTER COLUMN "days_since_game" TYPE DOUBLE PRECISION,
+    ALTER COLUMN "club_rest_days" TYPE DOUBLE PRECISION,
+    ALTER COLUMN "opp_rest_days" TYPE DOUBLE PRECISION;
