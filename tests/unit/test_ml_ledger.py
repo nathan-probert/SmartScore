@@ -298,7 +298,7 @@ def test_load_prediction_tables_features_path(monkeypatch):
             }
         ]
     )
-    monkeypatch.setattr(rdp, "features_rows", lambda on_date: features)
+    monkeypatch.setattr(rdp, "features_rows", lambda on_date, player_ids=None: features)
     monkeypatch.setattr(rdp, "today_live_rows", lambda env, date: live.copy())
     loaded = rdp.load_prediction_tables("prod", "2026-11-19")
     today, players, teams, goalies, history = loaded
@@ -397,3 +397,59 @@ def test_topup_team_rows_fills_gap_and_idempotent(monkeypatch):
     n = mls.count("Team-Stats-backtrack-prod")
     pdf.topup_team_rows(through)  # idempotent re-run
     assert mls.count("Team-Stats-backtrack-prod") == n
+
+
+def test_features_rows_pages_past_the_1000_row_cap(monkeypatch):
+    """PostgREST caps a single read at 1,000 rows: the 2026-11-21 slate's
+    2,127 feature rows truncated silently and 506 live players lost their
+    features (Caufield/Thompson/Barkov reshuffled the picks). The reader
+    must page - and with the slate filter, fetch exactly the slate."""
+
+    class FakePager:
+        def __init__(self):
+            self.calls = []
+
+        def table(self, name):
+            assert name == "ML-Daily-Features-prod"
+            return self
+
+        def select(self, cols):
+            return self
+
+        def eq(self, col, val):
+            return self
+
+        def in_(self, col, ids):
+            self.ids = ids
+            return self
+
+        def range(self, lo, hi):
+            self.calls.append((lo, hi))
+            return self
+
+        def execute(self):
+            n_total = 2127
+            lo = self.calls[-1][0]
+            page = [
+                {
+                    "date": "2026-11-21",
+                    "player_id": 1000 + i,
+                    "club": "TOR",
+                    "opp": "MTL",
+                    "ppg": None,
+                    **{c: 0.5 for c in model.SHOT_FEATURES},
+                    **{c: 1.0 for c in pdf.STREAK_COLUMNS},
+                }
+                for i in range(lo, min(lo + 1000, n_total))
+            ]
+            if getattr(self, "ids", None) is not None:  # PostgREST honours the in_ filter
+                page = [r for r in page if r["player_id"] in set(self.ids)]
+            result = MagicMock()
+            result.data = page
+            return result
+
+    pager = FakePager()
+    monkeypatch.setattr(rdp, "SUPABASE_ADMIN_CLIENT", pager)
+    rows = rdp.features_rows("2026-11-21", player_ids=list(range(1000, 2127)))
+    assert len(rows) == 1127  # the in_-filtered tail that the first page used to lose
+    assert pager.calls[0] == (0, 999) and pager.calls[1] == (1000, 1999)

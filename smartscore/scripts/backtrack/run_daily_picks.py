@@ -1105,7 +1105,7 @@ def _inject_today_context(teams, goalies, today, on_date):
     return teams, goalies
 
 
-def features_rows(on_date):
+def features_rows(on_date, player_ids=None):
     """ML-Daily-Features rows for the pick date - the small-table path.
 
     The nightly publisher (publish_daily_features.py) computes the 20
@@ -1114,9 +1114,25 @@ def features_rows(on_date):
     tables. ``None`` = no rows for the date (or the table is not there yet
     - the pre-cutover state): the caller uses the full-ledger path, which
     is why this probe swallows a read failure with ONE printed line instead
-    of failing the run."""
+    of failing the run.
+
+    PAGED, and filtered to the slate's player_ids when given: a single
+    un-paged PostgREST read caps at 1,000 rows - the 2026-11-21 slate's
+    2,127 feature rows silently truncated at the cap and 506 live players
+    (Caufield, Thompson, Barkov...) lost their features to NaN, reshuffling
+    the picks. When ``player_ids`` is given the read filters with ``in_``
+    AND pages, so the slate is always fully covered."""
     try:
-        rows = SUPABASE_ADMIN_CLIENT.table(FEATURES_TABLE).select("*").eq("date", on_date).execute().data or []
+        query = SUPABASE_ADMIN_CLIENT.table(FEATURES_TABLE).select("*").eq("date", on_date)
+        if player_ids is not None:
+            query = query.in_("player_id", [int(pid) for pid in player_ids])
+        rows, offset = [], 0
+        while True:
+            page = query.range(offset, offset + 999).execute().data or []
+            rows.extend(page)
+            if len(page) < 1000:
+                break
+            offset += len(page)
     except Exception as exc:  # noqa: BLE001 - "table absent/unreadable yet" is a normal transition state
         print(
             f"WARNING: {FEATURES_TABLE} unreadable ({type(exc).__name__}: {str(exc)[:160]}) - "
@@ -1202,7 +1218,7 @@ def load_prediction_tables(source_env, on_date, history_env=HISTORY_ENV):
     if today is None:
         return None
     require_live_columns(today, on_date, source_env=source_env)
-    features = features_rows(on_date)
+    features = features_rows(on_date, player_ids=pd.to_numeric(today["player_id"]).tolist())
     if features is not None:
         today = _merge_features(today, features, on_date)
         empty_teams = pd.DataFrame(columns=TEAM_FETCH_COLUMNS)
@@ -1811,6 +1827,8 @@ def run(event=None, context=None):
     # the date, the nightly publisher owns the gap-fill AND the feature
     # computation (publish_daily_features.py ran last night against the
     # Storage ledger) - this run stays read-only against the big tables.
+    # (No slate filter yet - the live rows have not been read; the probe
+    # pages, so a >1,000-row date is fully counted.)
     features = features_rows(on_date)
     if features is not None:
         print(
