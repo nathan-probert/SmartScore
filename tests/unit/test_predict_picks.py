@@ -406,7 +406,7 @@ def prediction_tables(monkeypatch):
             )
         return pd.DataFrame(rows)
 
-    monkeypatch.setattr("run_daily_picks.features_rows", lambda on_date: fake_features_frame())
+    monkeypatch.setattr("run_daily_picks.features_rows", lambda on_date, player_ids=None: fake_features_frame())
     return fake_client
 
 
