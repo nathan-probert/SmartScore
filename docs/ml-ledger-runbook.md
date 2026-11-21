@@ -8,10 +8,13 @@
 > job + the existing kicks. The owner's machine is only for training
 > (as always).
 >
-> Status: **prepared, self-activating.** The default code paths are
-> unchanged; the daily run switches to the small table automatically on
-> the first nightly publish. Cutover (dropping the big tables) is a
-> documented follow-up.
+> Status: **cutover prepared.** PR #155 merged (ledger in Storage, small
+> feature table, self-activating daily path); #156/#157/#158 fixed the
+> first live runs. THIS branch executes the cutover: migrations retired,
+> the run's fallback removed, the picks job's gap-fill step deleted. The
+> only remaining manual step is `docs/cutover-drop-tables.sql` (owner-run
+> psql) after this PR merges and a final clean slate day confirms the
+> features path.
 
 ## The quota math (free plan, verified)
 
@@ -77,21 +80,34 @@ daily kicks (unchanged schedule, ~15/day):
    in its log). Watch one slate day for parity (stat values vs the
    fallback path's), then let the cron own it.
 
-## Cutover (a follow-up PR, AFTER a week of clean feature-path runs)
+## Cutover (THIS branch + one manual SQL step)
 
-1. Delete the picks job's Stage-2 gap-fill step (the nightly backfill owns
-   it now).
-2. Pin/retire the backtrack-family migration files BEFORE dropping anything
-   - the standing migrate job re-applies every file and would resurrect
-   the tables (the `BACKTRACK-PROD-PINNED` guard tests are the pattern).
-3. `DROP TABLE` the four `-prod` backtrack tables + the empty
-   `Player-Game-Raw-Markers-dev`; keep the `-dev` live-table twins until
-   dev deploys are retired too.
-4. Remove the full-ledger fallback from `run_daily_picks.py` (the code
-   path that reads the dropped tables) in the same PR.
+1. ~~Delete the picks job's Stage-2 gap-fill step~~ — done in this PR.
+2. ~~Pin/retire the backtrack-family migration files~~ — done in this PR
+   (the 6 backtrack DDL files are deleted; the standing migrate job
+   re-applies what remains, which never names a backtrack table - the
+   `test_backtrack_migrations_are_retired` guard enforces it).
+3. `DROP TABLE` — `docs/cutover-drop-tables.sql` (owner-run psql, after
+   this PR merges + one clean slate day). Keeps the `-dev` live-table
+   twins until dev deploys retire.
+4. ~~Remove the full-ledger fallback from `run_daily_picks.py`~~ — done in
+   this PR (the path is gone; a missing nightly publish fails LOUD naming
+   the job).
+
+## Known follow-ups (non-blocking)
+
+- The offline top-up tools (`publish_shot_cols.py`, `topup_raw_game_cols.py`,
+  `reconstruct.py`) still name the Supabase tables in their write paths -
+  they were the one-shot builders of the pre-cutover copies. Post-DROP they
+  fail if run; the ledger is maintained by the nightly backfill now.
+  Rebuilding them against the working SQLite/ledger is future work.
+- The daily kicks' parity with the fallback path was validated live
+  (2026-11-21 dry dispatch: full features-path run, 3 picks assembled).
 
 ## Rollback
 
-Any time before step 3 of cutover: the fallback path still works against
-the intact Supabase tables. Disabling the `nightly` job changes nothing
-for the running site.
+Merging this PR is safe to sit on: nothing breaks until the DROP SQL runs,
+and until then the Storage ledger + ML-Daily-Features keep serving the
+site. If you must fully revert the design, the ledger's season files
+recreate the tables (ml_history_store.SCHEMA + the dumps) - the data is
+not lost, only relocated.

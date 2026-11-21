@@ -35,11 +35,10 @@ big table. If this script did not run (or failed), the run warns and falls
 back per player to that player's last published feature row (the same
 warn-and-continue doctrine as a missing backfill day).
 
-The math is NOT forked: steps 3's calls are the run's own functions
-(run_daily_picks.history_rows / shot_block_from_history, model.build_frame
-/ add_derived) running over ledger data - the publisher only builds the
-synthetic pre-game rows from the schedule, which is the one input the
-run's morning path gets from the live snapshot instead.
+The math is NOT forked: step 3 runs model.build_frame / add_derived /
+shot_features_from_games verbatim over ledger data - the publisher only
+builds the synthetic pre-game rows from the schedule, which is the one
+input the run's morning path gets from the live snapshot instead.
 
 Usage (the nightly job)::
 
@@ -62,8 +61,10 @@ _root = _here.parents[3]
 sys.path.insert(0, str(_root / "smartscore"))
 sys.path.insert(1, str(_here.parent))
 
+import backfill_missing_days  # noqa: E402  (same directory: the gap-fill, run against the materialized ledger)
 import ml_history_store  # noqa: E402
 import ml_ledger  # noqa: E402
+import model  # noqa: E402
 import nhl_client  # noqa: E402
 
 from config import SUPABASE_ADMIN_CLIENT  # noqa: E402
@@ -212,14 +213,12 @@ def compute_features(on_date, env, dry=False):
     """Steps 2-3: backfill + the exact frame pipeline over the working
     ledger. Returns the published-shape frame (or, when the slate is
     empty, None)."""
-    import run_daily_picks  # noqa: PLC0415  (lazy: reuses the run's own assembly, never forks it)
-
     yesterday = (datetime.date.fromisoformat(on_date) - datetime.timedelta(days=1)).isoformat()
     if dry:
-        latest = run_daily_picks.backfill_missing_days.latest_published_date(env)
+        latest = backfill_missing_days.latest_published_date(env)
         print(f"dry: ledger's latest published date is {latest} (no backfill writes in --dry)", flush=True)
     else:
-        summary = run_daily_picks.backfill_missing_days.backfill(env, through_date=yesterday)
+        summary = backfill_missing_days.backfill(env, through_date=yesterday)
         if summary.get("failed_days"):
             print(
                 f"WARNING: the backfill could not complete {summary['failed_days']} game day(s) - the "
@@ -238,12 +237,16 @@ def compute_features(on_date, env, dry=False):
     print(f"slate {on_date}: {len(clubs)} club(s), {len(candidates)} candidate player(s)", flush=True)
 
     player_ids = [int(pid) for pid in candidates["player_id"]]
-    history = run_daily_picks.history_rows(env, on_date)
-    teams = run_daily_picks.history_team_rows(env, on_date)
-    goalies = run_daily_picks.history_goalie_rows(env, on_date)
+    history = ledger_history(on_date)
+    teams = ml_history_store.fetch_window(
+        LEDGER_TEAM_TABLE, TEAM_FETCH_COLUMNS, "0000-01-01", on_date, ["date", "team_abbrev"]
+    )
+    goalies = ml_history_store.fetch_window(
+        LEDGER_GOALIE_TABLE, GOALIE_FETCH_COLUMNS, "0000-01-01", on_date, ["date", "player_id"]
+    )
     teams = pd.concat([teams, synthetic_team_rows(clubs, on_date)], ignore_index=True)
 
-    shot_block = run_daily_picks.shot_block_from_history(on_date, player_ids, history)
+    shot_block = shot_block_from_history(on_date, player_ids, history)
     today = synthetic_slate_rows(candidates, clubs, on_date)
     today = today.merge(shot_block, on=["date", "player_id"], how="left", validate="one_to_one")
     # ppg lives ONLY on the ledger rows (the live snapshot carries gpg /
@@ -253,10 +256,8 @@ def compute_features(on_date, env, dry=False):
     latest_ppg = history.sort_values("date").groupby("player_id").tail(1)[["player_id", "ppg"]]
     today = today.merge(latest_ppg, on="player_id", how="left", validate="one_to_one")
 
-    frame = run_daily_picks.model.build_frame(
-        pd.concat([history, today], ignore_index=True), teams, goalies, source="supabase"
-    )
-    derived = run_daily_picks.model.add_derived(frame, teams, source="supabase")
+    frame = model.build_frame(pd.concat([history, today], ignore_index=True), teams, goalies, source="supabase")
+    derived = model.add_derived(frame, teams, source="supabase")
     rows = derived[derived["date"] == on_date].reset_index(drop=True)
     # build_frame renamed team_abbrev -> club / opponent_abbrev -> opp.
     columns = [
@@ -266,7 +267,7 @@ def compute_features(on_date, env, dry=False):
         "club",
         "opp",
         "ppg",
-        *run_daily_picks.model.SHOT_FEATURES,
+        *model.SHOT_FEATURES,
         *STREAK_COLUMNS,
     ]
     missing = [col for col in columns if col not in rows.columns]
@@ -295,6 +296,10 @@ def run(event=None):
     env = os.environ.get("ENV", "prod")
     on_date = str(event.get("date") or next_slate_date())
     dry = bool(event.get("dry"))
+    # THIS process reads/writes the materialized ledger - force the sqlite
+    # backend explicitly (the workflow env may not carry it, and the
+    # supabase default would route the backfill at the dropped tables).
+    os.environ["ML_HISTORY_BACKEND"] = "sqlite"
     print(
         f"publish_daily_features: date={on_date} env={env} table={FEATURES_TABLE} "
         f"ledger={'read-only' if dry else 'pull+backfill+push'}",
@@ -340,3 +345,120 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ----------------------------------------------------- ledger reads (local)
+
+
+# The ledger tables (ml_history_store's TABLE_MAP keys) and the columns the
+# publisher's own reads consume - moved here when the run's fallback path
+# retired (the publisher is the only full-ledger reader left).
+LEDGER_PLAYER_TABLE = "Player-Snapshots-backtrack-prod"
+LEDGER_TEAM_TABLE = "Team-Stats-backtrack-prod"
+LEDGER_GOALIE_TABLE = "Goalie-Snapshots-backtrack-prod"
+HISTORY_FETCH_COLUMNS = [
+    "date",
+    "player_id",
+    "name",
+    "team_name",
+    "team_abbrev",
+    "opponent_abbrev",
+    "home",
+    "tims",
+    "scored",
+    "gpg",
+    "hgpg",
+    "five_gpg",
+    "hppg",
+    "ppg",
+    "injury_status",
+    "injury_desc",
+    "lineup_unit",
+    "lineup_position_group",
+    "lineup_status",
+    "pp_unit",
+]
+RAW_COLUMNS = ["game_goals", "game_shots", "game_points", "game_toi_min"]
+TEAM_FETCH_COLUMNS = ["date", "team_abbrev", "team_name", "tgpg", "otga", "otshga", "season", "game_id"]
+GOALIE_FETCH_COLUMNS = [
+    "date",
+    "player_id",
+    "name",
+    "team_abbrev",
+    "team_name",
+    "gaa",
+    "save_pct",
+    "record",
+    "shutouts",
+    "games_played",
+]
+
+
+def ledger_history(on_date):
+    """The FULL prior history from the materialized working ledger
+    (strictly before the pick date - the prior-games context), read the
+    model.fetch_table way: one ordered SELECT, no month-window paging (a
+    local index has no PostgREST statement timeout to dodge).
+
+    Full history ON PURPOSE: career_games / career_goals_pg /
+    career_shots_pg are expanding career sums and ewm_* is career-long, so
+    a windowed fetch would mis-state every veteran's block - and with the
+    stage-2 raw columns landed, these published rows ARE the per-game
+    series the exact recompute runs on. tgpg/otga/otshga are NOT here (the
+    player table carries null placeholders; build_frame re-merges them from
+    Team-Stats)."""
+    columns = [*HISTORY_FETCH_COLUMNS, *RAW_COLUMNS]
+    frame = ml_history_store.fetch_window(LEDGER_PLAYER_TABLE, columns, "0000-01-01", on_date, ["date", "player_id"])
+    missing = [col for col in columns if col not in frame.columns]
+    if missing:
+        raise RuntimeError(f"ledger fetch lacks expected column(s) {missing}")
+    return frame
+
+
+def shot_block_from_history(on_date, player_ids, history):
+    """The 14 shot/TOI features for ``on_date``, computed EXACTLY from the
+    materialized Storage ledger - the shared pandas core
+    (model.shot_features_from_games - imported, never forked) over the
+    published per-game record (the stage-2 raw columns game_goals /
+    game_shots / game_toi_min), plus ONE synthetic pre-game row per player
+    (its own zeros can never enter its features - every definition is
+    shifted one game).
+
+    Rows with NO count facts (game_shots or game_goals NULL) are DROPPED
+    from the series and the math runs over the available raw rows only
+    (partial-prefix recompute, LOUD-warned); a NULL game_toi_min with KNOWN
+    counts is KEPT (the core's own NaN semantics)."""
+    games = history[["date", "player_id", "game_goals", "game_shots", "game_toi_min"]].copy()
+    incomplete_mask = history["game_goals"].isna() | history["game_shots"].isna()
+    incomplete = int(incomplete_mask.sum())
+    if incomplete:
+        null_days = sorted(set(history.loc[incomplete_mask, "date"].astype(str)))
+        print(
+            f"WARNING: shot-block dropped {incomplete} published row(s) that carry no per-game raw stat "
+            f"(pre-top-up lateness; game day(s) {null_days[:5]}"
+            f"{'...' if len(null_days) > 5 else ''}) - the rolling/ewm/career features are computed over "
+            "the available raw rows only (partial-prefix recompute)",
+            flush=True,
+        )
+        games = games[~incomplete_mask.values]
+    games = games.rename(columns={"game_goals": "goals", "game_shots": "shots", "game_toi_min": "toi"})
+    games["season"] = games["date"].map(ml_ledger.season_of)
+    games["player_id"] = pd.to_numeric(games["player_id"])
+    have = set(games.loc[games["date"] == on_date, "player_id"])
+    synthetic_ids = [pid for pid in dict.fromkeys(player_ids) if pid not in have]
+    synthetic = pd.DataFrame(
+        {
+            "player_id": synthetic_ids,
+            "date": on_date,
+            "season": ml_ledger.season_of(on_date),
+            "goals": 0,
+            "shots": 0,
+            "toi": 0,
+        }
+    )
+    block = model.shot_features_from_games(pd.concat([games, synthetic], ignore_index=True))
+    block = block[block["date"] == on_date].reset_index(drop=True)
+    missing = [col for col in model.SHOT_FEATURES if col not in block.columns]
+    if missing:
+        raise RuntimeError(f"shot-block core produced no column(s) {missing} for {on_date}")
+    return block

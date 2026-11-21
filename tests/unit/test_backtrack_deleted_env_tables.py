@@ -91,24 +91,15 @@ def test_migrations_never_name_a_deleted_dev_table():
             assert table not in text, f"{path.name} still names deleted {table}"
 
 
-def test_backtrack_migrations_carry_the_prod_pin_marker():
-    """The 6 backtrack migration files carry the prod-pin allowlist marker.
+def test_backtrack_migrations_are_retired():
+    """The backtrack migration files are GONE from supabase/migrations/ -
+    the Storage cutover dropped the family and its DDL with it.
 
-    Marker rule lives in .github/workflows/deploy.yml ('Guard migration
-    files'): a file with BACKTRACK-PROD-PINNED may hardcode the '-prod'
-    literal suffix. The marker also documents WHY (dev backtracking deleted
-    Oct 2026) at the top of each file.
-    """
-    marker_files = {p.name for p in _migration_files() if "BACKTRACK-PROD-PINNED" in p.read_text()}
+    The standing migrate job re-applies every file in the directory, so a
+    surviving backtrack migration would RESURRECT the dropped tables. The
+    BACKTRACK-PROD-PINNED marker rule (deploy.yml 'Guard migration files')
+    is now vacuous: no file may name a backtrack table at all."""
     backtrack_files = {p.name for p in _migration_files() if "backtrack" in p.stem}
-    assert backtrack_files == marker_files, (
-        f"backtrack migrations missing the prod-pin marker: {sorted(backtrack_files - marker_files)}"
-    )
-    assert all("backtrack" in name for name in marker_files) and marker_files == {
-        "20261008_add_player_snapshots_backtrack.sql",
-        "20261008_add_team_stats_backtrack.sql",
-        "20261009_add_ppg_player_snapshots_backtrack.sql",
-        "20261015_add_goalie_snapshots_backtrack.sql",
-        "20261024_add_shot_columns_player_snapshots_backtrack.sql",
-        "20261027_add_per_game_raw_columns_player_snapshots_backtrack.sql",
-    }
+    assert not backtrack_files, f"backtrack migrations must be retired at cutover: {sorted(backtrack_files)}"
+    marker_files = {p.name for p in _migration_files() if "BACKTRACK-PROD-PINNED" in p.read_text()}
+    assert not marker_files, f"prod-pin markers have nothing left to pin: {sorted(marker_files)}"
