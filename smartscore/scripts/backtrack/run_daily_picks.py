@@ -1151,6 +1151,7 @@ def _merge_features(today, features, on_date):
         "player_id",
         "club",
         "opp",
+        "ppg",
         *model.SHOT_FEATURES,
         *publish_daily_features.STREAK_COLUMNS,
     ]

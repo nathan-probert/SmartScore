@@ -134,27 +134,29 @@ def slate_clubs(on_date):
 
 
 def candidate_players(clubs):
-    """The likely slate: every ledger player whose LATEST row's club has a
-    game tomorrow. Scratched players ride along harmlessly (no row is
-    read), and a surprise call-up with no published features falls back to
-    the last published row per player - both cheap."""
+    """EVERY ledger player - the site's slate is the whole league pool
+    (the first live run: 2,633 slate rows vs 739 club-filtered candidates,
+    506 real players left without features).
+
+    A player whose club plays tomorrow gets club/opp/home from the
+    schedule; everyone else gets club=None (their row is harmless - the
+    run reads only the slate's player_ids - and a scratched/traded player
+    whose club IS scheduled keeps their ledger club). The latest
+    team_abbrev-bearing row wins: backfill-created rows carry the
+    boxscore's club, so a mid-season trade resolves to the current club."""
     table = ml_history_store.TABLE_MAP["Player-Snapshots-backtrack-prod"]
     query = f'SELECT "player_id", "name", "date", "team_abbrev" FROM "{table}" ORDER BY "date"'
     with ml_history_store.connect() as con:
         frame = pd.read_sql_query(query, con)
     frame["player_id"] = pd.to_numeric(frame["player_id"])
-    latest = frame.sort_values("date").groupby("player_id").tail(1)
+    named = frame[frame["team_abbrev"].notna()]
+    latest = named.sort_values("date").groupby("player_id").tail(1)
     latest["club"] = latest["team_abbrev"]
-    in_slate = latest[latest["club"].isin(clubs)]
-    missing_club = int(latest["club"].isna().sum())
-    if missing_club:
-        print(
-            f"WARNING: {missing_club} ledger player(s) have no club abbrev on their latest row (pre-"
-            "20261024 rows) - they are not considered for the slate (call-ups among them fall back "
-            "to their last published feature row)",
-            flush=True,
-        )
-    return in_slate[["player_id", "name", "club"]]
+    print(
+        f"candidate players: {len(latest)} (ledger pool), {int(latest['club'].isin(clubs).sum())} with a game tomorrow",
+        flush=True,
+    )
+    return latest[["player_id", "name", "club"]]
 
 
 def synthetic_slate_rows(candidates, clubs, on_date):
@@ -244,6 +246,12 @@ def compute_features(on_date, env, dry=False):
     shot_block = run_daily_picks.shot_block_from_history(on_date, player_ids, history)
     today = synthetic_slate_rows(candidates, clubs, on_date)
     today = today.merge(shot_block, on=["date", "player_id"], how="left", validate="one_to_one")
+    # ppg lives ONLY on the ledger rows (the live snapshot carries gpg /
+    # hgpg / five_gpg / hppg but not ppg) - carry each player's latest
+    # published single-season PP rate onto the synthetic row: the SAME
+    # value the full-ledger path merged from the history rows.
+    latest_ppg = history.sort_values("date").groupby("player_id").tail(1)[["player_id", "ppg"]]
+    today = today.merge(latest_ppg, on="player_id", how="left", validate="one_to_one")
 
     frame = run_daily_picks.model.build_frame(
         pd.concat([history, today], ignore_index=True), teams, goalies, source="supabase"
@@ -251,7 +259,16 @@ def compute_features(on_date, env, dry=False):
     derived = run_daily_picks.model.add_derived(frame, teams, source="supabase")
     rows = derived[derived["date"] == on_date].reset_index(drop=True)
     # build_frame renamed team_abbrev -> club / opponent_abbrev -> opp.
-    columns = ["date", "player_id", "name", "club", "opp", *run_daily_picks.model.SHOT_FEATURES, *STREAK_COLUMNS]
+    columns = [
+        "date",
+        "player_id",
+        "name",
+        "club",
+        "opp",
+        "ppg",
+        *run_daily_picks.model.SHOT_FEATURES,
+        *STREAK_COLUMNS,
+    ]
     missing = [col for col in columns if col not in rows.columns]
     if missing:
         raise RuntimeError(f"feature frame lacks expected column(s) {missing}")
