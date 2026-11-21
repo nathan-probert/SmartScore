@@ -11,8 +11,9 @@
 -- Everything here is reproducible from the Storage ledger
 -- (ml/ledger/<season>.sqlite.gz) - the database copies are redundant.
 --
--- A VACUUM FULL afterwards (or the Supabase dashboard's vacuum) returns
--- the freed space to the project's quota immediately.
+-- Run WITHOUT the VACUUM line if your editor wraps scripts in a
+-- transaction (the Supabase SQL editor does): VACUUM cannot run inside
+-- one (ERROR 25001) and the failed statement rolls the DROPs back too.
 
 DROP TABLE IF EXISTS "Player-Snapshots-backtrack-prod";
 DROP TABLE IF EXISTS "Team-Stats-backtrack-prod";
@@ -22,7 +23,9 @@ DROP TABLE IF EXISTS "Player-Game-Raw-Markers-prod";
 -- dev deploys before the family moved to Storage)
 DROP TABLE IF EXISTS "Player-Game-Raw-Markers-dev";
 
-VACUUM;
+-- Space: Postgres autovacuum returns the freed pages to the project's
+-- quota within hours. For an immediate reclaim use the Dashboard
+-- (Database -> Vacuum settings) - VACUUM cannot run in the SQL editor.
 
 -- DO NOT drop: Player-Snapshots-{dev,prod} (the live archive the site
 -- pipeline writes), Picks / Historic-Picks / Working / Metrics /
