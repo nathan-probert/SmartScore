@@ -24,6 +24,11 @@ on:
         type: boolean
         required: false
         default: false
+      run_nightly:
+        description: 'Also run the nightly ledger pass (pull/backfill/features/push)'
+        type: boolean
+        required: false
+        default: false
       # Manual-dispatch override of the job-level ENV (below) - the fail-safe
       # default 'prod' means a dispatch that forgets the input still lands on
       # Picks-prod, never on a silent fallback. Scheduled and
@@ -295,6 +300,13 @@ jobs:
   # fails, the kicks fall back per player to the last published feature row
   # (warn + continue). docs/ml-ledger-runbook.md.
   nightly:
+    # ONLY the schedule fires this job. The per-game kicks
+    # (repository_dispatch) and manual dispatches run the `picks` job
+    # alone: the nightly re-reads the whole ledger (~6 min) and would sit
+    # in the workflow's concurrency queue ahead of kicked stat patches -
+    # prediction freshness for a job that only needs to run once a night.
+    # To run it by hand: workflow_dispatch with run_nightly=true.
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_nightly == true)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

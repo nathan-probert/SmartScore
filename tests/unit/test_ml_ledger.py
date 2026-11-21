@@ -298,7 +298,7 @@ def test_load_prediction_tables_features_path(monkeypatch):
             }
         ]
     )
-    monkeypatch.setattr(rdp, "features_rows", lambda on_date: features)
+    monkeypatch.setattr(rdp, "features_rows", lambda on_date, player_ids=None: features)
     monkeypatch.setattr(rdp, "today_live_rows", lambda env, date: live.copy())
     loaded = rdp.load_prediction_tables("prod", "2026-11-19")
     today, players, teams, goalies, history = loaded
@@ -348,3 +348,108 @@ def test_inject_today_context_dedupes_club_spellings():
     assert len(teams) == 1
     assert teams.iloc[0]["team_abbrev"] == "CBJ"
     assert len(goalies) == 1
+
+
+@pytest.mark.usefixtures("store")
+def test_topup_team_rows_fills_gap_and_idempotent(monkeypatch):
+    """The rest-day fix: team rows appended for every FINAL game date the
+    table has not covered (rates NULL - rest days read only the schedule
+    identity), idempotent by PK, FINAL-state guard."""
+    D1 = "2026-11-19"
+    through = "2026-11-20"
+
+    def schedule(date):  # noqa: ARG001 - stub signature
+        games = [
+            {
+                "id": 100 + int(date[-2:]),
+                "gameType": 2,
+                "gameState": "FINAL",
+                "homeTeam": {"abbrev": "TOR", "placeName": {"default": "Toronto"}},
+                "awayTeam": {"abbrev": "MTL", "placeName": {"default": "Montr\u00e9al"}},
+            }
+        ]
+        if date == D1:
+            games.append(
+                {
+                    "id": 199,
+                    "gameType": 2,
+                    "gameState": "LIVE",  # non-final: skipped
+                    "homeTeam": {"abbrev": "NYR", "placeName": {"default": "New York"}},
+                    "awayTeam": {"abbrev": "NJD", "placeName": {"default": "New Jersey"}},
+                }
+            )
+        return {"gameWeek": [{"date": date, "games": games}]}
+
+    monkeypatch.setattr(pdf.nhl_client, "fetch_schedule", schedule)
+    monkeypatch.setattr(rdp, "SUPABASE_ADMIN_CLIENT", MagicMock(name="supabase_admin"))
+    mls.upsert_rows(
+        "Team-Stats-backtrack-prod", [{"season": "20262027", "team_abbrev": "TOR", "game_id": 1, "date": "2026-11-10"}]
+    )
+    pdf.topup_team_rows(through)
+    rows = mls.fetch_window(
+        "Team-Stats-backtrack-prod", ["date", "team_abbrev", "tgpg"], "2026-11-01", "2026-12-01", ["date"]
+    )
+    pairs = {(r["date"], r["team_abbrev"]) for _, r in rows.iterrows()}
+    assert ("2026-11-19", "TOR") in pairs and ("2026-11-19", "MTL") in pairs
+    assert ("2026-11-20", "TOR") in pairs and ("2026-11-20", "MTL") in pairs
+    assert not any(t == "NYR" for _, t in pairs)  # LIVE game skipped
+    assert all(rows["tgpg"].isna())  # rates stay NULL
+    n = mls.count("Team-Stats-backtrack-prod")
+    pdf.topup_team_rows(through)  # idempotent re-run
+    assert mls.count("Team-Stats-backtrack-prod") == n
+
+
+def test_features_rows_pages_past_the_1000_row_cap(monkeypatch):
+    """PostgREST caps a single read at 1,000 rows: the 2026-11-21 slate's
+    2,127 feature rows truncated silently and 506 live players lost their
+    features (Caufield/Thompson/Barkov reshuffled the picks). The reader
+    must page - and with the slate filter, fetch exactly the slate."""
+
+    class FakePager:
+        def __init__(self):
+            self.calls = []
+
+        def table(self, name):
+            assert name == "ML-Daily-Features-prod"
+            return self
+
+        def select(self, cols):
+            return self
+
+        def eq(self, col, val):
+            return self
+
+        def in_(self, col, ids):
+            self.ids = ids
+            return self
+
+        def range(self, lo, hi):
+            self.calls.append((lo, hi))
+            return self
+
+        def execute(self):
+            n_total = 2127
+            lo = self.calls[-1][0]
+            page = [
+                {
+                    "date": "2026-11-21",
+                    "player_id": 1000 + i,
+                    "club": "TOR",
+                    "opp": "MTL",
+                    "ppg": None,
+                    **{c: 0.5 for c in model.SHOT_FEATURES},
+                    **{c: 1.0 for c in pdf.STREAK_COLUMNS},
+                }
+                for i in range(lo, min(lo + 1000, n_total))
+            ]
+            if getattr(self, "ids", None) is not None:  # PostgREST honours the in_ filter
+                page = [r for r in page if r["player_id"] in set(self.ids)]
+            result = MagicMock()
+            result.data = page
+            return result
+
+    pager = FakePager()
+    monkeypatch.setattr(rdp, "SUPABASE_ADMIN_CLIENT", pager)
+    rows = rdp.features_rows("2026-11-21", player_ids=list(range(1000, 2127)))
+    assert len(rows) == 1127  # the in_-filtered tail that the first page used to lose
+    assert pager.calls[0] == (0, 999) and pager.calls[1] == (1000, 1999)

@@ -63,6 +63,10 @@ sys.path.insert(1, str(_here.parent))
 
 import backfill_missing_days  # noqa: E402  (same directory: the gap-fill, run against the materialized ledger)
 import ml_history_store  # noqa: E402
+
+# The team table the rest-day top-up writes (the Supabase name - on the
+# sqlite backend ml_history_store maps it to the local twin).
+LEDGER_TEAM_TABLE = "Team-Stats-backtrack-prod"
 import ml_ledger  # noqa: E402
 import model  # noqa: E402
 import nhl_client  # noqa: E402
@@ -209,6 +213,73 @@ def synthetic_team_rows(clubs, on_date):
     )
 
 
+def topup_team_rows(through_date):
+    """Append one Team-Stats row per club per FINAL game date the team
+    table has not covered yet, up through ``through_date``.
+
+    WHY: the team table stopped receiving rows when the backtrack publish
+    chain went dormant (last row 2026-10-24) - the daily kicks' backfill
+    writes player rows only. add_derived's club_rest_days / opp_rest_days
+    read (date, team_abbrev) pairs, so a stale table made every rest-day
+    feature ~30 for EVERYONE (both paths, since 2026-10-25).
+
+    The rates (tgpg/otga/otshga) stay NULL on purpose: nothing reads them
+    from these rows (the live snapshot carries today's rates), and
+    computing season-to-date team rates would need a full goals-ledger
+    rebuild. Rest days need only the schedule identity.
+
+    Idempotent by PK (season, team_abbrev, game_id); FINAL-state games
+    only, same guard as the player backfill."""
+    latest = ml_history_store.latest_date(LEDGER_TEAM_TABLE)
+    if latest is None:
+        print("WARNING: the team table is empty - skipping the team-row top-up", flush=True)
+        return
+    if latest >= through_date:
+        return
+    import backfill_missing_days as _bf  # noqa: PLC0415  (TERMINAL_GAME_STATES guard)
+
+    day = datetime.date.fromisoformat(latest) + datetime.timedelta(days=1)
+    final = datetime.date.fromisoformat(through_date)
+    written = 0
+    while day <= final:
+        date_str = day.isoformat()
+        payload = nhl_client.fetch_schedule(date_str)
+        rows = []
+        for week in payload.get("gameWeek") or []:
+            if week.get("date") != date_str:
+                continue
+            for game in week.get("games") or []:
+                if game.get("gameType") not in (nhl_client.REGULAR_SEASON, nhl_client.PLAYOFFS):
+                    continue
+                if str(game.get("gameState", "")).upper() not in _bf.TERMINAL_GAME_STATES:
+                    continue
+                home = (game.get("homeTeam") or {}).get("abbrev")
+                away = (game.get("awayTeam") or {}).get("abbrev")
+                if not home or not away or not game.get("id"):
+                    continue
+                season = ml_ledger.season_of(date_str)
+                for club in (home, away):
+                    rows.append(
+                        {
+                            "season": season,
+                            "team_abbrev": club,
+                            "team_name": (game.get("homeTeam") if club == home else game.get("awayTeam"))
+                            .get("placeName", {})
+                            .get("default"),
+                            "date": date_str,
+                            "game_id": int(game["id"]),
+                            "tgpg": None,
+                            "otga": None,
+                            "otshga": None,
+                        }
+                    )
+        if rows:
+            written += ml_history_store.upsert_rows(LEDGER_TEAM_TABLE, rows)
+        day += datetime.timedelta(days=1)
+    if written:
+        print(f"team-row top-up: {written} row(s) appended through {through_date}", flush=True)
+
+
 def compute_features(on_date, env, dry=False):
     """Steps 2-3: backfill + the exact frame pipeline over the working
     ledger. Returns the published-shape frame (or, when the slate is
@@ -225,6 +296,7 @@ def compute_features(on_date, env, dry=False):
                 "features below are computed over the history that exists (the run's own doctrine)",
                 flush=True,
             )
+        topup_team_rows(yesterday)
 
     clubs = slate_clubs(on_date)
     if not clubs:
