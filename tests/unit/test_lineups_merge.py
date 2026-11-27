@@ -354,21 +354,28 @@ def _teams():
     ]
 
 
+def _staged_players(mock_save):
+    """The players slice a lean handler staged for the next step to re-read."""
+    return mock_save.call_args[0][0]
+
+
+@patch("event_handler.save_working_set")
 @patch("event_handler.get_nhl_com_lineups")
 @patch("event_handler.get_rotowire_lineups")
-def test_handle_get_lineups_merges(mock_rotowire, mock_nhl):
+def test_handle_get_lineups_merges(mock_rotowire, mock_nhl, mock_save):
     mock_nhl.return_value = _nhl_games()
     mock_rotowire.return_value = []
 
     result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None)
 
-    assert result["statusCode"] == 200
-    assert result["players"][0]["lineup_unit"] == "F1"
+    assert result == {"statusCode": 200}
+    assert _staged_players(mock_save)[0]["lineup_unit"] == "F1"
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.get_nhl_com_lineups")
 @patch("event_handler.get_rotowire_lineups")
-def test_handle_get_lineups_passes_slate_and_target_date(mock_rotowire, mock_nhl):
+def test_handle_get_lineups_passes_slate_and_target_date(mock_rotowire, mock_nhl, mock_save):
     mock_nhl.return_value = _nhl_games()
     mock_rotowire.return_value = []
 
@@ -386,51 +393,61 @@ def test_handle_get_lineups_passes_slate_and_target_date(mock_rotowire, mock_nhl
     assert frozenset(("PHI", "NJD")) in kwargs["slate_pairs"]
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.get_nhl_com_lineups")
 @patch("event_handler.get_rotowire_lineups")
 @patch("event_handler.get_schedule_slate_pairs", return_value={frozenset(("PHI", "NJD"))})
-def test_handle_get_lineups_falls_back_to_schedule_without_teams(mock_schedule, mock_rotowire, mock_nhl):
+def test_handle_get_lineups_falls_back_to_schedule_without_teams(
+    mock_schedule, mock_rotowire, mock_nhl, mock_save
+):
     mock_nhl.return_value = _nhl_games()
     mock_rotowire.return_value = []
 
     result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}]}, None)
 
     mock_schedule.assert_called_once()
-    assert result["players"][0]["lineup_unit"] == "F1"
+    assert result == {"statusCode": 200}
+    assert _staged_players(mock_save)[0]["lineup_unit"] == "F1"
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.get_nhl_com_lineups", return_value=[])
 @patch("event_handler.get_rotowire_lineups")
-def test_handle_get_lineups_keeps_pp_when_forward_lines_are_skipped(mock_rotowire, mock_nhl):
+def test_handle_get_lineups_keeps_pp_when_forward_lines_are_skipped(mock_rotowire, mock_nhl, mock_save):
     """A stale-slate article yields no forward lines; RotoWire PP still applies."""
     mock_rotowire.return_value = _rotowire_games()
 
-    result = handle_get_lineups(
+    handle_get_lineups(
         {"players": [{"name": "Adam Fantilli", "team_name": "Columbus"}], "teams": _teams()}, None
     )
 
-    assert result["players"][0]["lineup_unit"] is None
-    assert result["players"][0]["pp_unit"] == "POWER PLAY #1"
+    staged = _staged_players(mock_save)
+    assert staged[0]["lineup_unit"] is None
+    assert staged[0]["pp_unit"] == "POWER PLAY #1"
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.get_nhl_com_lineups", return_value=[])
 @patch("event_handler.get_rotowire_lineups", return_value=[])
-def test_handle_get_lineups_survives_both_sources_failing(mock_rotowire, mock_nhl):
+def test_handle_get_lineups_survives_both_sources_failing(mock_rotowire, mock_nhl, mock_save):
     """A lineup outage must not fail the pipeline; status UNKNOWN carries the signal."""
     result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None)
 
-    assert result["statusCode"] == 200
-    assert result["players"][0]["lineup_status"] == "UNKNOWN"
+    assert result == {"statusCode": 200}
+    assert _staged_players(mock_save)[0]["lineup_status"] == "UNKNOWN"
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.get_nhl_com_lineups")
 @patch("event_handler.get_rotowire_lineups")
-def test_handle_get_lineups_skips_fetch_when_no_players(mock_rotowire, mock_nhl):
+def test_handle_get_lineups_skips_fetch_when_no_players(mock_rotowire, mock_nhl, mock_save):
+    """An empty roster stages nothing (a wipe would erase the working set)."""
     result = handle_get_lineups({"players": []}, None)
 
-    assert result == {"statusCode": 200, "players": []}
+    assert result == {"statusCode": 200}
     mock_nhl.assert_not_called()
     mock_rotowire.assert_not_called()
+    mock_save.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -451,24 +468,25 @@ def test_handle_get_lineups_survives_source_failures(nhl, rotowire):
     with (
         patch("event_handler.get_nhl_com_lineups", side_effect=nhl),
         patch("event_handler.get_rotowire_lineups", side_effect=rotowire),
+        patch("event_handler.save_working_set") as mock_save,
     ):
         result = handle_get_lineups(
             {"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None
         )
 
-    assert result["statusCode"] == 200
-    assert result["players"][0]["lineup_status"] == "UNKNOWN"
+    assert result == {"statusCode": 200}
+    assert _staged_players(mock_save)[0]["lineup_status"] == "UNKNOWN"
 
 
 @patch("event_handler.merge_lineup_data", side_effect=Exception("bad payload"))
+@patch("event_handler.save_working_set")
 @patch("event_handler.get_rotowire_lineups", return_value=[])
 @patch("event_handler.get_nhl_com_lineups", return_value=[])
-def test_handle_get_lineups_survives_merge_failure(mock_nhl, mock_rotowire, mock_merge):
+def test_handle_get_lineups_survives_merge_failure(mock_nhl, mock_rotowire, mock_save, mock_merge):
     """A malformed source payload degrades to UNKNOWN rows, not a failed step."""
-    result = handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None)
+    handle_get_lineups({"players": [{"name": "Owen Tippett", "team_name": "Flyers"}], "teams": _teams()}, None)
 
-    assert result["statusCode"] == 200
-    assert result["players"][0] == {
+    assert _staged_players(mock_save)[0] == {
         "name": "Owen Tippett",
         "team_name": "Flyers",
         "lineup_unit": None,

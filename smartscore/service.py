@@ -359,15 +359,14 @@ def get_published_picks():
     return get_picks_for_date(get_date())
 
 
-def save_working_set(players, teams, goalies=None):
-    """Persist today's lean slices so normal/last runs skip GetPlayers.
+def save_working_set(players=None, teams=None, goalies=None):
+    """Persist the given lean slices so the next step re-reads them.
 
-    Called by MakePredictions and GetTims: the enrichment tail (GetTims ->
-    SaveToDb -> UpdateHistory -> PublishToDb) re-reads the slices inside the
-    Lambdas so the fully enriched roster never round-trips through Step
-    Functions state, which hit the 256KB limit on heavy slates (15-game days).
-    The published Picks rows stay denormalized for the frontend; these slices
-    keep players, teams and goalies separated for the next run's state.
+    Called by every enrichment step (LoadWorkingSet .. GetTims): the slices
+    travel through the Working-* tables, never through Step Functions state,
+    which hit the 256KB limit on heavy slates (15-game days). The published
+    Picks rows stay denormalized for the frontend; these slices keep players,
+    teams and goalies separated.
     """
     put_working_set(get_date(), players, teams, goalies)
 

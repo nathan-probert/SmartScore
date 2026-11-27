@@ -98,12 +98,10 @@ def test_handle_check_completed_never_returns_the_roster(mock_check_db):
 
 @patch("event_handler.get_date")
 @patch("event_handler.load_working_set")
-def test_handle_load_working_set_returns_separated_slices(mock_load, mock_get_date):
-    """normal_run gets the lean players/teams slices plus the run status and date."""
+def test_handle_load_working_set_returns_a_lean_state(mock_load, mock_get_date):
+    """The roster never travels through state: LoadWorkingSet is an existence check."""
     mock_get_date.return_value = "2026-04-15"
-    players = [{"id": 1, "name": "Player 1", "team_id": 10, "stat": 0.8}]
-    teams = [{"team_id": 10, "opponent_id": 11}]
-    mock_load.return_value = (players, teams, [])
+    mock_load.return_value = ([{"id": 1, "team_id": 10, "stat": 0.8}], [{"team_id": 10}], [])
 
     result = handle_load_working_set({"status": "normal_run"}, {})
 
@@ -111,8 +109,6 @@ def test_handle_load_working_set_returns_separated_slices(mock_load, mock_get_da
         "statusCode": 200,
         "status": "normal_run",
         "date": "2026-04-15",
-        "players": players,
-        "teams": teams,
     }
     mock_load.assert_called_once()
 
@@ -349,10 +345,11 @@ def test_handle_make_predictions(mock_predictions, mock_save_working_set):
     mock_save_working_set.assert_called_once_with(output_players, teams, None)
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.merge_injury_data")
 @patch("event_handler.get_injury_data")
-def test_handle_get_injuries_with_data(mock_get_injuries, mock_merge):
-    """Test handling injury data retrieval and merging."""
+def test_handle_get_injuries_with_data(mock_get_injuries, mock_merge, mock_save):
+    """Injury data is merged and staged; the returned state stays lean."""
     players = [
         {"name": "Player 1", "stat": 0.8},
         {"name": "Player 2", "stat": 0.9},
@@ -373,29 +370,35 @@ def test_handle_get_injuries_with_data(mock_get_injuries, mock_merge):
     event = {"players": players}
     result = handle_get_injuries(event, {})
 
-    assert result == {"statusCode": 200, "players": merged_players}
+    assert result == {"statusCode": 200}
     mock_get_injuries.assert_called_once()
     mock_merge.assert_called_once_with(players, injuries)
+    # Staged for GetGoalies to re-read instead of travelling through state.
+    mock_save.assert_called_once_with(merged_players, None, None)
 
 
+@patch("event_handler.load_working_set", return_value=([], [], []))
+@patch("event_handler.save_working_set")
 @patch("event_handler.merge_injury_data")
 @patch("event_handler.get_injury_data")
-def test_handle_get_injuries_empty_players(mock_get_injuries, mock_merge):
-    """Test handling injury data with empty player list."""
+def test_handle_get_injuries_empty_players(mock_get_injuries, mock_merge, mock_save, mock_load):
+    """A missing/empty roster re-reads the working set and stages nothing."""
     mock_get_injuries.return_value = []
     mock_merge.return_value = []
 
-    event = {}  # No players key
-    result = handle_get_injuries(event, {})
+    result = handle_get_injuries({}, {})  # lean pipeline state: no players key
 
-    assert result == {"statusCode": 200, "players": []}
+    assert result == {"statusCode": 200}
     mock_get_injuries.assert_called_once()
     mock_merge.assert_called_once_with([], [])
+    # An empty roster must never wipe the Working-Players table.
+    mock_save.assert_not_called()
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.merge_injury_data")
 @patch("event_handler.get_injury_data")
-def test_handle_get_injuries_no_injuries_found(mock_get_injuries, mock_merge):
+def test_handle_get_injuries_no_injuries_found(mock_get_injuries, mock_merge, mock_save):
     """Test when no injuries are found."""
     players = [
         {"name": "Player 1", "stat": 0.8},
@@ -411,14 +414,16 @@ def test_handle_get_injuries_no_injuries_found(mock_get_injuries, mock_merge):
     event = {"players": players}
     result = handle_get_injuries(event, {})
 
-    assert result == {"statusCode": 200, "players": healthy_players}
+    assert result == {"statusCode": 200}
     mock_merge.assert_called_once_with(players, [])
+    mock_save.assert_called_once_with(healthy_players, None, None)
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.build_goalies_with_team_id")
 @patch("event_handler.enrich_starting_goalies")
-def test_handle_get_goalies_with_data(mock_enrich, mock_build):
-    """Test goalies stay relational instead of duplicating onto every skater."""
+def test_handle_get_goalies_with_data(mock_enrich, mock_build, mock_save):
+    """Goalies stay relational, get staged, and the returned state stays lean."""
     players = [
         {"name": "Player 1", "team_id": 1, "stat": 0.8},
         {"name": "Player 2", "team_id": 2, "stat": 0.9},
@@ -433,23 +438,26 @@ def test_handle_get_goalies_with_data(mock_enrich, mock_build):
     event = {"players": players, "teams": teams}
     result = handle_get_goalies(event, {})
 
-    assert result == {"statusCode": 200, "players": players, "teams": teams, "goalies": goalies}
+    assert result == {"statusCode": 200}
     mock_enrich.assert_called_once()
     mock_build.assert_called_once_with(starters, teams)
+    mock_save.assert_called_once_with(players, teams, goalies)
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.build_goalies_with_team_id")
 @patch("event_handler.enrich_starting_goalies")
-def test_handle_get_goalies_empty_players(mock_enrich, mock_build):
-    """Test handling goalie data with empty player list."""
+def test_handle_get_goalies_empty_players(mock_enrich, mock_build, mock_save):
+    """An empty roster stages nothing."""
     mock_enrich.return_value = []
     mock_build.return_value = []
 
     event = {"players": [], "teams": []}
     result = handle_get_goalies(event, {})
 
-    assert result == {"statusCode": 200, "players": [], "teams": [], "goalies": []}
+    assert result == {"statusCode": 200}
     mock_build.assert_called_once_with([], [])
+    mock_save.assert_not_called()
 
 
 def _roster() -> list:
