@@ -397,9 +397,7 @@ def test_handle_get_lineups_passes_slate_and_target_date(mock_rotowire, mock_nhl
 @patch("event_handler.get_nhl_com_lineups")
 @patch("event_handler.get_rotowire_lineups")
 @patch("event_handler.get_schedule_slate_pairs", return_value={frozenset(("PHI", "NJD"))})
-def test_handle_get_lineups_falls_back_to_schedule_without_teams(
-    mock_schedule, mock_rotowire, mock_nhl, mock_save
-):
+def test_handle_get_lineups_falls_back_to_schedule_without_teams(mock_schedule, mock_rotowire, mock_nhl, mock_save):
     mock_nhl.return_value = _nhl_games()
     mock_rotowire.return_value = []
 
@@ -417,9 +415,7 @@ def test_handle_get_lineups_keeps_pp_when_forward_lines_are_skipped(mock_rotowir
     """A stale-slate article yields no forward lines; RotoWire PP still applies."""
     mock_rotowire.return_value = _rotowire_games()
 
-    handle_get_lineups(
-        {"players": [{"name": "Adam Fantilli", "team_name": "Columbus"}], "teams": _teams()}, None
-    )
+    handle_get_lineups({"players": [{"name": "Adam Fantilli", "team_name": "Columbus"}], "teams": _teams()}, None)
 
     staged = _staged_players(mock_save)
     assert staged[0]["lineup_unit"] is None

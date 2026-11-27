@@ -315,9 +315,7 @@ def test_injury_fetch_failure_preserves_existing_fields(mock_get, mock_merge, mo
 
     result = handle_get_injuries({"players": players, "status": "normal_run"}, {})
 
-    assert mock_save.call_args[0][0] == [
-        {"name": "Player 1", "injury_status": "INJURED", "injury_desc": "Upper body"}
-    ]
+    assert mock_save.call_args[0][0] == [{"name": "Player 1", "injury_status": "INJURED", "injury_desc": "Upper body"}]
     assert result == {"statusCode": 200, "status": "normal_run"}
     mock_merge.assert_not_called()
 
