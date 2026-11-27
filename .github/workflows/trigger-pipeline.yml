@@ -1,0 +1,73 @@
+name: Trigger Player Processing Pipeline
+
+# Manual ops trigger for the PlayerProcessingPipeline state machine, for
+# re-running a day's picks (e.g. after a mid-chain failure like the 256KB
+# GetTims overflow) without waiting for the next EventBridge game-start
+# restart. Uses the same AWS credentials as the deploy workflow; the run
+# output/history is visible in Step Functions and CloudWatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deployed environment suffix"
+        required: false
+        default: "prod"
+        type: choice
+        options:
+          - prod
+          - dev
+      execution_input:
+        description: "JSON input for the execution ({} is the norm; CheckCompleted decides first/normal/last_run)"
+        required: false
+        default: "{}"
+
+concurrency:
+  group: trigger-pipeline-${{ github.event.inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Start execution
+        id: start
+        env:
+          SFN_INPUT: ${{ github.event.inputs.execution_input }}
+          SFN_ARN: arn:aws:states:us-east-1:${{ secrets.AWS_ACCOUNT_ID }}:stateMachine:PlayerProcessingPipeline-${{ github.event.inputs.environment }}
+        run: |
+          EXECUTION_ARN=$(aws stepfunctions start-execution \
+            --state-machine-arn "$SFN_ARN" \
+            --input "$SFN_INPUT" \
+            --query 'executionArn' --output text)
+          echo "execution_arn=$EXECUTION_ARN" >> "$GITHUB_OUTPUT"
+          echo "Started: $EXECUTION_ARN"
+
+      - name: Watch execution to completion
+        env:
+          EXECUTION_ARN: ${{ steps.start.outputs.execution_arn }}
+        run: |
+          # first_run runs the full chain (backfill + GetPlayers sub-machine +
+          # enrichment); allow up to 20 minutes before giving up watching.
+          for i in $(seq 1 40); do
+            STATUS=$(aws stepfunctions describe-execution \
+              --execution-arn "$EXECUTION_ARN" \
+              --query 'status' --output text)
+            echo "[$i/40] $STATUS"
+            case "$STATUS" in
+              SUCCEEDED|FAILED|TIMED_OUT|ABORTED)
+                aws stepfunctions describe-execution --execution-arn "$EXECUTION_ARN"
+                exit $([ "$STATUS" = "SUCCEEDED" ] && echo 0 || echo 1)
+                ;;
+            esac
+            sleep 30
+          done
+          echo "Execution did not finish within 20 minutes: $EXECUTION_ARN"
+          exit 1
