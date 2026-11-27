@@ -71,20 +71,52 @@ def test_put_working_set_writes_both_slices(mock_request):
 
 
 @patch("utility.exponential_backoff_supabase_request")
+def test_put_working_set_writes_goalies_slice(mock_request):
+    """A goalie slice lands in Working-Goalies keyed by team_id."""
+    players = [{"id": 1, "team_id": 10}]
+    teams = [{"team_id": 10}]
+    goalies = [{"team_id": 10, "goalie_name": "Starter"}, {"goalie_name": "No slate match"}]
+
+    put_working_set("2026-10-11", players, teams, goalies)
+
+    assert mock_request.call_count == 3
+    goalie_call = mock_request.call_args_list[2]
+    assert goalie_call.args == (f"Working-Goalies-{ENV}",)
+    # Starters without a team_id are ignored by the DB join, so they are not staged.
+    assert goalie_call.kwargs["json_data"] == [
+        {"date": "2026-10-11", "team_id": 10, "data": goalies[0]},
+    ]
+
+
+@patch("utility.exponential_backoff_supabase_request")
+def test_put_working_set_none_goalies_skips_the_goalies_table(mock_request):
+    """The None sentinel (failed fetch) must not wipe the previous goalie write."""
+    put_working_set("2026-10-11", [{"id": 1}], [], None)
+
+    assert [call.args[0] for call in mock_request.call_args_list] == [
+        f"Working-Players-{ENV}",
+        f"Working-Teams-{ENV}",
+    ]
+
+
+@patch("utility.exponential_backoff_supabase_request")
 def test_fetch_working_set_unwraps_jsonb_payloads(mock_request):
     """The stored data blobs are the lean dicts verbatim."""
     mock_request.side_effect = [
         [{"date": "2026-10-11", "player_id": 1, "data": {"id": 1, "team_id": 10}}],
         [{"date": "2026-10-11", "team_id": 10, "data": {"team_id": 10}}],
+        [],
     ]
 
-    players, teams = fetch_working_set("2026-10-11")
+    players, teams, goalies = fetch_working_set("2026-10-11")
 
     assert players == [{"id": 1, "team_id": 10}]
     assert teams == [{"team_id": 10}]
+    assert goalies == []
     assert mock_request.call_args_list[0].args == (f"Working-Players-{ENV}",)
     assert mock_request.call_args_list[0].kwargs == {"eq": ("date", "2026-10-11")}
     assert mock_request.call_args_list[1].args == (f"Working-Teams-{ENV}",)
+    assert mock_request.call_args_list[2].args == (f"Working-Goalies-{ENV}",)
 
 
 @patch("utility.exponential_backoff_request")

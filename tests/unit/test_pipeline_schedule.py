@@ -219,7 +219,7 @@ def _run_chain(status):
     """Drive the real handlers in ASL order with mocked external sources."""
     players = [dict(player) for player in _PLAYERS]
     with (
-        patch("event_handler.load_working_set", return_value=(players, _TEAMS)),
+        patch("event_handler.load_working_set", return_value=(players, _TEAMS, [])),
         patch("event_handler.save_player_snapshots") as save_snapshot,
         patch("event_handler.save_working_set"),
         patch("event_handler.get_date", return_value="2026-04-15"),
