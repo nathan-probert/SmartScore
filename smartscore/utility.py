@@ -155,23 +155,25 @@ def get_picks_for_date(date):
     return get_today_db(eq=("date", date))
 
 
-def put_working_set(date, players, teams, goalies=None):
+def put_working_set(date, players=None, teams=None, goalies=None):
     """Persist the day's lean slices to the Working-* tables.
 
     Full wipe then upsert, matching the Picks writer: these are single-day
     snapshots keyed per (date, player_id) / (date, team_id) via the JSONB
     payload, so a same-day re-run refreshes in place.
 
-    ``goalies`` follows the pipeline's ``None`` sentinel: a failed goalie fetch
-    skips the goalies table entirely (no wipe) so the previous write is
-    preserved instead of erased.
+    Only the slices provided are staged; ``None`` leaves that table's previous
+    write untouched. In particular the goalies ``None`` sentinel (failed
+    goalie fetch) skips the goalies table so the previous write is preserved
+    instead of erased.
     """
-    slices = [
-        # Lean players carry the NHL id under "id" (see merge_players_and_teams);
-        # the row-level player_id column exists only for the table's unique key.
-        (f"Working-Players-{ENV}", players, "player_id", "id"),
-        (f"Working-Teams-{ENV}", teams, "team_id", "team_id"),
-    ]
+    slices = []
+    # Lean players carry the NHL id under "id" (see merge_players_and_teams);
+    # the row-level player_id column exists only for the table's unique key.
+    if players is not None:
+        slices.append((f"Working-Players-{ENV}", players, "player_id", "id"))
+    if teams is not None:
+        slices.append((f"Working-Teams-{ENV}", teams, "team_id", "team_id"))
     if goalies is not None:
         # The denormalizer joins goalies through numeric team_id (one starter
         # per team) and ignores starters without one, so those are not staged.

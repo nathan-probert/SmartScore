@@ -290,35 +290,44 @@ def test_missing_status_is_an_explicit_error(handler, event):
         handler(event, {})
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.get_rotowire_lineups", return_value=[])
 @patch("event_handler.get_nhl_com_lineups", return_value=[])
-def test_empty_lineup_fetch_preserves_existing_projection(mock_nhl, mock_rotowire):
+def test_empty_lineup_fetch_preserves_existing_projection(mock_nhl, mock_rotowire, mock_save):
     """S1: a transient empty fetch must not overwrite good lineup data."""
     players = [dict(_PLAYERS[0])]
 
     result = handle_get_lineups({"players": players, "status": "normal_run"}, {})
 
-    assert result["players"][0]["lineup_unit"] == "F1"
-    assert result["players"][0]["pp_unit"] == "POWER PLAY #1"
-    assert result["players"][0]["lineup_status"] == "PROJECTED"
-    assert result["status"] == "normal_run"
+    staged = mock_save.call_args[0][0]
+    assert staged[0]["lineup_unit"] == "F1"
+    assert staged[0]["pp_unit"] == "POWER PLAY #1"
+    assert staged[0]["lineup_status"] == "PROJECTED"
+    assert result == {"statusCode": 200, "status": "normal_run"}
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.merge_injury_data")
 @patch("event_handler.get_injury_data", return_value=None)
-def test_injury_fetch_failure_preserves_existing_fields(mock_get, mock_merge):
+def test_injury_fetch_failure_preserves_existing_fields(mock_get, mock_merge, mock_save):
     """S2: a failed injury fetch is not the same as "everyone healthy"."""
     players = [{"name": "Player 1", "injury_status": "INJURED", "injury_desc": "Upper body"}]
 
     result = handle_get_injuries({"players": players, "status": "normal_run"}, {})
 
-    assert result["players"] == [{"name": "Player 1", "injury_status": "INJURED", "injury_desc": "Upper body"}]
+    assert mock_save.call_args[0][0] == [{"name": "Player 1", "injury_status": "INJURED", "injury_desc": "Upper body"}]
+    assert result == {"statusCode": 200, "status": "normal_run"}
     mock_merge.assert_not_called()
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.enrich_starting_goalies", return_value=None)
-def test_goalie_fetch_failure_preserves_existing_goalies(mock_enrich):
-    """S2: a failed goalie fetch passes the previous goalies through."""
+def test_goalie_fetch_failure_preserves_existing_goalies(mock_enrich, mock_save):
+    """S2: a failed goalie fetch must not erase the staged goalie slice.
+
+    An empty roster stages nothing at all, so the Working-Goalies wipe never
+    runs and the morning slice survives for the publish.
+    """
     goalies = [{"team_id": 10, "goalie_name": "Starter", "status": "Confirmed"}]
 
     result = handle_get_goalies(
@@ -326,8 +335,8 @@ def test_goalie_fetch_failure_preserves_existing_goalies(mock_enrich):
         {},
     )
 
-    assert result["goalies"] == goalies
-    assert result["status"] == "normal_run"
+    mock_save.assert_not_called()
+    assert result == {"statusCode": 200, "status": "normal_run"}
 
 
 def test_failed_goalie_fetch_leaves_opp_columns_absent():

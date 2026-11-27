@@ -136,16 +136,29 @@ def handle_check_completed(event, context):
     return {"statusCode": 200, "status": status}
 
 
+def _enrichment_slices(event):
+    """Players/teams/goalies for an enrichment step.
+
+    Pipeline states are lean: the slices come from the Working-* tables
+    (staged by the previous step). An event that carries ``players`` explicitly
+    (direct invocations, first_run entry from GetPlayers) is honoured instead.
+    """
+    if "players" in event:
+        return event.get("players"), event.get("teams"), event.get("goalies")
+    return load_working_set()
+
+
 @lambda_handler_error_responder
 def handle_load_working_set(event, context):
     """
-    Loads today's lean players/teams slices for a normal_run or last_run.
+    Verifies today's working set exists for a normal_run or last_run.
 
     Replaces the GetPlayers sub-machine on those branches: the morning's
-    roster, stats and predictions are reused from the Working-* tables, while
-    the downstream injuries/goalies/lineups/tims steps re-gather their own
-    data fresh. The state carries the same separated slices as first_run --
-    never denormalized rows, which blew the Step Functions 256KB limit.
+    roster, stats and predictions stay in the Working-* tables and the
+    enrichment steps re-read them inside their Lambdas, so this state is
+    status-only -- the fully enriched roster is far over the Step Functions
+    256KB state limit. ``load_working_set`` raises loudly when nothing was
+    persisted for today (e.g. the day's first_run predates this feature).
 
     Args:
         event (dict): The status-only state from CheckCompleted; ``status`` is
@@ -156,22 +169,12 @@ def handle_load_working_set(event, context):
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
             - "status" (str): The run status, passed through.
-            - "players" (list): Lean player data for today.
-            - "teams" (list): Lean team data for today.
+            - "date" (str): Today's pick date.
     """
     status = _require_status(event, "LoadWorkingSet")
-    # Goalies are not carried here: normal_run re-gathers them fresh in
-    # GetGoalies, and when that fetch fails GetTims' None sentinel skips the
-    # goalies-table wipe, so the morning slice survives for the publish.
-    players, teams, _goalies = load_working_set()
+    load_working_set()
 
-    return {
-        "statusCode": 200,
-        "status": status,
-        "date": get_date(),
-        "players": players,
-        "teams": teams,
-    }
+    return {"statusCode": 200, "status": status, "date": get_date()}
 
 
 @lambda_handler_error_responder
@@ -247,12 +250,12 @@ def handle_make_predictions(event, context):
             - "statusCode" (int): HTTP status code.
             - "status" (str): The run status, passed through for GetTims.
     """
-    players = event.get("players") or []
+    players, teams, goalies = _enrichment_slices(event)
     if players:
-        players = make_predictions_teams(players, event.get("teams"))
+        players = make_predictions_teams(players, teams)
         # Stage the enriched set now. goalies=None (failed fetch) skips the
         # goalies-table wipe and preserves the morning slice.
-        save_working_set(players, event.get("teams") or [], event.get("goalies"))
+        save_working_set(players, teams, goalies)
 
     output = {"statusCode": 200}
     # Keep the status for GetTims/CheckSaveHistory: MakePredictions sits between
@@ -266,11 +269,11 @@ def handle_get_tims(event, context):
     """
     Retrieve Tim Horton's data for today.
 
-    The fully enriched set is persisted to the Working-* tables here (and by
-    MakePredictions, this state's lean input source); SaveToDb, UpdateHistory
-    and PublishToDb re-read the slices inside their Lambdas so the roster
-    never round-trips through Step Functions state -- on heavy slates
-    (15-game days) that hit the 256KB limit at this step.
+    The fully enriched set is staged to the Working-* tables by every step of
+    the enrichment chain; SaveToDb, UpdateHistory and PublishToDb re-read the
+    slices inside their Lambdas so the roster never round-trips through Step
+    Functions state -- on heavy slates (15-game days) that hit the 256KB
+    limit at this step.
 
     Args:
         event (dict): A dictionary of all player data.
@@ -289,17 +292,11 @@ def handle_get_tims(event, context):
             - "status" (str): The run status, passed through.
     """
     status = _require_status(event, "GetTims")
-
-    if "players" in event:
-        players = event.get("players")
-        teams = event.get("teams")
-        goalies = event.get("goalies")
-    else:
-        # MakePredictions staged the enriched set and returned a lean state.
-        players, teams, goalies = load_working_set()
+    players, teams, goalies = _enrichment_slices(event)
 
     players = get_tims(players, allow_empty=status == "last_run")
-    save_working_set(players, teams or [], goalies)
+    if players:
+        save_working_set(players, teams or [], goalies)
 
     return {"statusCode": 200, "date": get_date(), "status": status}
 
@@ -485,17 +482,21 @@ def handle_get_injuries(event, context):
     """
     Scrape current injury data from RotoWire.
 
-    Injury fields stay denormalized per skater (2 small fields); ``teams``
-    and ``goalies`` pass through untouched.
+    Injury fields stay denormalized per skater (2 small fields); the enriched
+    roster is staged to the Working-* tables and the returned state is lean:
+    GetGoalies re-reads the slices instead of receiving the roster through
+    Step Functions state, which hit the 256KB limit on heavy slates.
 
     Args:
         event (dict): A dictionary containing player data.
         context (dict): Unused Lambda context.
 
     Returns:
-        dict: A dictionary containing injury data.
+        dict: A dictionary containing:
+            - "statusCode" (int): HTTP status code.
+            - "status" (str): The run status, passed through.
     """
-    players = event.get("players", [])
+    players, teams, goalies = _enrichment_slices(event)
 
     injuries = get_injury_data()
     if injuries is None:
@@ -506,15 +507,14 @@ def handle_get_injuries(event, context):
     else:
         merged_info = merge_injury_data(players, injuries)
 
-    output = {
-        "statusCode": 200,
-        "players": merged_info,
-    }
+    # Stage the slices for the next step (GetGoalies owns the goalies slice;
+    # whatever is staged here is simply re-staged until it overwrites). An
+    # empty roster must never wipe the Working-Players table.
+    if merged_info:
+        save_working_set(merged_info, teams, goalies)
+
+    output = {"statusCode": 200}
     _carry_status(output, event)
-    if "teams" in event:
-        output["teams"] = event["teams"]
-    if "goalies" in event:
-        output["goalies"] = event["goalies"]
     return output
 
 
@@ -530,17 +530,20 @@ def handle_get_goalies(event, context):
     state limit. The opponent join (via ``teams[].opponent_id``) happens only
     inside the final DB lambdas. No NHL schedule fetch is needed here.
 
+    The slices are staged to the Working-* tables and the returned state is
+    lean: GetLineups re-reads them instead of receiving the roster through
+    Step Functions state.
+
     Args:
         event (dict): A dictionary containing relational players + teams.
         context (dict): Unused Lambda context.
 
     Returns:
-        dict: players (lean) + teams + goalies. ``goalies`` is ``None`` when the
-        fetch failed, which downstream denormalizers read as "leave the
-        opp_goalie_* columns untouched".
+        dict: A dictionary containing:
+            - "statusCode" (int): HTTP status code.
+            - "status" (str): The run status, passed through.
     """
-    players = event.get("players", [])
-    teams = event.get("teams", [])
+    players, teams, prior_goalies = _enrichment_slices(event)
 
     starters = enrich_starting_goalies()
     if starters is None:
@@ -548,16 +551,14 @@ def handle_get_goalies(event, context):
         # opp_goalie_*=None/UNKNOWN. ``None`` is the sentinel downstream
         # denormalizers use to leave those columns untouched.
         logger.error("Starting goalie fetch failed; preserving existing goalie data")
-        goalies = event.get("goalies")
+        goalies = prior_goalies
     else:
         goalies = build_goalies_with_team_id(starters, teams)
 
-    output = {
-        "statusCode": 200,
-        "players": players,
-        "teams": teams,
-        "goalies": goalies,
-    }
+    if players:
+        save_working_set(players, teams, goalies)
+
+    output = {"statusCode": 200}
     _carry_status(output, event)
     return output
 
@@ -574,22 +575,27 @@ def handle_get_lineups(event, context):
     prior values get ``lineup_status: UNKNOWN``) rather than failing the
     pipeline or erasing the morning projection.
 
+    The slices are staged to the Working-* tables and the returned state is
+    lean: MakePredictions re-reads them instead of receiving the roster
+    through Step Functions state.
+
     Args:
         event (dict): A dictionary containing player data.
         context (dict): Unused Lambda context.
 
     Returns:
-        dict: A dictionary containing player data with lineup fields.
+        dict: A dictionary containing:
+            - "statusCode" (int): HTTP status code.
+            - "status" (str): The run status, passed through.
     """
-    players = event.get("players", [])
+    players, teams, goalies = _enrichment_slices(event)
 
     def _passthrough(payload_players):
-        output = {"statusCode": 200, "players": payload_players}
+        # Stage and return lean: the next step re-reads the staged slices.
+        if payload_players:
+            save_working_set(payload_players, teams, goalies)
+        output = {"statusCode": 200}
         _carry_status(output, event)
-        if "teams" in event:
-            output["teams"] = event["teams"]
-        if "goalies" in event:
-            output["goalies"] = event["goalies"]
         return output
 
     if not players:
@@ -601,7 +607,7 @@ def handle_get_lineups(event, context):
     # The NHL.com article is edited in place and can lag a day, so it is filtered
     # against the target date's actual schedule; RotoWire carries today's games.
     date = event.get("date") or get_date()
-    slate_pairs = build_slate_pairs(event.get("teams"))
+    slate_pairs = build_slate_pairs(teams)
     if not slate_pairs:
         slate_pairs = get_schedule_slate_pairs(date)
 
@@ -627,7 +633,7 @@ def handle_get_lineups(event, context):
     )
 
     try:
-        merged_info = merge_lineup_data(players, nhl_games, rotowire_games, teams=event.get("teams"))
+        merged_info = merge_lineup_data(players, nhl_games, rotowire_games, teams=teams)
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error merging lineup data: {e}")
         return _passthrough(_ensure_lineup_fields(players))
