@@ -113,12 +113,13 @@
         },
         "MakePredictions": {
             "Type": "Task",
+            "Comment": "Stages the enriched set (players with stat + teams + goalies) to the Working-* tables and returns a lean status-only state: GetTims re-reads the slices instead of receiving the full roster through Step Functions state (256KB limit on heavy slates).",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:MakePredictions-${ENV}",
             "Next": "GetTims"
         },
         "GetTims": {
             "Type": "Task",
-            "Comment": "First/normal runs archive AND publish via SaveToDb (PR #134 made normal_run archive too, and PR #136 made last_run exit at CheckLastRun), so the former CheckInitialRun Choice state had all three branches going to the same SaveToDb and was removed. CheckSaveHistory still branches on $.status.",
+            "Comment": "First/normal runs archive AND publish via SaveToDb (PR #134 made normal_run archive too, and PR #136 made last_run exit at CheckLastRun), so the former CheckInitialRun Choice state had all three branches going to the same SaveToDb and was removed. CheckSaveHistory still branches on $.status. GetTims stages the fully enriched set (players with tims + teams + goalies) to the Working-* tables and returns a lean status/date state; MakePredictions stages the set before it for the same reason, so the roster never round-trips through state (256KB limit on 15-game slates). SaveToDb/UpdateHistory/PublishToDb re-read the slices inside their Lambdas.",
             "Resource": "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:GetTims-${ENV}",
             "Next": "SaveToDb"
         },

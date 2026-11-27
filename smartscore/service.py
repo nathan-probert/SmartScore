@@ -359,26 +359,29 @@ def get_published_picks():
     return get_picks_for_date(get_date())
 
 
-def save_working_set(players, teams):
+def save_working_set(players, teams, goalies=None):
     """Persist today's lean slices so normal/last runs skip GetPlayers.
 
-    Called at the end of the first_run chain (SaveToDb); the published Picks
-    rows stay denormalized for the frontend, but these slices keep players
-    and teams separated for the next run's state.
+    Called by MakePredictions and GetTims: the enrichment tail (GetTims ->
+    SaveToDb -> UpdateHistory -> PublishToDb) re-reads the slices inside the
+    Lambdas so the fully enriched roster never round-trips through Step
+    Functions state, which hit the 256KB limit on heavy slates (15-game days).
+    The published Picks rows stay denormalized for the frontend; these slices
+    keep players, teams and goalies separated for the next run's state.
     """
-    put_working_set(get_date(), players, teams)
+    put_working_set(get_date(), players, teams, goalies)
 
 
 def load_working_set():
-    """Today's lean (players, teams) slices, for normal_run/last_run re-entry.
+    """Today's lean (players, teams, goalies) slices, for re-entry.
 
     Raises when nothing was persisted (e.g. the day's first_run predates this
     feature): silently rebuilding would double-run the first_run tail.
     """
-    players, teams = fetch_working_set(get_date())
+    players, teams, goalies = fetch_working_set(get_date())
     if not players:
         raise RuntimeError(f"No working set stored for {get_date()}; wipe today's Picks rows to force a first_run")
-    return players, teams
+    return players, teams, goalies
 
 
 def merge_players_and_teams(team_payloads):

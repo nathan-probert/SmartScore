@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 from event_handler import (
     handle_check_completed,
     handle_emails,
@@ -14,53 +16,42 @@ from event_handler import (
 )
 
 
-@patch("event_handler.save_working_set")
 @patch("event_handler.save_player_snapshots")
-def test_handle_save_players_archives_with_date(mock_save, mock_working_set):
+def test_handle_save_players_archives_with_date(mock_save):
     """Players are archived under the run's date."""
     players = [{"id": 1, "name": "Player 1", "tims": 1}]
 
     result = handle_save_players({"players": players, "date": "2026-04-15", "status": "first_run"}, {})
 
-    assert result == {"statusCode": 200, "status": "first_run", "players": players}
+    assert result == {"statusCode": 200, "status": "first_run"}
     mock_save.assert_called_once_with(players, date="2026-04-15")
 
 
 @patch("event_handler.get_date")
-@patch("event_handler.save_working_set")
+@patch("event_handler.load_working_set")
 @patch("event_handler.save_player_snapshots")
-def test_handle_save_players_falls_back_to_today(mock_save, mock_working_set, mock_get_date):
-    """A normal_run working set carries no date; the handler supplies today's."""
+def test_handle_save_players_loads_the_working_set(mock_save, mock_load, mock_get_date):
+    """A pipeline state is lean: the roster is re-read from the Working-* tables."""
     mock_get_date.return_value = "2026-04-16"
     players = [{"id": 1, "name": "Player 1", "team_id": 10}]
+    teams = [{"team_id": 10, "opponent_id": 11}]
+    mock_load.return_value = (players, teams, [])
 
-    handle_save_players({"players": players, "status": "normal_run"}, {})
+    result = handle_save_players({"status": "normal_run"}, {})
 
-    mock_save.assert_called_once_with(players, date="2026-04-16")
-    mock_working_set.assert_called_once_with(players, [])
+    saved = mock_save.call_args[0][0]
+    assert saved[0]["id"] == 1
+    assert mock_save.call_args.kwargs["date"] == "2026-04-16"
+    assert result == {"statusCode": 200, "status": "normal_run"}
 
 
-@patch("event_handler.save_working_set")
 @patch("event_handler.save_player_snapshots")
-def test_handle_save_players_skips_upload_when_empty(mock_save, mock_working_set):
+def test_handle_save_players_skips_upload_when_empty(mock_save):
     """An empty player list must not hit Supabase (an empty upsert is a no-op error)."""
     result = handle_save_players({"players": [], "date": "2026-04-15", "status": "first_run"}, {})
 
-    assert result == {"statusCode": 200, "status": "first_run", "players": []}
+    assert result == {"statusCode": 200, "status": "first_run"}
     mock_save.assert_not_called()
-    mock_working_set.assert_not_called()
-
-
-@patch("event_handler.save_working_set")
-@patch("event_handler.save_player_snapshots")
-def test_handle_save_players_persists_working_set(mock_save, mock_working_set):
-    """SaveToDb also persists the lean slices for normal_run re-entry."""
-    players = [{"id": 1, "name": "Player 1", "team_id": 10}]
-    teams = [{"team_id": 10, "opponent_id": 11}]
-
-    handle_save_players({"players": players, "teams": teams, "date": "2026-04-15", "status": "first_run"}, {})
-
-    mock_working_set.assert_called_once_with(players, teams)
 
 
 @patch("event_handler.check_db_for_date")
@@ -112,7 +103,7 @@ def test_handle_load_working_set_returns_separated_slices(mock_load, mock_get_da
     mock_get_date.return_value = "2026-04-15"
     players = [{"id": 1, "name": "Player 1", "team_id": 10, "stat": 0.8}]
     teams = [{"team_id": 10, "opponent_id": 11}]
-    mock_load.return_value = (players, teams)
+    mock_load.return_value = (players, teams, [])
 
     result = handle_load_working_set({"status": "normal_run"}, {})
 
@@ -129,15 +120,17 @@ def test_handle_load_working_set_returns_separated_slices(mock_load, mock_get_da
 @patch("event_handler.load_working_set")
 def test_handle_load_working_set_passes_status_through(mock_load):
     """last_run must survive to CheckSaveHistory's routing."""
-    mock_load.return_value = ([{"id": 1}], [{"team_id": 10}])
+    mock_load.return_value = ([{"id": 1}], [{"team_id": 10}], [])
 
     result = handle_load_working_set({"status": "last_run"}, {})
 
     assert result["status"] == "last_run"
 
 
+@patch("event_handler.get_date")
+@patch("event_handler.save_working_set")
 @patch("event_handler.get_tims")
-def test_handle_get_tims_last_run_tolerates_empty_read(mock_get_tims):
+def test_handle_get_tims_last_run_tolerates_empty_read(mock_get_tims, mock_save_working_set, mock_get_date):
     """The day's last run must not fail when the picks API is locked."""
     players = [{"id": 1, "tims": 0}]
     mock_get_tims.return_value = players
@@ -145,17 +138,42 @@ def test_handle_get_tims_last_run_tolerates_empty_read(mock_get_tims):
     handle_get_tims({"players": players, "status": "last_run"}, {})
 
     mock_get_tims.assert_called_once_with(players, allow_empty=True)
+    # The enriched set is staged for the DB-write tail instead of round-tripping
+    # through Step Functions state (256KB limit).
+    mock_save_working_set.assert_called_once_with(players, [], None)
 
 
+@patch("event_handler.get_date")
+@patch("event_handler.save_working_set")
 @patch("event_handler.get_tims")
-def test_handle_get_tims_normal_run_stays_strict(mock_get_tims):
+def test_handle_get_tims_normal_run_stays_strict(mock_get_tims, mock_save_working_set, mock_get_date):
     """Regular runs still fail loudly on a bad tims read so they retry."""
     players = [{"id": 1, "tims": 1}]
     mock_get_tims.return_value = players
 
-    handle_get_tims({"players": players, "status": "normal_run"}, {})
+    result = handle_get_tims({"players": players, "status": "normal_run"}, {})
 
     mock_get_tims.assert_called_once_with(players, allow_empty=False)
+    assert result == {"statusCode": 200, "date": mock_get_date.return_value, "status": "normal_run"}
+
+
+@patch("event_handler.get_date")
+@patch("event_handler.save_working_set")
+@patch("event_handler.load_working_set")
+@patch("event_handler.get_tims")
+def test_handle_get_tims_loads_the_staged_set(mock_get_tims, mock_load, mock_save_working_set, mock_get_date):
+    """A pipeline state is lean: MakePredictions staged the set for this read."""
+    mock_get_date.return_value = "2026-04-15"
+    players = [{"id": 1, "stat": 0.8}]
+    teams = [{"team_id": 10}]
+    goalies = [{"team_id": 10, "goalie_name": "Starter"}]
+    mock_load.return_value = (players, teams, goalies)
+    mock_get_tims.side_effect = lambda p, allow_empty=False: [{**player, "tims": 1} for player in p]
+
+    result = handle_get_tims({"status": "normal_run"}, {})
+
+    assert result == {"statusCode": 200, "date": "2026-04-15", "status": "normal_run"}
+    mock_save_working_set.assert_called_once_with([{"id": 1, "stat": 0.8, "tims": 1}], teams, goalies)
 
 
 @patch("event_handler.get_date", return_value="2026-04-15")
@@ -219,15 +237,29 @@ def test_handle_publish_db_normal_run_preserves_tims(mock_publish):
     assert published[0]["tims"] == 2
 
 
+@patch("event_handler.load_working_set")
 @patch("event_handler.publish_public_db")
-def test_handle_publish_db_no_players_key(mock_publish):
-    """Test publishing database when players key is missing."""
-    event = {}
-    result = handle_publish_db(event, {})
+def test_handle_publish_db_no_players_key(mock_publish, mock_load):
+    """A lean pipeline state re-reads the slices GetTims staged."""
+    players = [{"id": 1, "stat": 0.8}]
+    teams = [{"team_id": 10}]
+    mock_load.return_value = (players, teams, [])
+
+    result = handle_publish_db({}, {})
 
     assert result["statusCode"] == 200
     assert "date" in result  # the explicit-date relay contract holds on every path
-    mock_publish.assert_called_once_with([])
+    assert mock_publish.call_args[0][0][0]["id"] == 1
+
+
+@patch("service.fetch_working_set", return_value=([], [], []))
+@patch("event_handler.publish_public_db")
+def test_handle_publish_db_missing_working_set_fails_loudly(mock_publish, mock_fetch):
+    """No event roster and no staged slices must fail, not silently wipe Picks."""
+    with pytest.raises(RuntimeError, match="No working set stored"):
+        handle_publish_db({}, {})
+
+    mock_publish.assert_not_called()
 
 
 @patch("event_handler.publish_public_db")
@@ -290,9 +322,10 @@ def test_handle_parse_teams_with_data(mock_merge):
     mock_merge.assert_called_once_with(event)
 
 
+@patch("event_handler.save_working_set")
 @patch("event_handler.make_predictions_teams")
-def test_handle_make_predictions(mock_predictions):
-    """Test making predictions for relational players + teams."""
+def test_handle_make_predictions(mock_predictions, mock_save_working_set):
+    """Predictions run on relational players + teams and stage the enriched set."""
     input_players = [
         {"name": "Player 1", "team_id": 1, "gpg": 0.5},
         {"name": "Player 2", "team_id": 2, "gpg": 0.7},
@@ -306,11 +339,14 @@ def test_handle_make_predictions(mock_predictions):
 
     mock_predictions.return_value = output_players
 
-    event = {"players": input_players, "teams": teams}
+    event = {"players": input_players, "teams": teams, "status": "first_run"}
     result = handle_make_predictions(event, {})
 
-    assert result == {"statusCode": 200, "players": output_players, "teams": teams}
+    # Lean output: GetTims re-reads the staged slices instead of receiving the
+    # roster through Step Functions state (256KB limit on heavy slates).
+    assert result == {"statusCode": 200, "status": "first_run"}
     mock_predictions.assert_called_once_with(input_players, teams)
+    mock_save_working_set.assert_called_once_with(output_players, teams, None)
 
 
 @patch("event_handler.merge_injury_data")

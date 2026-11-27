@@ -230,7 +230,7 @@ Resources:
       Handler: event_handler.handle_make_predictions
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 30
+      Timeout: 60
       MemorySize: 512
       Code:
         ZipFile: |
@@ -251,7 +251,7 @@ Resources:
       Handler: event_handler.handle_get_tims
       Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
-      Timeout: 30
+      Timeout: 60
       MemorySize: 128
       Code:
         ZipFile: |

@@ -160,7 +160,10 @@ def handle_load_working_set(event, context):
             - "teams" (list): Lean team data for today.
     """
     status = _require_status(event, "LoadWorkingSet")
-    players, teams = load_working_set()
+    # Goalies are not carried here: normal_run re-gathers them fresh in
+    # GetGoalies, and when that fetch fails GetTims' None sentinel skips the
+    # goalies-table wipe, so the morning slice survives for the publish.
+    players, teams, _goalies = load_working_set()
 
     return {
         "statusCode": 200,
@@ -230,8 +233,10 @@ def handle_make_predictions(event, context):
     Makes predictions for the given players.
 
     Requires the relational shape (``players`` + ``teams``, joined on
-    numeric ``team_id``) and preserves ``teams``/``goalies`` for downstream
-    steps so Step Functions state stays lean.
+    numeric ``team_id``). The enriched set is persisted to the Working-*
+    tables here and the returned state is lean: GetTims re-reads the slices
+    instead of receiving the full roster through Step Functions state, which
+    hit the 256KB limit on heavy slates (15-game days).
 
     Args:
         event (dict): A dictionary of all player data.
@@ -240,21 +245,19 @@ def handle_make_predictions(event, context):
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
-            - "players" (list): Player data, now including stat (and beta stat).
-            - "teams" (list, optional): Passed through when present.
+            - "status" (str): The run status, passed through for GetTims.
     """
     players = event.get("players") or []
     if players:
         players = make_predictions_teams(players, event.get("teams"))
+        # Stage the enriched set now. goalies=None (failed fetch) skips the
+        # goalies-table wipe and preserves the morning slice.
+        save_working_set(players, event.get("teams") or [], event.get("goalies"))
 
-    output = {"statusCode": 200, "players": players}
+    output = {"statusCode": 200}
     # Keep the status for GetTims/CheckSaveHistory: MakePredictions sits between
     # GetLineups and GetTims on the first_run path.
     _carry_status(output, event)
-    if "teams" in event:
-        output["teams"] = event["teams"]
-    if "goalies" in event:
-        output["goalies"] = event["goalies"]
     return output
 
 
@@ -262,6 +265,12 @@ def handle_make_predictions(event, context):
 def handle_get_tims(event, context):
     """
     Retrieve Tim Horton's data for today.
+
+    The fully enriched set is persisted to the Working-* tables here (and by
+    MakePredictions, this state's lean input source); SaveToDb, UpdateHistory
+    and PublishToDb re-read the slices inside their Lambdas so the roster
+    never round-trips through Step Functions state -- on heavy slates
+    (15-game days) that hit the 256KB limit at this step.
 
     Args:
         event (dict): A dictionary of all player data.
@@ -277,25 +286,22 @@ def handle_get_tims(event, context):
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
             - "date" (str): The current date.
-            - "players" (list): Player data, now including tims.
             - "status" (str): The run status, passed through.
-            - "teams"/"goalies" (list, optional): Passed through when present.
     """
-    players = event.get("players")
     status = _require_status(event, "GetTims")
-    players = get_tims(players, allow_empty=status == "last_run")
 
-    output = {
-        "statusCode": 200,
-        "date": get_date(),
-        "players": players,
-        "status": status,
-    }
-    if "teams" in event:
-        output["teams"] = event["teams"]
-    if "goalies" in event:
-        output["goalies"] = event["goalies"]
-    return output
+    if "players" in event:
+        players = event.get("players")
+        teams = event.get("teams")
+        goalies = event.get("goalies")
+    else:
+        # MakePredictions staged the enriched set and returned a lean state.
+        players, teams, goalies = load_working_set()
+
+    players = get_tims(players, allow_empty=status == "last_run")
+    save_working_set(players, teams or [], goalies)
+
+    return {"statusCode": 200, "date": get_date(), "status": status}
 
 
 @lambda_handler_error_responder
@@ -304,7 +310,10 @@ def handle_publish_db(event, context):
     Publishes the player data to the public database.
 
     Joins relational ``players`` + ``teams`` + ``goalies`` into full rows
-    for the write only; the state itself stays lean.
+    for the write only; the state itself stays lean. The enriched roster is
+    read back from the Working-* tables (staged by MakePredictions/GetTims)
+    unless the caller carries ``players`` explicitly (last_run re-entry and
+    the empty-roster first_run path).
 
     On the day's ``last_run`` every game has started, so the pipeline skips
     the enrichment chain (the picks API is locked by then and the Tims read
@@ -323,19 +332,22 @@ def handle_publish_db(event, context):
             - "date" (str): The pick date this run published (the event's
               carried ``date``, else the pipeline's Toronto get_date()),
               consumed downstream by the KickMLPicks state.
-            - "players" (list): Player data, now including stat (and beta stat).
     """
 
-    entries = event.get("players")
-    if not entries:
-        entries = []
+    if "players" in event:
+        entries = event.get("players") or []
+        teams = event.get("teams")
+        goalies = event.get("goalies")
+    else:
+        # Lean state from GetTims/UpdateHistory: reload the staged slices.
+        entries, teams, goalies = load_working_set()
 
     if event.get("status") == "last_run":
         for player in entries:
             player["tims"] = 0
 
-    if event.get("teams") or event.get("goalies"):
-        entries = denormalize_players_for_db(entries, event.get("teams"), event.get("goalies"))
+    if teams or goalies:
+        entries = denormalize_players_for_db(entries, teams, goalies)
 
     publish_public_db(entries)
 
@@ -358,45 +370,47 @@ def handle_save_players(event, context):
     Upserts on (date, player_id), so re-running the pipeline for a date
     refreshes that date's rows in place instead of appending a duplicate roster.
 
-    Also persists the day's lean players/teams slices to the Working-* tables
-    so normal_run/last_run can reload them without re-running the enrichment
-    chain or reloading the denormalized Picks rows.
+    The enriched roster is read back from the Working-* tables (staged by
+    MakePredictions/GetTims) instead of round-tripping through Step Functions
+    state, which hit the 256KB limit on heavy slates; the returned state stays
+    lean for the same reason.
 
     Joins relational ``players`` + ``teams`` + ``goalies`` into full rows
-    for the upload only; the returned state stays lean so downstream steps
-    stay under the Step Functions size limit.
+    for the upload only.
 
     Args:
         event (dict): A dictionary containing:
-            - "players" (list): Player data for today.
-            - "date" (str): The date the players are for, applied to each row.
+            - "status" (str): The run status.
+            - "date" (str, optional): The date the players are for, applied to
+              each row.
+            - "players" (list, optional): Direct invocations may still carry
+              the roster; pipeline states are lean.
         context (dict): Unused Lambda context.
 
     Returns:
         dict: A dictionary containing:
             - "statusCode" (int): HTTP status code.
-            - "players" (list): Lean player data, passed through so the UpdateHistory
-              state keeps working on the same payload.
+            - "status" (str): The run status, passed through for CheckSaveHistory.
     """
 
-    players = event.get("players") or []
-    date = event.get("date") or get_date()
     status = _require_status(event, "SavePlayers")
+    date = event.get("date") or get_date()
+
+    if "players" in event:
+        players = event.get("players") or []
+        teams = event.get("teams") or []
+        goalies = event.get("goalies")
+    else:
+        players, teams, goalies = load_working_set()
 
     if players:
-        if event.get("teams") or event.get("goalies"):
-            upload_rows = denormalize_players_for_db(players, event.get("teams"), event.get("goalies"))
+        if teams or goalies:
+            upload_rows = denormalize_players_for_db(players, teams, goalies)
         else:
             upload_rows = players
         save_player_snapshots(upload_rows, date=date)
-        save_working_set(players, event.get("teams") or [])
 
-    output = {"statusCode": 200, "status": status, "players": players}
-    if "teams" in event:
-        output["teams"] = event["teams"]
-    if "goalies" in event:
-        output["goalies"] = event["goalies"]
-    return output
+    return {"statusCode": 200, "status": status}
 
 
 @lambda_handler_error_responder
@@ -422,11 +436,21 @@ def handle_save_historic_db(event, context):
     Picks are chosen from lean players (stat + tims only), then joined with
     ``teams``/``goalies`` for the historic write so stored rows keep the
     full denormalized columns.
+
+    The roster is read back from the Working-* tables (staged by
+    MakePredictions/GetTims) unless the caller carries ``players`` explicitly
+    (the empty-roster first_run path), keeping the Step Functions state lean.
     """
 
-    players = event.get("players")
-    teams = event.get("teams")
-    goalies = event.get("goalies")
+    came_with_players = "players" in event
+    if came_with_players:
+        players = event.get("players")
+        teams = event.get("teams")
+        goalies = event.get("goalies")
+    else:
+        # Lean state from SavePlayers: reload the slices GetTims staged.
+        players, teams, goalies = load_working_set()
+
     picks = choose_picks(players)
 
     if picks and (teams or goalies):
@@ -442,11 +466,17 @@ def handle_save_historic_db(event, context):
     new_season_metrics = calculate_season_metrics(yesterday_results, season_id)
     update_season_metrics(new_season_metrics, season_id)
 
-    output = {"statusCode": 200, "players": players}
-    if teams is not None:
-        output["teams"] = teams
-    if goalies is not None:
-        output["goalies"] = goalies
+    output = {"statusCode": 200}
+    if came_with_players:
+        # Empty-roster first_run (CheckIfPlayersOutputIsEmpty routes here with
+        # players: [] before the working set was ever staged): echo the tiny
+        # payload so PublishToDb wipes today's Picks rows instead of raising
+        # on a missing working set.
+        output["players"] = players
+        if teams is not None:
+            output["teams"] = teams
+        if goalies is not None:
+            output["goalies"] = goalies
     return output
 
 
